@@ -17,6 +17,9 @@ from core.search_index import hybrid_search
 
 mcp = FastMCP("byomem")
 
+# Set by mem_context() so subsequent mem_search() calls scope to the active project.
+_current_project: str = ""
+
 
 @mcp.tool()
 def mem_context(
@@ -32,6 +35,9 @@ def mem_context(
     With branch + commit: returns full commit.md.
     With branch + log_lines: returns last N lines of log.md.
     """
+    global _current_project
+    _current_project = project
+
     cfg = get_config()
     proj_dir = cfg.byomem / project
 
@@ -102,11 +108,13 @@ def mem_search(
 ) -> str:
     """Hybrid FTS5 + vector search over indexed memory files.
 
+    Scopes to the active project (set by mem_context) unless overridden.
     Returns scored snippets with line numbers. Follow up with mem_get
     to read full content of relevant hits.
     """
+    effective_project = project or _current_project
     results = hybrid_search(
-        query, project=project, max_results=max_results, min_score=min_score
+        query, project=effective_project, max_results=max_results, min_score=min_score
     )
 
     if not results:
@@ -310,6 +318,45 @@ def mem_health_check() -> str:
 
     if health["status"] == "issues_found":
         out += "\nRun `byomem health --repair` to fix orphaned entries.\n"
+
+    return out
+
+
+@mcp.tool()
+def mem_failed_jobs() -> str:
+    """List failed queue jobs with error details for troubleshooting."""
+    import json
+
+    cfg = get_config()
+    failed_dir = cfg.queue_path / "failed"
+
+    if not failed_dir.exists():
+        return "No failed jobs."
+
+    failed = sorted(failed_dir.glob("*.json"))
+    if not failed:
+        return "No failed jobs."
+
+    out = f"## Failed Jobs ({len(failed)})\n\n"
+    for f in failed:
+        try:
+            data = json.loads(f.read_text())
+            sid = data.get("session_id", "?")
+            err = data.get("last_error", "unknown")
+            cwd = data.get("cwd", "")
+            project = Path(cwd).name if cwd else "?"
+            retries = data.get("retry_count", 0)
+            transcript = data.get("transcript_path", "?")
+            out += (
+                f"### {sid[:8]}\n"
+                f"- **Project**: {project}\n"
+                f"- **Error**: `{err}`\n"
+                f"- **Retries**: {retries}\n"
+                f"- **Transcript**: {transcript}\n"
+                f"- **File**: {f.name}\n\n"
+            )
+        except (json.JSONDecodeError, KeyError):
+            out += f"### {f.name}\n(unreadable)\n\n"
 
     return out
 

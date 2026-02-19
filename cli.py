@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import tempfile
+from pathlib import Path
 
 from core.config import get_config
 
@@ -377,8 +378,11 @@ def cmd_queue(purge=False, history=0):
     processing_dir = cfg.queue_path / "processing"
     pid_file = cfg.queue_path / "worker.pid"
 
+    failed_dir = cfg.queue_path / "failed"
+
     pending = sorted(pending_dir.glob("*.json")) if pending_dir.exists() else []
     processing = sorted(processing_dir.glob("*.json")) if processing_dir.exists() else []
+    failed = sorted(failed_dir.glob("*.json")) if failed_dir.exists() else []
 
     # Worker lock status
     worker_status = "not running"
@@ -395,6 +399,7 @@ def cmd_queue(purge=False, history=0):
     print(f"\n  Worker: {worker_status}")
     print(f"  Pending: {len(pending)}")
     print(f"  Processing: {len(processing)}")
+    print(f"  Failed: {len(failed)}")
     print(f"  Overflow threshold: {cfg.overflow_threshold}")
 
     if purge and processing:
@@ -411,6 +416,18 @@ def cmd_queue(purge=False, history=0):
                 print("  Removed stale worker lock.")
     elif not purge and processing:
         print("\n  Stale processing files detected. Run with --purge to clean.")
+
+    if failed:
+        print(f"\n  Failed jobs ({len(failed)}):")
+        for f in failed:
+            try:
+                data = json.loads(f.read_text())
+                sid = data.get("session_id", "?")[:8]
+                err = data.get("last_error", "unknown")
+                cwd = Path(data.get("cwd", "")).name or "?"
+                print(f"    {sid}  project={cwd}  error={err}")
+            except (json.JSONDecodeError, KeyError):
+                print(f"    {f.name}  (unreadable)")
 
     # Show recent processing history
     history_path = cfg.queue_path / "history.jsonl"

@@ -23,13 +23,15 @@ def _write_jsonl(path, messages):
 def test_empty_transcript(tmp_path):
     f = tmp_path / "empty.jsonl"
     f.write_text("")
-    assert parse_new_turns(f) == []
+    turns, offset = parse_new_turns(f)
+    assert turns == []
 
 
 def test_whitespace_only(tmp_path):
     f = tmp_path / "ws.jsonl"
     f.write_text("   \n  \n ")
-    assert parse_new_turns(f) == []
+    turns, offset = parse_new_turns(f)
+    assert turns == []
 
 
 def test_single_turn(tmp_path):
@@ -38,7 +40,7 @@ def test_single_turn(tmp_path):
         _make_msg("a1", "assistant", "hi there", parent_uuid="u1"),
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
-    turns = parse_new_turns(f)
+    turns, offset = parse_new_turns(f)
     assert len(turns) == 1
     assert turns[0].id == "u1"
     assert turns[0].user == "hello"
@@ -54,7 +56,7 @@ def test_multiple_turns(tmp_path):
         _make_msg("a2", "assistant", "second answer", parent_uuid="u2"),
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
-    turns = parse_new_turns(f)
+    turns, offset = parse_new_turns(f)
     assert len(turns) == 2
     assert turns[0].id == "u1"
     assert turns[1].id == "u2"
@@ -69,7 +71,7 @@ def test_resume_from_since_id(tmp_path):
         _make_msg("a2", "assistant", "new reply", parent_uuid="u2"),
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
-    turns = parse_new_turns(f, since_id="u1")
+    turns, offset = parse_new_turns(f, since_id="u1")
     assert len(turns) == 1
     assert turns[0].id == "u2"
 
@@ -80,7 +82,7 @@ def test_since_id_not_found(tmp_path):
         _make_msg("a1", "assistant", "hi", parent_uuid="u1"),
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
-    turns = parse_new_turns(f, since_id="nonexistent")
+    turns, offset = parse_new_turns(f, since_id="nonexistent")
     assert turns == []
 
 
@@ -91,7 +93,7 @@ def test_skip_non_user_messages(tmp_path):
         _make_msg("a1", "assistant", "hi", parent_uuid="u1"),
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
-    turns = parse_new_turns(f)
+    turns, offset = parse_new_turns(f)
     assert len(turns) == 1
     assert turns[0].id == "u1"
 
@@ -102,7 +104,7 @@ def test_string_content(tmp_path):
         _make_msg("a1", "assistant", "plain reply", parent_uuid="u1"),
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
-    turns = parse_new_turns(f)
+    turns, offset = parse_new_turns(f)
     assert turns[0].user == "plain string"
     assert turns[0].assistant == "plain reply"
 
@@ -122,7 +124,7 @@ def test_list_content(tmp_path):
         _make_msg("a1", "assistant", asst_content, parent_uuid="u1"),
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
-    turns = parse_new_turns(f)
+    turns, offset = parse_new_turns(f)
     assert turns[0].user == "part one part two"
     assert turns[0].assistant == "reply one reply two"
 
@@ -133,7 +135,7 @@ def test_empty_content(tmp_path):
         _make_msg("a1", "assistant", "", parent_uuid="u1"),
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
-    turns = parse_new_turns(f)
+    turns, offset = parse_new_turns(f)
     assert turns[0].user == ""
     assert turns[0].assistant == ""
 
@@ -145,7 +147,7 @@ def test_user_truncated_to_2000(tmp_path):
         _make_msg("a1", "assistant", "short", parent_uuid="u1"),
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
-    turns = parse_new_turns(f)
+    turns, offset = parse_new_turns(f)
     assert len(turns[0].user) == 2000
 
 
@@ -156,5 +158,30 @@ def test_assistant_truncated_to_3000(tmp_path):
         _make_msg("a1", "assistant", long_text, parent_uuid="u1"),
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
-    turns = parse_new_turns(f)
+    turns, offset = parse_new_turns(f)
     assert len(turns[0].assistant) == 3000
+
+
+def test_byte_offset_resumes(tmp_path):
+    """With byte_offset, parser reads only new content and skips since_id gate."""
+    msgs1 = [
+        _make_msg("u1", "user", "first"),
+        _make_msg("a1", "assistant", "first reply", parent_uuid="u1"),
+    ]
+    f = _write_jsonl(tmp_path / "t.jsonl", msgs1)
+    turns1, offset1 = parse_new_turns(f)
+    assert len(turns1) == 1
+    assert offset1 > 0
+
+    # Append new content
+    msgs2 = msgs1 + [
+        _make_msg("u2", "user", "second"),
+        _make_msg("a2", "assistant", "second reply", parent_uuid="u2"),
+    ]
+    _write_jsonl(f, msgs2)
+
+    # Resume from offset — should get only u2 without needing since_id
+    turns2, offset2 = parse_new_turns(f, since_id="u1", byte_offset=offset1)
+    assert len(turns2) == 1
+    assert turns2[0].id == "u2"
+    assert offset2 > offset1

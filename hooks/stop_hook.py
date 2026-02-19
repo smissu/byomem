@@ -40,7 +40,7 @@ def _spawn_worker():
 
 def main():
     from core.models import QueueJob
-    from core.queue import enqueue
+    from core.queue import enqueue, get_session_offset, has_pending_job
 
     # Read stdin before anything else
     data = json.loads(sys.stdin.read())
@@ -54,14 +54,27 @@ def main():
         _log("hook_complete", reason="transcript_not_found")
         return
 
+    # Skip if a job for this session is already queued or processing
+    if has_pending_job(session_id):
+        _log("hook_complete", reason="already_queued", session_id=session_id)
+        return
+
+    # Record byte offset so worker only reads new content
+    offset = get_session_offset(session_id)
+    file_size = transcript.stat().st_size
+    if offset >= file_size:
+        _log("hook_complete", reason="no_new_content", session_id=session_id)
+        return
+
     job = QueueJob(
         session_id=session_id,
         transcript_path=str(transcript),
         cwd=cwd,
+        transcript_offset=offset,
     )
 
     enqueue(job)
-    _log("hook_enqueued", session_id=session_id)
+    _log("hook_enqueued", session_id=session_id, offset=offset)
 
     # In tests or sync mode, run worker inline
     if os.environ.get("BYOMEM_SYNC") or os.environ.get("PYTEST_CURRENT_TEST"):

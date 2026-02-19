@@ -7,14 +7,49 @@ from core.config import get_config
 from core.models import Turn
 
 
-def parse_new_turns(transcript: Path, since_id: str | None = None) -> list[Turn]:
+def parse_new_turns(
+    transcript: Path,
+    since_id: str | None = None,
+    byte_offset: int = 0,
+) -> tuple[list[Turn], int]:
+    """Parse new turns from a transcript file.
+
+    Args:
+        transcript: Path to the JSONL transcript.
+        since_id: Skip turns up to and including this UUID.
+        byte_offset: Start reading from this byte position.
+
+    Returns:
+        (turns, new_byte_offset) — the parsed turns and the file position
+        after reading, so the caller can persist it for next time.
+    """
     cfg = get_config()
-    raw = transcript.read_text().strip()
-    if not raw:
-        return []
+    file_size = transcript.stat().st_size
+    if file_size == 0:
+        return [], 0
+
+    with open(transcript) as f:
+        if byte_offset > 0:
+            f.seek(byte_offset)
+        raw = f.read()
+        end_offset = f.tell()
+
+    if not raw.strip():
+        return [], end_offset
+
     lines = raw.splitlines()
-    messages = [json.loads(line) for line in lines if line.strip()]
-    turns, processed, found_since = [], set(), since_id is None
+    messages = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            messages.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    # If we seeked via byte_offset, we're already past old content — skip since_id gate
+    turns, processed, found_since = [], set(), since_id is None or byte_offset > 0
 
     for msg in messages:
         if msg.get("type") != "user" or msg.get("uuid") in processed:
@@ -38,7 +73,7 @@ def parse_new_turns(transcript: Path, since_id: str | None = None) -> list[Turn]
             assistant=" ".join(_text(m) for m in assistant_msgs)[:cfg.assistant_message_max],
         ))
 
-    return turns
+    return turns, end_offset
 
 
 def _text(msg: dict) -> str:

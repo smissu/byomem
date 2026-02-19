@@ -3,10 +3,13 @@
 Layout under cfg.queue_path (~/.byomem/queue/):
     pending/      <- hook writes here
     processing/   <- worker moves jobs here during processing
+    failed/       <- jobs that failed after retry
+    offsets.json  <- last-processed byte offset per session
     worker.pid    <- PID lock file
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -71,6 +74,77 @@ def complete_job(path: Path) -> None:
         path.unlink()
     except FileNotFoundError:
         pass
+
+
+def retry_job(path: Path, error: str) -> Path:
+    """Move a failed job back to pending/ with incremented retry_count and error recorded."""
+    cfg = get_config()
+    pending = cfg.queue_path / "pending"
+    pending.mkdir(parents=True, exist_ok=True)
+
+    job = QueueJob.model_validate_json(path.read_text())
+    job.retry_count += 1
+    job.last_error = error
+
+    dest = pending / path.name
+    dest.write_text(job.model_dump_json(indent=2))
+    path.unlink()
+    return dest
+
+
+def fail_job(path: Path, error: str) -> Path:
+    """Move a job to failed/ with the error reason preserved."""
+    cfg = get_config()
+    failed = cfg.queue_path / "failed"
+    failed.mkdir(parents=True, exist_ok=True)
+
+    job = QueueJob.model_validate_json(path.read_text())
+    job.last_error = error
+
+    dest = failed / path.name
+    dest.write_text(job.model_dump_json(indent=2))
+    path.unlink()
+    return dest
+
+
+def has_pending_job(session_id: str) -> bool:
+    """Check if a pending or processing job already exists for this session."""
+    cfg = get_config()
+    slug = session_id[:8]
+    for d in ("pending", "processing"):
+        d_path = cfg.queue_path / d
+        if d_path.exists():
+            for f in d_path.glob(f"*-{slug}.json"):
+                return True
+    return False
+
+
+def get_session_offset(session_id: str) -> int:
+    """Return the last-processed byte offset for a session transcript."""
+    cfg = get_config()
+    offsets_file = cfg.queue_path / "offsets.json"
+    if not offsets_file.exists():
+        return 0
+    try:
+        offsets = json.loads(offsets_file.read_text())
+        return offsets.get(session_id, 0)
+    except (json.JSONDecodeError, OSError):
+        return 0
+
+
+def save_session_offset(session_id: str, offset: int) -> None:
+    """Persist the byte offset after successful processing."""
+    cfg = get_config()
+    cfg.queue_path.mkdir(parents=True, exist_ok=True)
+    offsets_file = cfg.queue_path / "offsets.json"
+    offsets = {}
+    if offsets_file.exists():
+        try:
+            offsets = json.loads(offsets_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    offsets[session_id] = offset
+    offsets_file.write_text(json.dumps(offsets))
 
 
 def acquire_worker_lock() -> bool:

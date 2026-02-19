@@ -104,8 +104,12 @@ def test_run_worker_writes_history(tmp_path, tmp_byomem, mock_anthropic, mock_op
     assert entry["duration_s"] >= 0
 
 
-def test_run_worker_logs_error(tmp_path, tmp_byomem, monkeypatch):
-    """Failed jobs are logged with status 'error'."""
+def test_run_worker_logs_retry_then_failed(tmp_path, tmp_byomem, monkeypatch):
+    """First failure retries, second failure moves to failed/.
+
+    The worker loop re-checks for pending jobs, so a single run_worker()
+    call handles both the retry and the final failure.
+    """
     transcript = _make_transcript(tmp_path)
     job = _make_job(transcript)
 
@@ -117,11 +121,20 @@ def test_run_worker_logs_error(tmp_path, tmp_byomem, monkeypatch):
     enqueue(job)
     run_worker()
 
+    # Worker loop: first attempt -> retry (requeue), second attempt -> failed
     history_path = tmp_byomem / "queue" / "history.jsonl"
     assert history_path.exists()
-    entry = json.loads(history_path.read_text().strip())
-    assert entry["status"] == "error"
-    assert entry["session"] == "sess1234"
+    lines = history_path.read_text().strip().splitlines()
+    assert len(lines) == 2
+    entry1 = json.loads(lines[0])
+    assert entry1["status"] == "retry"
+    assert entry1["session"] == "sess1234"
+    entry2 = json.loads(lines[1])
+    assert entry2["status"] == "failed"
+
+    # Verify job is in failed/ dir
+    failed_dir = tmp_byomem / "queue" / "failed"
+    assert len(list(failed_dir.glob("*.json"))) == 1
 
 
 def test_run_worker_empty_queue(tmp_byomem):

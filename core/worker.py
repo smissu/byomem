@@ -15,7 +15,15 @@ from pathlib import Path
 
 from core.config import get_config
 from core.models import QueueJob
-from core.queue import acquire_worker_lock, claim_pending, complete_job, release_worker_lock
+from core.queue import (
+    acquire_worker_lock,
+    claim_pending,
+    complete_job,
+    fail_job,
+    release_worker_lock,
+    retry_job,
+    save_session_offset,
+)
 
 logger = logging.getLogger("byomem.worker")
 
@@ -58,8 +66,12 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
         return
 
     try:
-        new_turns = parse_new_turns(transcript, branch.last_turn_id)
+        new_turns, end_offset = parse_new_turns(
+            transcript, branch.last_turn_id, byte_offset=job.transcript_offset,
+        )
         if not new_turns:
+            # No new turns but update offset so we don't re-read this range
+            save_session_offset(job.session_id, end_offset)
             return
 
         # Batch summarize for efficiency
@@ -88,6 +100,7 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
                     index_file(main_path, project)
 
         update_metadata(branch, new_turns[-1].model_dump())
+        save_session_offset(job.session_id, end_offset)
     finally:
         fcntl.flock(lock_file, fcntl.LOCK_UN)
         lock_file.close()
@@ -110,7 +123,11 @@ def _log_result(session_id: str, model: str, duration_s: float, status: str):
 
 
 def _process_jobs(jobs, *, model_override: str | None = None):
-    """Process a list of (job_file, job) tuples, completing each on success."""
+    """Process a list of (job_file, job) tuples, completing each on success.
+
+    On failure: if retry_count == 0, move back to pending for one retry.
+    If retry_count >= 1 (already retried), move to failed/ for troubleshooting.
+    """
     model_label = model_override or "primary"
     for job_file, job in jobs:
         t0 = time.monotonic()
@@ -119,9 +136,18 @@ def _process_jobs(jobs, *, model_override: str | None = None):
             process_job(job, model_override=model_override)
             complete_job(job_file)
             _log_result(job.session_id, model_label, time.monotonic() - t0, "ok")
-        except Exception:
+        except Exception as exc:
+            duration = time.monotonic() - t0
+            error_msg = f"{type(exc).__name__}: {exc}"
             logger.exception("Failed to process job %s", job.session_id)
-            _log_result(job.session_id, model_label, time.monotonic() - t0, "error")
+            if job.retry_count < 1:
+                logger.info("Requeueing job %s for retry (attempt %d)", job.session_id, job.retry_count + 1)
+                retry_job(job_file, error_msg)
+                _log_result(job.session_id, model_label, duration, "retry")
+            else:
+                logger.warning("Job %s failed after retry, moving to failed/", job.session_id)
+                fail_job(job_file, error_msg)
+                _log_result(job.session_id, model_label, duration, "failed")
 
 
 def run_worker():
@@ -136,47 +162,51 @@ def run_worker():
         return
 
     try:
-        pending = claim_pending()
-        if not pending:
-            logger.info("No pending jobs")
-            return
+        while True:
+            pending = claim_pending()
+            if not pending:
+                logger.info("No pending jobs, exiting")
+                return
 
-        cfg = get_config()
-        use_overflow = (
-            len(pending) >= cfg.overflow_threshold
-            and cfg.summarizer_fallback_model
-            and cfg.summarizer_base_url
-        )
-
-        if use_overflow:
-            mid = len(pending) // 2
-            primary_jobs = pending[:mid]
-            overflow_jobs = pending[mid:]
-
-            logger.info(
-                "Queue depth %d >= threshold %d, splitting: %d primary + %d overflow (%s)",
-                len(pending), cfg.overflow_threshold,
-                len(primary_jobs), len(overflow_jobs), cfg.summarizer_fallback_model,
+            cfg = get_config()
+            use_overflow = (
+                len(pending) >= cfg.overflow_threshold
+                and cfg.summarizer_fallback_model
+                and cfg.summarizer_base_url
             )
 
-            overflow_thread = threading.Thread(
-                target=_process_jobs,
-                kwargs={
-                    "jobs": overflow_jobs,
-                    "model_override": cfg.summarizer_fallback_model,
-                },
-                name="overflow-worker",
-                daemon=True,
-            )
-            overflow_thread.start()
+            if use_overflow:
+                mid = len(pending) // 2
+                primary_jobs = pending[:mid]
+                overflow_jobs = pending[mid:]
 
-            # Primary processes its share
-            _process_jobs(primary_jobs)
+                logger.info(
+                    "Queue depth %d >= threshold %d, splitting: %d primary + %d overflow (%s)",
+                    len(pending), cfg.overflow_threshold,
+                    len(primary_jobs), len(overflow_jobs), cfg.summarizer_fallback_model,
+                )
 
-            overflow_thread.join(timeout=120)
-            if overflow_thread.is_alive():
-                logger.warning("Overflow thread timed out after 120s")
-        else:
-            _process_jobs(pending)
+                overflow_thread = threading.Thread(
+                    target=_process_jobs,
+                    kwargs={
+                        "jobs": overflow_jobs,
+                        "model_override": cfg.summarizer_fallback_model,
+                    },
+                    name="overflow-worker",
+                    daemon=True,
+                )
+                overflow_thread.start()
+
+                # Primary processes its share
+                _process_jobs(primary_jobs)
+
+                overflow_thread.join(timeout=120)
+                if overflow_thread.is_alive():
+                    logger.warning("Overflow thread timed out after 120s")
+            else:
+                _process_jobs(pending)
+
+            # Loop back to check for jobs that arrived while we were processing
+            logger.info("Rechecking for new pending jobs")
     finally:
         release_worker_lock()

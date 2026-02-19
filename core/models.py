@@ -40,3 +40,6 @@ class QueueJob(BaseModel):
     cwd: str = ""
     model_override: str | None = None
     created_at: str = ""
+    transcript_offset: int = 0
+    retry_count: int = 0
+    last_error: str = ""
