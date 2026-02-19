@@ -63,3 +63,25 @@ def mock_anthropic(mocker):
         mocker.Mock(text=response_json)
     ]
     return mock
+
+
+@pytest.fixture
+def tmp_settings(tmp_path, monkeypatch):
+    """Redirect settings.json to temp dir and create fake venv."""
+    settings = tmp_path / "settings.json"
+    root = tmp_path / ".byomem"
+    root.mkdir(exist_ok=True)
+    # Create fake venv python
+    venv_python = root / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True, exist_ok=True)
+    venv_python.touch()
+    venv_python.chmod(0o755)
+    # Create fake hook and mcp_server
+    hooks_dir = root / "hooks"
+    hooks_dir.mkdir(exist_ok=True)
+    (hooks_dir / "stop_hook.py").touch()
+    (root / "mcp_server.py").touch()
+    from core.config import Config
+    test_config = Config(byomem=root, settings_path=settings)
+    monkeypatch.setattr("core.config._config", test_config)
+    return settings
