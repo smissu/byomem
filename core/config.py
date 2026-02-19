@@ -13,8 +13,10 @@ class Config:
     byomem: Path = field(default_factory=lambda: Path.home() / ".byomem")
     summarizer_model: str = "claude-haiku-4-5-20251001"
     summarizer_max_tokens: int = 300
+    summarizer_base_url: str | None = None
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1536
+    embedding_base_url: str | None = None
     chunk_tokens: int = 400
     chunk_overlap: int = 80
     max_results: int = 6
@@ -55,12 +57,16 @@ def _load_config() -> Config:
         kwargs["summarizer_model"] = summarizer["model"]
     if "max_tokens" in summarizer:
         kwargs["summarizer_max_tokens"] = summarizer["max_tokens"]
+    if "base_url" in summarizer:
+        kwargs["summarizer_base_url"] = summarizer["base_url"]
 
     embeddings = data.get("embeddings", {})
     if "model" in embeddings:
         kwargs["embedding_model"] = embeddings["model"]
     if "dimension" in embeddings:
         kwargs["embedding_dimension"] = embeddings["dimension"]
+    if "base_url" in embeddings:
+        kwargs["embedding_base_url"] = embeddings["base_url"]
 
     memory = data.get("memory", {})
     for key in ("chunk_tokens", "chunk_overlap", "max_results", "min_score",

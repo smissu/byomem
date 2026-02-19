@@ -250,7 +250,11 @@ def _get_embedding(db, text, text_hash):
         return sqlite_vec.deserialize_float32(row[0])
     try:
         cfg = get_config()
-        resp = openai.OpenAI().embeddings.create(model=cfg.embedding_model, input=text)
+        client_kwargs = {}
+        if cfg.embedding_base_url:
+            client_kwargs["base_url"] = cfg.embedding_base_url
+            client_kwargs["api_key"] = "ollama"
+        resp = openai.OpenAI(**client_kwargs).embeddings.create(model=cfg.embedding_model, input=text)
         embedding = resp.data[0].embedding
         import sqlite_vec
 

@@ -1,7 +1,7 @@
 from core.summarizer import SYSTEM, summarize_turn
 
 
-def test_returns_valid_json(sample_turn, mock_anthropic):
+def test_returns_valid_json(sample_turn, mock_anthropic, tmp_byomem):
     result = summarize_turn(sample_turn)
     assert isinstance(result, dict)
     for key in ("title", "summary", "classification", "important", "milestone"):
@@ -17,7 +17,7 @@ def test_passes_turn_to_haiku(sample_turn, mock_anthropic, tmp_byomem):
     assert sample_turn["assistant"] in content
 
 
-def test_fallback_on_bad_json(sample_turn, mock_anthropic):
+def test_fallback_on_bad_json(sample_turn, mock_anthropic, tmp_byomem):
     mock_anthropic.return_value.messages.create.return_value.content[0].text = "not json"
     result = summarize_turn(sample_turn)
     assert result["classification"] == "general"
@@ -25,7 +25,7 @@ def test_fallback_on_bad_json(sample_turn, mock_anthropic):
     assert result["milestone"] is False
 
 
-def test_fallback_on_api_error(sample_turn, mock_anthropic):
+def test_fallback_on_api_error(sample_turn, mock_anthropic, tmp_byomem):
     mock_anthropic.return_value.messages.create.side_effect = RuntimeError("API down")
     result = summarize_turn(sample_turn)
     assert result["classification"] == "general"
