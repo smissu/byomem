@@ -48,6 +48,89 @@ def mock_openai_embed(mocker):
 
 
 @pytest.fixture
+def tmp_byomem_ollama(tmp_path, monkeypatch):
+    """Redirect ~/.byomem to temp dir with Ollama-style config."""
+    root = tmp_path / ".byomem"
+    root.mkdir()
+    from core.config import Config
+    test_config = Config(
+        byomem=root,
+        summarizer_model="qwen3:4b",
+        summarizer_fallback_model="qwen2.5:3b",
+        summarizer_base_url="http://localhost:11434/v1",
+    )
+    monkeypatch.setattr("core.config._config", test_config)
+    return root
+
+
+@pytest.fixture
+def mock_httpx_single(mocker):
+    """Patch httpx.post to return a valid single-turn Ollama native response."""
+    import json
+    response_json = json.dumps({
+        "title": "Fix stop price field",
+        "summary": "Use aux_price not stop_price.",
+        "classification": "fix",
+        "important": True,
+        "milestone": True,
+    })
+    mock_resp = mocker.Mock()
+    mock_resp.raise_for_status = mocker.Mock()
+    mock_resp.json.return_value = {
+        "message": {"content": response_json},
+        "done": True,
+        "done_reason": "stop",
+    }
+    mock = mocker.patch("core.summarizer.httpx.post", return_value=mock_resp)
+    return mock
+
+
+@pytest.fixture
+def mock_httpx_batch(mocker):
+    """Patch httpx.post to return a valid batch Ollama native response."""
+    import json
+    response_json = json.dumps({
+        "summaries": [
+            {
+                "turn_id": "u1",
+                "title": "Fix stop price field",
+                "summary": "Use aux_price not stop_price.",
+                "classification": "fix",
+                "important": True,
+                "milestone": True,
+            },
+            {
+                "turn_id": "u2",
+                "title": "Set trailing stop type",
+                "summary": "Use trailing_stop_type=1.",
+                "classification": "feature",
+                "important": False,
+                "milestone": False,
+            },
+        ]
+    })
+    mock_resp = mocker.Mock()
+    mock_resp.raise_for_status = mocker.Mock()
+    mock_resp.json.return_value = {
+        "message": {"content": response_json},
+        "done": True,
+        "done_reason": "stop",
+    }
+    mock = mocker.patch("core.summarizer.httpx.post", return_value=mock_resp)
+    return mock
+
+
+@pytest.fixture
+def mock_httpx_fail(mocker):
+    """Patch httpx.post to raise an error (simulates native Ollama failure)."""
+    mock = mocker.patch(
+        "core.summarizer.httpx.post",
+        side_effect=RuntimeError("Ollama native API down"),
+    )
+    return mock
+
+
+@pytest.fixture
 def mock_anthropic(mocker):
     """Patch anthropic.Anthropic to return a fixed summarizer response."""
     import json
@@ -57,6 +140,51 @@ def mock_anthropic(mocker):
         "classification": "fix",
         "important": True,
         "milestone": True,
+    })
+    mock = mocker.patch("core.summarizer.anthropic.Anthropic")
+    mock.return_value.messages.create.return_value.content = [
+        mocker.Mock(text=response_json)
+    ]
+    return mock
+
+
+@pytest.fixture
+def sample_turns():
+    """Multiple Turn-like dicts for batch testing."""
+    from core.models import Turn
+    return [
+        Turn(id="u1", timestamp="2026-02-19T10:00:00",
+             user="why is the stop price wrong?",
+             assistant="The field is aux_price not stop_price."),
+        Turn(id="u2", timestamp="2026-02-19T10:01:00",
+             user="how do I set trailing stop?",
+             assistant="Use the trailing_stop_type field with value 1."),
+    ]
+
+
+@pytest.fixture
+def mock_anthropic_batch(mocker):
+    """Patch anthropic.Anthropic to return a batch summarizer response."""
+    import json
+    response_json = json.dumps({
+        "summaries": [
+            {
+                "turn_id": "u1",
+                "title": "Fix stop price field",
+                "summary": "Use aux_price not stop_price.",
+                "classification": "fix",
+                "important": True,
+                "milestone": True,
+            },
+            {
+                "turn_id": "u2",
+                "title": "Set trailing stop type",
+                "summary": "Use trailing_stop_type=1.",
+                "classification": "feature",
+                "important": False,
+                "milestone": False,
+            },
+        ]
     })
     mock = mocker.patch("core.summarizer.anthropic.Anthropic")
     mock.return_value.messages.create.return_value.content = [

@@ -14,6 +14,7 @@ class Config:
     summarizer_model: str = "claude-haiku-4-5-20251001"
     summarizer_max_tokens: int = 300
     summarizer_base_url: str | None = None
+    summarizer_fallback_model: str | None = None
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1536
     embedding_base_url: str | None = None
@@ -29,6 +30,7 @@ class Config:
     assistant_message_max: int = 3000
     log_user_prefix: int = 300
     log_assistant_prefix: int = 600
+    batch_size: int = 6
     settings_path: Path = field(
         default_factory=lambda: Path.home() / ".claude" / "settings.json"
     )
@@ -36,6 +38,10 @@ class Config:
     @property
     def db_path(self) -> Path:
         return self.byomem / "search.db"
+
+    @property
+    def queue_path(self) -> Path:
+        return self.byomem / "queue"
 
 
 def _load_config() -> Config:
@@ -59,6 +65,8 @@ def _load_config() -> Config:
         kwargs["summarizer_max_tokens"] = summarizer["max_tokens"]
     if "base_url" in summarizer:
         kwargs["summarizer_base_url"] = summarizer["base_url"]
+    if "fallback_model" in summarizer:
+        kwargs["summarizer_fallback_model"] = summarizer["fallback_model"]
 
     embeddings = data.get("embeddings", {})
     if "model" in embeddings:
@@ -74,6 +82,10 @@ def _load_config() -> Config:
                 "candidate_multiplier", "approx_chars_per_token"):
         if key in memory:
             kwargs[key] = memory[key]
+
+    queue = data.get("queue", {})
+    if "batch_size" in queue:
+        kwargs["batch_size"] = queue["batch_size"]
 
     truncation = data.get("truncation", {})
     for key in ("user_message_max", "assistant_message_max", "log_user_prefix", "log_assistant_prefix"):

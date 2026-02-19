@@ -78,9 +78,10 @@ def test_partial_yaml_merges_with_defaults(tmp_path, monkeypatch):
 
 
 def test_byomem_property_paths():
-    """Config.db_path is derived from byomem root."""
+    """Config.db_path and queue_path are derived from byomem root."""
     cfg = Config(byomem=Path("/tmp/test-byomem"))
     assert cfg.db_path == Path("/tmp/test-byomem/search.db")
+    assert cfg.queue_path == Path("/tmp/test-byomem/queue")
 
 
 def test_get_config_caches_singleton(monkeypatch):
@@ -101,6 +102,24 @@ def test_new_config_fields_defaults():
     assert cfg.assistant_message_max == 3000
     assert cfg.log_user_prefix == 300
     assert cfg.log_assistant_prefix == 600
+
+
+def test_batch_size_default():
+    """batch_size defaults to 6."""
+    cfg = Config()
+    assert cfg.batch_size == 6
+
+
+def test_batch_size_from_yaml(tmp_path, monkeypatch):
+    """batch_size can be set via queue section in YAML."""
+    config_yaml = tmp_path / ".byomem" / "config.yaml"
+    config_yaml.parent.mkdir(parents=True)
+    config_yaml.write_text(yaml.dump({
+        "queue": {"batch_size": 8},
+    }))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    cfg = _load_config()
+    assert cfg.batch_size == 8
 
 
 def test_memory_section_new_fields(tmp_path, monkeypatch):

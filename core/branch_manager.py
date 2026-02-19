@@ -45,12 +45,16 @@ def get_or_create_branch(project: str, session_id: str) -> Branch:
     return Branch(path=path, last_turn_id=_last_turn_id(path / "log.md"))
 
 
-def append_to_log(branch: Branch, turn: dict):
+def append_to_log(branch: Branch, turn):
     cfg = get_config()
+    if isinstance(turn, dict):
+        tid, ts, user, asst = turn["id"], turn["timestamp"], turn["user"], turn["assistant"]
+    else:
+        tid, ts, user, asst = turn.id, turn.timestamp, turn.user, turn.assistant
     entry = (
-        f"\n<!-- last_id: {turn['id']} -->\n"
-        f"---\n**[{turn['timestamp']}]** {turn['user'][:cfg.log_user_prefix]}\n\n"
-        f"{turn['assistant'][:cfg.log_assistant_prefix]}\n"
+        f"\n<!-- last_id: {tid} -->\n"
+        f"---\n**[{ts}]** {user[:cfg.log_user_prefix]}\n\n"
+        f"{asst[:cfg.log_assistant_prefix]}\n"
     )
     with branch.log_md.open("a") as f:
         f.write(entry)
@@ -66,10 +70,14 @@ def commit_milestone(branch: Branch, summary: dict):
     branch.commit_md.write_text(new_content)
 
 
-def update_metadata(branch: Branch, last_turn: dict):
+def update_metadata(branch: Branch, last_turn):
+    if isinstance(last_turn, dict):
+        ts = last_turn["timestamp"]
+    else:
+        ts = last_turn.timestamp
     meta = branch.meta_md.read_text()
     meta = re.sub(r"last_updated:.*\n", "", meta)
-    meta += f"last_updated: {last_turn['timestamp']}\n"
+    meta += f"last_updated: {ts}\n"
     branch.meta_md.write_text(meta)
 
 

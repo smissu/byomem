@@ -40,10 +40,10 @@ def test_single_turn(tmp_path):
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
     turns = parse_new_turns(f)
     assert len(turns) == 1
-    assert turns[0]["id"] == "u1"
-    assert turns[0]["user"] == "hello"
-    assert turns[0]["assistant"] == "hi there"
-    assert turns[0]["timestamp"] == "2026-02-19T10:00:00"
+    assert turns[0].id == "u1"
+    assert turns[0].user == "hello"
+    assert turns[0].assistant == "hi there"
+    assert turns[0].timestamp == "2026-02-19T10:00:00"
 
 
 def test_multiple_turns(tmp_path):
@@ -56,9 +56,9 @@ def test_multiple_turns(tmp_path):
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
     turns = parse_new_turns(f)
     assert len(turns) == 2
-    assert turns[0]["id"] == "u1"
-    assert turns[1]["id"] == "u2"
-    assert turns[1]["user"] == "second question"
+    assert turns[0].id == "u1"
+    assert turns[1].id == "u2"
+    assert turns[1].user == "second question"
 
 
 def test_resume_from_since_id(tmp_path):
@@ -71,7 +71,7 @@ def test_resume_from_since_id(tmp_path):
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
     turns = parse_new_turns(f, since_id="u1")
     assert len(turns) == 1
-    assert turns[0]["id"] == "u2"
+    assert turns[0].id == "u2"
 
 
 def test_since_id_not_found(tmp_path):
@@ -93,7 +93,7 @@ def test_skip_non_user_messages(tmp_path):
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
     turns = parse_new_turns(f)
     assert len(turns) == 1
-    assert turns[0]["id"] == "u1"
+    assert turns[0].id == "u1"
 
 
 def test_string_content(tmp_path):
@@ -103,8 +103,8 @@ def test_string_content(tmp_path):
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
     turns = parse_new_turns(f)
-    assert turns[0]["user"] == "plain string"
-    assert turns[0]["assistant"] == "plain reply"
+    assert turns[0].user == "plain string"
+    assert turns[0].assistant == "plain reply"
 
 
 def test_list_content(tmp_path):
@@ -123,8 +123,8 @@ def test_list_content(tmp_path):
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
     turns = parse_new_turns(f)
-    assert turns[0]["user"] == "part one part two"
-    assert turns[0]["assistant"] == "reply one reply two"
+    assert turns[0].user == "part one part two"
+    assert turns[0].assistant == "reply one reply two"
 
 
 def test_empty_content(tmp_path):
@@ -134,8 +134,8 @@ def test_empty_content(tmp_path):
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
     turns = parse_new_turns(f)
-    assert turns[0]["user"] == ""
-    assert turns[0]["assistant"] == ""
+    assert turns[0].user == ""
+    assert turns[0].assistant == ""
 
 
 def test_user_truncated_to_2000(tmp_path):
@@ -146,7 +146,7 @@ def test_user_truncated_to_2000(tmp_path):
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
     turns = parse_new_turns(f)
-    assert len(turns[0]["user"]) == 2000
+    assert len(turns[0].user) == 2000
 
 
 def test_assistant_truncated_to_3000(tmp_path):
@@ -157,4 +157,4 @@ def test_assistant_truncated_to_3000(tmp_path):
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
     turns = parse_new_turns(f)
-    assert len(turns[0]["assistant"]) == 3000
+    assert len(turns[0].assistant) == 3000

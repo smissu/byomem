@@ -1,10 +1,13 @@
+from __future__ import annotations
+
 import json
 from pathlib import Path
 
 from core.config import get_config
+from core.models import Turn
 
 
-def parse_new_turns(transcript: Path, since_id: str | None = None) -> list[dict]:
+def parse_new_turns(transcript: Path, since_id: str | None = None) -> list[Turn]:
     cfg = get_config()
     raw = transcript.read_text().strip()
     if not raw:
@@ -28,12 +31,12 @@ def parse_new_turns(transcript: Path, since_id: str | None = None) -> list[dict]
         processed.update(m["uuid"] for m in assistant_msgs)
         processed.add(msg["uuid"])
 
-        turns.append({
-            "id": msg["uuid"],
-            "timestamp": msg.get("timestamp", ""),
-            "user": _text(msg)[:cfg.user_message_max],
-            "assistant": " ".join(_text(m) for m in assistant_msgs)[:cfg.assistant_message_max],
-        })
+        turns.append(Turn(
+            id=msg["uuid"],
+            timestamp=msg.get("timestamp", ""),
+            user=_text(msg)[:cfg.user_message_max],
+            assistant=" ".join(_text(m) for m in assistant_msgs)[:cfg.assistant_message_max],
+        ))
 
     return turns
 
