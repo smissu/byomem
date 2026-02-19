@@ -23,6 +23,7 @@ from core.branch_manager import (
 )
 from core.memory_writer import maybe_update_main, maybe_update_project_memory
 from core.parser import parse_new_turns
+from core.search_index import index_file
 from core.summarizer import summarize_turn
 
 
@@ -71,10 +72,15 @@ def main():
 
             if summary.get("milestone"):
                 commit_milestone(branch, summary)
+                index_file(branch.commit_md, project)
 
             if summary.get("important"):
                 maybe_update_main(project, summary)
                 maybe_update_project_memory(cwd, summary)
+                from core.config import get_config
+                main_path = get_config().byomem / project / "main.md"
+                if main_path.exists():
+                    index_file(main_path, project)
 
             if summary.get("title") == "Session turn":
                 _log("summary_fallback_used", turn_id=turn["id"])

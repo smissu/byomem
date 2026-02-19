@@ -1,6 +1,7 @@
 """Integration tests for the full push loop (stop_hook.py)."""
 import io
 import json
+import sqlite3
 import sys
 
 from hooks.stop_hook import main
@@ -46,7 +47,7 @@ def _run_hook(session_id, transcript_path, cwd):
         sys.stdin = old_stdin
 
 
-def test_full_push_loop(tmp_byomem, tmp_path, mock_anthropic):
+def test_full_push_loop(tmp_byomem, tmp_path, mock_anthropic, mock_openai_embed):
     """Full push loop creates branch, writes log/commit/metadata/main/MEMORY."""
     session_jsonl = tmp_path / "session.jsonl"
     session_jsonl.write_text(_make_jsonl(
@@ -83,7 +84,7 @@ def test_full_push_loop(tmp_byomem, tmp_path, mock_anthropic):
     assert "[FIX]" in main_text
 
 
-def test_empty_transcript(tmp_byomem, tmp_path, mock_anthropic):
+def test_empty_transcript(tmp_byomem, tmp_path, mock_anthropic, mock_openai_embed):
     """Empty transcript writes no files."""
     session_jsonl = tmp_path / "session.jsonl"
     session_jsonl.write_text("")
@@ -102,7 +103,7 @@ def test_empty_transcript(tmp_byomem, tmp_path, mock_anthropic):
             assert log_text == ""
 
 
-def test_resume_loop(tmp_byomem, tmp_path, mock_anthropic):
+def test_resume_loop(tmp_byomem, tmp_path, mock_anthropic, mock_openai_embed):
     """Re-running the hook resumes from last processed turn — 3rd turn not re-processed."""
     session_jsonl = tmp_path / "session.jsonl"
     session_jsonl.write_text(_make_jsonl(
@@ -178,7 +179,7 @@ def test_no_milestone(tmp_byomem, tmp_path, mocker):
     assert not (tmp_byomem / "myproject" / "main.md").exists()
 
 
-def test_idempotent_rerun(tmp_byomem, tmp_path, mock_anthropic):
+def test_idempotent_rerun(tmp_byomem, tmp_path, mock_anthropic, mock_openai_embed):
     """Re-running stop hook on same transcript produces no duplicate entries."""
     session_jsonl = tmp_path / "session.jsonl"
     session_jsonl.write_text(_make_jsonl(
@@ -201,3 +202,115 @@ def test_idempotent_rerun(tmp_byomem, tmp_path, mock_anthropic):
     commit_text = (branch / "commit.md").read_text()
     # Only one commit block
     assert commit_text.count("## This Commit's Contribution") == 1
+
+
+def test_index_populated_after_push(tmp_byomem, tmp_path, mock_anthropic, mock_openai_embed):
+    """Stop hook populates search.db with commit.md and main.md chunks."""
+    from core.config import get_config
+
+    session_jsonl = tmp_path / "session.jsonl"
+    session_jsonl.write_text(_make_jsonl(
+        _user_msg("u1", "why is the stop price wrong?"),
+        _assistant_msg("a1", "The field is aux_price not stop_price.", "u1"),
+    ))
+    project_dir = tmp_path / "myproject"
+    project_dir.mkdir()
+
+    _run_hook("abc12345def67890", session_jsonl, project_dir)
+
+    cfg = get_config()
+    assert cfg.db_path.exists(), "search.db should be created"
+
+    db = sqlite3.connect(str(cfg.db_path))
+    files = db.execute("SELECT path FROM files").fetchall()
+    paths = [r[0] for r in files]
+    # Both commit.md and main.md should be indexed
+    assert any("commit.md" in p for p in paths)
+    assert any("main.md" in p for p in paths)
+
+    chunks = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+    assert chunks > 0
+    db.close()
+
+
+def test_search_after_push(tmp_byomem, tmp_path, mock_anthropic, mock_openai_embed):
+    """After stop hook, hybrid_search returns results from indexed content."""
+    from core.search_index import hybrid_search
+
+    session_jsonl = tmp_path / "session.jsonl"
+    session_jsonl.write_text(_make_jsonl(
+        _user_msg("u1", "stop price modification issue"),
+        _assistant_msg("a1", "The aux_price field is what you need.", "u1"),
+    ))
+    project_dir = tmp_path / "myproject"
+    project_dir.mkdir()
+
+    _run_hook("abc12345def67890", session_jsonl, project_dir)
+
+    # FTS5 keyword search should find "summary" in commit.md/main.md
+    # (mock summarizer returns "Test summary." which gets indexed)
+    results = hybrid_search("Test summary", project="myproject", min_score=0.0)
+    assert len(results) > 0
+
+
+def test_no_milestone_skips_index(tmp_byomem, tmp_path, mocker, mock_openai_embed):
+    """When milestone=False, commit.md is not indexed (it stays empty)."""
+    from core.config import get_config
+
+    mock = mocker.patch("core.summarizer.anthropic.Anthropic")
+    mock.return_value.messages.create.return_value.content = [
+        mocker.Mock(text=json.dumps({
+            "title": "Routine edit",
+            "summary": "Small change.",
+            "classification": "general",
+            "important": False,
+            "milestone": False,
+        }))
+    ]
+
+    session_jsonl = tmp_path / "session.jsonl"
+    session_jsonl.write_text(_make_jsonl(
+        _user_msg("u1", "minor edit"),
+        _assistant_msg("a1", "done", "u1"),
+    ))
+    project_dir = tmp_path / "myproject"
+    project_dir.mkdir()
+
+    _run_hook("abc12345def67890", session_jsonl, project_dir)
+
+    cfg = get_config()
+    # DB may or may not exist, but if it does, commit.md shouldn't be indexed
+    if cfg.db_path.exists():
+        db = sqlite3.connect(str(cfg.db_path))
+        files = db.execute("SELECT path FROM files").fetchall()
+        commit_paths = [r[0] for r in files if "commit.md" in r[0]]
+        assert len(commit_paths) == 0
+        db.close()
+
+
+def test_mcp_context_after_push(tmp_byomem, tmp_path, mock_anthropic, mock_openai_embed):
+    """MCP tools work after stop hook populates data."""
+    from mcp_server import mem_context, mem_latest, mem_show
+
+    session_jsonl = tmp_path / "session.jsonl"
+    session_jsonl.write_text(_make_jsonl(
+        _user_msg("u1", "important question"),
+        _assistant_msg("a1", "important answer", "u1"),
+    ))
+    project_dir = tmp_path / "myproject"
+    project_dir.mkdir()
+
+    _run_hook("abc12345def67890", session_jsonl, project_dir)
+
+    # mem_context bare should return project snapshot
+    ctx = mem_context(project="myproject")
+    assert "myproject" in ctx
+    assert "abc12345" in ctx
+
+    # mem_show should list the branch
+    show = mem_show(project="myproject")
+    assert "abc12345" in show
+
+    # mem_latest should return the commit
+    latest = mem_latest(project="myproject")
+    assert "abc12345" in latest

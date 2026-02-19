@@ -38,6 +38,16 @@ def sample_summary():
 
 
 @pytest.fixture
+def mock_openai_embed(mocker):
+    """Patch openai.OpenAI to return a fixed 1536-dim zero embedding."""
+    mock = mocker.patch("core.search_index.openai.OpenAI")
+    mock.return_value.embeddings.create.return_value.data = [
+        mocker.Mock(embedding=[0.0] * 1536)
+    ]
+    return mock
+
+
+@pytest.fixture
 def mock_anthropic(mocker):
     """Patch anthropic.Anthropic to return a fixed summarizer response."""
     import json
