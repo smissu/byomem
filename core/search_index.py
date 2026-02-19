@@ -245,9 +245,10 @@ def _get_embedding(db, text, text_hash):
         "SELECT embedding FROM embedding_cache WHERE text_hash=?", (text_hash,)
     ).fetchone()
     if row:
-        import sqlite_vec
+        import struct
 
-        return sqlite_vec.deserialize_float32(row[0])
+        blob = row[0]
+        return list(struct.unpack(f"{len(blob) // 4}f", blob))
     try:
         cfg = get_config()
         client_kwargs = {}

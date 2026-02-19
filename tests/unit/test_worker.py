@@ -85,6 +85,45 @@ def test_run_worker_processes_queue(tmp_path, tmp_byomem, mock_anthropic, mock_o
     assert len(list(project_dir.iterdir())) == 1
 
 
+def test_run_worker_writes_history(tmp_path, tmp_byomem, mock_anthropic, mock_openai_embed):
+    """Processing a job appends an entry to history.jsonl."""
+    transcript = _make_transcript(tmp_path)
+    job = _make_job(transcript)
+
+    enqueue(job)
+    run_worker()
+
+    history_path = tmp_byomem / "queue" / "history.jsonl"
+    assert history_path.exists()
+    lines = history_path.read_text().strip().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["session"] == "sess1234"
+    assert entry["model"] == "primary"
+    assert entry["status"] == "ok"
+    assert entry["duration_s"] >= 0
+
+
+def test_run_worker_logs_error(tmp_path, tmp_byomem, monkeypatch):
+    """Failed jobs are logged with status 'error'."""
+    transcript = _make_transcript(tmp_path)
+    job = _make_job(transcript)
+
+    def fail_process(job, *, model_override=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("core.worker.process_job", fail_process)
+
+    enqueue(job)
+    run_worker()
+
+    history_path = tmp_byomem / "queue" / "history.jsonl"
+    assert history_path.exists()
+    entry = json.loads(history_path.read_text().strip())
+    assert entry["status"] == "error"
+    assert entry["session"] == "sess1234"
+
+
 def test_run_worker_empty_queue(tmp_byomem):
     run_worker()  # Should not raise
 

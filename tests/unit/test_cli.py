@@ -7,6 +7,7 @@ from cli import (
     cmd_install,
     cmd_log,
     cmd_merge,
+    cmd_queue,
     cmd_reindex,
     cmd_search,
     cmd_show,
@@ -440,3 +441,67 @@ def test_health_detects_issues(tmp_settings, capsys, mock_openai_embed):
     cmd_health()
     captured = capsys.readouterr()
     assert "issues_found" in captured.out.lower() or "1" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# queue history
+# ---------------------------------------------------------------------------
+
+
+def _write_history(cfg, entries):
+    """Write history.jsonl with the given list of dicts."""
+    history_path = cfg.queue_path / "history.jsonl"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    history_path.write_text(
+        "\n".join(json.dumps(e) for e in entries) + "\n"
+    )
+
+
+def test_queue_shows_history(tmp_settings, capsys):
+    """Queue command displays recent history entries."""
+    cfg = get_config()
+    _write_history(cfg, [
+        {"ts": "2026-02-19T18:30:00", "session": "72a0d04b", "model": "primary", "duration_s": 1.23, "status": "ok"},
+        {"ts": "2026-02-19T18:31:00", "session": "abcd1234", "model": "qwen2.5:3b", "duration_s": 0.87, "status": "ok"},
+    ])
+    cmd_queue()
+    captured = capsys.readouterr()
+    assert "72a0d04b" in captured.out
+    assert "abcd1234" in captured.out
+    assert "primary" in captured.out
+    assert "1.23" in captured.out
+
+
+def test_queue_history_limit(tmp_settings, capsys):
+    """--history N limits to last N entries."""
+    cfg = get_config()
+    entries = [
+        {"ts": f"2026-02-19T18:{i:02d}:00", "session": f"sess{i:04d}", "model": "primary", "duration_s": 0.5, "status": "ok"}
+        for i in range(20)
+    ]
+    _write_history(cfg, entries)
+    cmd_queue(history=3)
+    captured = capsys.readouterr()
+    assert "sess0017" in captured.out
+    assert "sess0018" in captured.out
+    assert "sess0019" in captured.out
+    assert "sess0000" not in captured.out
+
+
+def test_queue_no_history_file(tmp_settings, capsys):
+    """No crash when history.jsonl doesn't exist."""
+    cmd_queue()
+    captured = capsys.readouterr()
+    assert "Worker:" in captured.out
+
+
+def test_queue_history_error_entries(tmp_settings, capsys):
+    """Error-status entries display correctly."""
+    cfg = get_config()
+    _write_history(cfg, [
+        {"ts": "2026-02-19T18:30:00", "session": "fail0001", "model": "primary", "duration_s": 0.10, "status": "error"},
+    ])
+    cmd_queue()
+    captured = capsys.readouterr()
+    assert "error" in captured.out
+    assert "fail0001" in captured.out

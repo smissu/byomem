@@ -370,7 +370,7 @@ def cmd_health(repair=False):
     return 0
 
 
-def cmd_queue(purge=False):
+def cmd_queue(purge=False, history=0):
     """Show queue status: pending, processing, and worker lock."""
     cfg = get_config()
     pending_dir = cfg.queue_path / "pending"
@@ -411,6 +411,28 @@ def cmd_queue(purge=False):
                 print("  Removed stale worker lock.")
     elif not purge and processing:
         print("\n  Stale processing files detected. Run with --purge to clean.")
+
+    # Show recent processing history
+    history_path = cfg.queue_path / "history.jsonl"
+    if history_path.exists():
+        lines = history_path.read_text().splitlines()
+        n = history if history > 0 else 10
+        recent = lines[-n:]
+        if recent:
+            print(f"\n  Recent history ({len(recent)}/{len(lines)}):")
+            print(f"  {'Timestamp':<20} {'Session':<10} {'Model':<10} {'Duration':>8}  {'Status'}")
+            print(f"  {'-'*19}  {'-'*9} {'-'*9} {'-'*8}  {'-'*6}")
+            for line in recent:
+                try:
+                    entry = json.loads(line)
+                    print(
+                        f"  {entry['ts']:<20} {entry['session']:<10} {entry['model']:<10} "
+                        f"{entry['duration_s']:>7.2f}s  {entry['status']}"
+                    )
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    elif history > 0:
+        print("\n  No processing history yet.")
 
     return 0
 
@@ -508,6 +530,7 @@ def main():
 
     p_queue = sub.add_parser("queue", help="Show queue status")
     p_queue.add_argument("--purge", action="store_true", help="Remove stale processing files")
+    p_queue.add_argument("--history", type=int, default=0, metavar="N", help="Show last N history entries (default: 10)")
 
     sub.add_parser("reindex", help="Rebuild the search index")
 
@@ -541,7 +564,7 @@ def main():
     elif args.command == "merge":
         sys.exit(cmd_merge(args.project, args.branch))
     elif args.command == "queue":
-        sys.exit(cmd_queue(purge=args.purge))
+        sys.exit(cmd_queue(purge=args.purge, history=args.history))
     elif args.command == "reindex":
         cmd_reindex()
     elif args.command == "stats":

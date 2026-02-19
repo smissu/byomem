@@ -6,8 +6,11 @@ OpenAI-compat) to help drain the queue faster.
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from core.config import get_config
@@ -90,15 +93,35 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
         lock_file.close()
 
 
+def _log_result(session_id: str, model: str, duration_s: float, status: str):
+    """Append one JSON line to the processing history log."""
+    cfg = get_config()
+    history_path = cfg.queue_path / "history.jsonl"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
+        "session": session_id[:8],
+        "model": model,
+        "duration_s": round(duration_s, 2),
+        "status": status,
+    }
+    with open(history_path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
 def _process_jobs(jobs, *, model_override: str | None = None):
     """Process a list of (job_file, job) tuples, completing each on success."""
+    model_label = model_override or "primary"
     for job_file, job in jobs:
+        t0 = time.monotonic()
         try:
-            logger.info("Processing job: %s (model=%s)", job.session_id, model_override or "primary")
+            logger.info("Processing job: %s (model=%s)", job.session_id, model_label)
             process_job(job, model_override=model_override)
             complete_job(job_file)
+            _log_result(job.session_id, model_label, time.monotonic() - t0, "ok")
         except Exception:
             logger.exception("Failed to process job %s", job.session_id)
+            _log_result(job.session_id, model_label, time.monotonic() - t0, "error")
 
 
 def run_worker():
