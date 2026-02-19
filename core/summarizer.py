@@ -122,13 +122,19 @@ def _ollama_api_url(cfg) -> str:
 # Single-turn summarization (backward compatible — returns dict)
 # ---------------------------------------------------------------------------
 
-def summarize_turn(turn) -> dict:
-    """Summarize a single turn. Accepts Turn model or dict. Returns dict."""
+def summarize_turn(turn, *, model_override: str | None = None) -> dict:
+    """Summarize a single turn. Accepts Turn model or dict. Returns dict.
+
+    If model_override is set, skips the native Ollama path and goes directly
+    to OpenAI-compat with the specified model (used by overflow worker).
+    """
     cfg = get_config()
     t = _coerce_turn(turn)
     user_content = _format_single(t, cfg)
     try:
         if cfg.summarizer_base_url:
+            if model_override:
+                return _summarize_openai_compat(cfg, user_content, model=model_override)
             try:
                 return _summarize_ollama_native(cfg, user_content)
             except Exception:
@@ -177,9 +183,9 @@ def _summarize_ollama_native(cfg, user_content: str) -> dict:
     return json.loads(_strip_fences(text))
 
 
-def _summarize_openai_compat(cfg, user_content: str) -> dict:
+def _summarize_openai_compat(cfg, user_content: str, *, model: str | None = None) -> dict:
     """OpenAI-compat fallback path (uses fallback_model if configured)."""
-    model = cfg.summarizer_fallback_model or cfg.summarizer_model
+    model = model or cfg.summarizer_fallback_model or cfg.summarizer_model
     client = openai.OpenAI(base_url=cfg.summarizer_base_url, api_key="ollama")
     resp = client.chat.completions.create(
         model=model,
@@ -196,11 +202,14 @@ def _summarize_openai_compat(cfg, user_content: str) -> dict:
 # Batch summarization
 # ---------------------------------------------------------------------------
 
-def summarize_batch(turns: list) -> list[TurnSummary]:
+def summarize_batch(turns: list, *, model_override: str | None = None) -> list[TurnSummary]:
     """Summarize multiple turns in a single LLM call.
 
     Returns a list of TurnSummary in the same order as the input turns.
     Falls back to sequential single-turn calls if batch parsing fails.
+
+    If model_override is set, skips the native Ollama path and goes directly
+    to OpenAI-compat with the specified model (used by overflow worker).
     """
     if not turns:
         return []
@@ -210,18 +219,21 @@ def summarize_batch(turns: list) -> list[TurnSummary]:
 
     try:
         if cfg.summarizer_base_url:
-            try:
-                batch_resp = _batch_ollama_native(cfg, user_content)
-                return _align_results(coerced, batch_resp)
-            except Exception:
-                logger.debug("Native Ollama batch failed, trying OpenAI-compat", exc_info=True)
-            batch_resp = _batch_openai_compat(cfg, user_content)
+            if model_override:
+                batch_resp = _batch_openai_compat(cfg, user_content, model=model_override)
+            else:
+                try:
+                    batch_resp = _batch_ollama_native(cfg, user_content)
+                    return _align_results(coerced, batch_resp)
+                except Exception:
+                    logger.debug("Native Ollama batch failed, trying OpenAI-compat", exc_info=True)
+                batch_resp = _batch_openai_compat(cfg, user_content)
         else:
             batch_resp = _batch_anthropic(cfg, user_content)
         return _align_results(coerced, batch_resp)
     except Exception:
         logger.debug("Batch parse failed, falling back to sequential", exc_info=True)
-        return _sequential_fallback(coerced)
+        return _sequential_fallback(coerced, model_override=model_override)
 
 
 def _batch_anthropic(cfg, user_content: str) -> BatchSummaryResponse:
@@ -265,12 +277,12 @@ def _batch_ollama_native(cfg, user_content: str) -> BatchSummaryResponse:
     return BatchSummaryResponse.model_validate_json(text)
 
 
-def _batch_openai_compat(cfg, user_content: str) -> BatchSummaryResponse:
+def _batch_openai_compat(cfg, user_content: str, *, model: str | None = None) -> BatchSummaryResponse:
     """OpenAI-compat fallback with 3-tier structured output strategy.
 
     Uses fallback_model if configured (for when primary is a thinking model).
     """
-    model = cfg.summarizer_fallback_model or cfg.summarizer_model
+    model = model or cfg.summarizer_fallback_model or cfg.summarizer_model
     client = openai.OpenAI(base_url=cfg.summarizer_base_url, api_key="ollama")
     messages = [
         {"role": "system", "content": BATCH_SYSTEM},
@@ -335,10 +347,12 @@ def _align_results(
     return results
 
 
-def _sequential_fallback(turns: list[Turn]) -> list[TurnSummary]:
+def _sequential_fallback(
+    turns: list[Turn], *, model_override: str | None = None,
+) -> list[TurnSummary]:
     """Fall back to one-at-a-time summarization when batch fails."""
     results: list[TurnSummary] = []
     for t in turns:
-        raw = summarize_turn(t)
+        raw = summarize_turn(t, model_override=model_override)
         results.append(TurnSummary(**raw))
     return results

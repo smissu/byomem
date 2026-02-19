@@ -106,3 +106,148 @@ def test_run_worker_skips_if_locked(tmp_path, tmp_byomem, mock_anthropic, mock_o
     assert job_path.exists()
     # No branches should have been created
     assert not (tmp_byomem / "testproject" / "branches").exists()
+
+
+# ---------------------------------------------------------------------------
+# Overflow worker tests
+# ---------------------------------------------------------------------------
+
+def _enqueue_jobs(tmp_path, n, tmp_byomem):
+    """Enqueue n jobs with unique transcripts."""
+    paths = []
+    for i in range(n):
+        transcript = tmp_path / f"transcript_{i}.jsonl"
+        transcript.write_text(
+            _make_jsonl(
+                _user_msg(f"uuid-user-{i:03d}", f"Question {i}"),
+                _assistant_msg(f"uuid-asst-{i:03d}", f"Answer {i}", f"uuid-user-{i:03d}"),
+            )
+        )
+        job = QueueJob(
+            session_id=f"sess{i:04d}ab",
+            transcript_path=str(transcript),
+            cwd=f"/tmp/project{i}",
+            created_at="2026-02-19T10:00:00",
+        )
+        paths.append(enqueue(job))
+    return paths
+
+
+def test_overflow_splits_jobs_above_threshold(
+    tmp_path, tmp_byomem_ollama, monkeypatch,
+):
+    """When queue depth >= overflow_threshold, work is split across two threads."""
+    from core.config import Config
+
+    test_config = Config(
+        byomem=tmp_byomem_ollama,
+        summarizer_model="qwen3:4b",
+        summarizer_fallback_model="qwen2.5:3b",
+        summarizer_base_url="http://localhost:11434/v1",
+        overflow_threshold=2,
+    )
+    monkeypatch.setattr("core.config._config", test_config)
+
+    # Mock process_job to just track calls (no real processing)
+    overrides_seen = []
+
+    def fake_process(job, *, model_override=None):
+        overrides_seen.append(model_override)
+
+    monkeypatch.setattr("core.worker.process_job", fake_process)
+
+    _enqueue_jobs(tmp_path, 4, tmp_byomem_ollama)
+    run_worker()
+
+    # Should have seen both None (primary) and "qwen2.5:3b" (overflow)
+    assert None in overrides_seen, f"Primary worker didn't run: {overrides_seen}"
+    assert "qwen2.5:3b" in overrides_seen, f"Overflow worker didn't run: {overrides_seen}"
+    assert len(overrides_seen) == 4
+
+
+def test_no_overflow_below_threshold(
+    tmp_path, tmp_byomem_ollama, monkeypatch,
+):
+    """When queue depth < overflow_threshold, all jobs use primary model."""
+    from core.config import Config
+
+    test_config = Config(
+        byomem=tmp_byomem_ollama,
+        summarizer_model="qwen3:4b",
+        summarizer_fallback_model="qwen2.5:3b",
+        summarizer_base_url="http://localhost:11434/v1",
+        overflow_threshold=10,  # threshold higher than job count
+    )
+    monkeypatch.setattr("core.config._config", test_config)
+
+    overrides_seen = []
+
+    def fake_process(job, *, model_override=None):
+        overrides_seen.append(model_override)
+
+    monkeypatch.setattr("core.worker.process_job", fake_process)
+
+    _enqueue_jobs(tmp_path, 3, tmp_byomem_ollama)
+    run_worker()
+
+    # All should be None (primary model, no overflow)
+    assert all(o is None for o in overrides_seen), f"Unexpected overflow: {overrides_seen}"
+    assert len(overrides_seen) == 3
+
+
+def test_no_overflow_without_fallback_model(
+    tmp_path, tmp_byomem, monkeypatch,
+):
+    """Without fallback_model configured, overflow is never triggered."""
+    from core.config import Config
+
+    test_config = Config(
+        byomem=tmp_byomem,
+        overflow_threshold=2,
+    )
+    monkeypatch.setattr("core.config._config", test_config)
+
+    overrides_seen = []
+
+    def fake_process(job, *, model_override=None):
+        overrides_seen.append(model_override)
+
+    monkeypatch.setattr("core.worker.process_job", fake_process)
+
+    _enqueue_jobs(tmp_path, 4, tmp_byomem)
+    run_worker()
+
+    # All None — overflow disabled because no fallback_model
+    assert all(o is None for o in overrides_seen)
+    assert len(overrides_seen) == 4
+
+
+def test_overflow_even_split(
+    tmp_path, tmp_byomem_ollama, monkeypatch,
+):
+    """Overflow splits at midpoint: 3 primary + 3 overflow for 6 jobs."""
+    from core.config import Config
+
+    test_config = Config(
+        byomem=tmp_byomem_ollama,
+        summarizer_model="qwen3:4b",
+        summarizer_fallback_model="qwen2.5:3b",
+        summarizer_base_url="http://localhost:11434/v1",
+        overflow_threshold=2,
+    )
+    monkeypatch.setattr("core.config._config", test_config)
+
+    overrides_seen = []
+
+    def fake_process(job, *, model_override=None):
+        overrides_seen.append(model_override)
+
+    monkeypatch.setattr("core.worker.process_job", fake_process)
+
+    _enqueue_jobs(tmp_path, 6, tmp_byomem_ollama)
+    run_worker()
+
+    primary_count = overrides_seen.count(None)
+    overflow_count = overrides_seen.count("qwen2.5:3b")
+    assert primary_count == 3, f"Expected 3 primary, got {primary_count}"
+    assert overflow_count == 3, f"Expected 3 overflow, got {overflow_count}"

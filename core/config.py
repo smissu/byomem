@@ -31,6 +31,7 @@ class Config:
     log_user_prefix: int = 300
     log_assistant_prefix: int = 600
     batch_size: int = 6
+    overflow_threshold: int = 4
     settings_path: Path = field(
         default_factory=lambda: Path.home() / ".claude" / "settings.json"
     )
@@ -86,6 +87,8 @@ def _load_config() -> Config:
     queue = data.get("queue", {})
     if "batch_size" in queue:
         kwargs["batch_size"] = queue["batch_size"]
+    if "overflow_threshold" in queue:
+        kwargs["overflow_threshold"] = queue["overflow_threshold"]
 
     truncation = data.get("truncation", {})
     for key in ("user_message_max", "assistant_message_max", "log_user_prefix", "log_assistant_prefix"):

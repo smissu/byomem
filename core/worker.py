@@ -1,7 +1,13 @@
-"""Background worker that processes queued jobs."""
+"""Background worker that processes queued jobs.
+
+Supports dynamic overflow: when queue depth >= overflow_threshold,
+spawns a second thread using the fallback model (qwen2.5:3b via
+OpenAI-compat) to help drain the queue faster.
+"""
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 from core.config import get_config
@@ -11,8 +17,12 @@ from core.queue import acquire_worker_lock, claim_pending, complete_job, release
 logger = logging.getLogger("byomem.worker")
 
 
-def process_job(job: QueueJob):
-    """Process a single queue job — the heavy lifting previously in stop_hook._process."""
+def process_job(job: QueueJob, *, model_override: str | None = None):
+    """Process a single queue job — the heavy lifting previously in stop_hook._process.
+
+    If model_override is set, uses that model via OpenAI-compat instead of
+    the native Ollama path (used by overflow worker for non-thinking models).
+    """
     import fcntl
 
     from core.branch_manager import (
@@ -54,7 +64,7 @@ def process_job(job: QueueJob):
         all_summaries = []
         for i in range(0, len(new_turns), batch_size):
             batch = new_turns[i:i + batch_size]
-            all_summaries.extend(summarize_batch(batch))
+            all_summaries.extend(summarize_batch(batch, model_override=model_override))
 
         # Apply summaries to branch
         for turn, summary in zip(new_turns, all_summaries):
@@ -80,8 +90,24 @@ def process_job(job: QueueJob):
         lock_file.close()
 
 
+def _process_jobs(jobs, *, model_override: str | None = None):
+    """Process a list of (job_file, job) tuples, completing each on success."""
+    for job_file, job in jobs:
+        try:
+            logger.info("Processing job: %s (model=%s)", job.session_id, model_override or "primary")
+            process_job(job, model_override=model_override)
+            complete_job(job_file)
+        except Exception:
+            logger.exception("Failed to process job %s", job.session_id)
+
+
 def run_worker():
-    """Main worker loop: acquire lock, process all pending jobs, release lock."""
+    """Main worker loop: acquire lock, process all pending jobs, release lock.
+
+    If pending jobs >= overflow_threshold and a fallback_model is configured,
+    splits the work: primary thread uses the native Ollama path (qwen3:4b),
+    overflow thread uses the fallback model via OpenAI-compat (qwen2.5:3b).
+    """
     if not acquire_worker_lock():
         logger.info("Another worker is running, exiting")
         return
@@ -92,12 +118,42 @@ def run_worker():
             logger.info("No pending jobs")
             return
 
-        for job_file, job in pending:
-            try:
-                logger.info("Processing job: %s", job.session_id)
-                process_job(job)
-                complete_job(job_file)
-            except Exception:
-                logger.exception("Failed to process job %s", job.session_id)
+        cfg = get_config()
+        use_overflow = (
+            len(pending) >= cfg.overflow_threshold
+            and cfg.summarizer_fallback_model
+            and cfg.summarizer_base_url
+        )
+
+        if use_overflow:
+            mid = len(pending) // 2
+            primary_jobs = pending[:mid]
+            overflow_jobs = pending[mid:]
+
+            logger.info(
+                "Queue depth %d >= threshold %d, splitting: %d primary + %d overflow (%s)",
+                len(pending), cfg.overflow_threshold,
+                len(primary_jobs), len(overflow_jobs), cfg.summarizer_fallback_model,
+            )
+
+            overflow_thread = threading.Thread(
+                target=_process_jobs,
+                kwargs={
+                    "jobs": overflow_jobs,
+                    "model_override": cfg.summarizer_fallback_model,
+                },
+                name="overflow-worker",
+                daemon=True,
+            )
+            overflow_thread.start()
+
+            # Primary processes its share
+            _process_jobs(primary_jobs)
+
+            overflow_thread.join(timeout=120)
+            if overflow_thread.is_alive():
+                logger.warning("Overflow thread timed out after 120s")
+        else:
+            _process_jobs(pending)
     finally:
         release_worker_lock()
