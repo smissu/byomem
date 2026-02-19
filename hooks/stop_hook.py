@@ -107,18 +107,19 @@ def main():
     if pid2 > 0:
         os._exit(0)
 
-    # Grandchild: redirect stdio and do the work
-    sys.stdin.close()
-    devnull = open(os.devnull, "w")
-    sys.stdout = devnull
-    sys.stderr = devnull
+    # Grandchild: close inherited file descriptors so CC's pipes close
+    # This is what actually unblocks CC — Python sys.* redirects aren't enough
+    devnull_fd = os.open(os.devnull, os.O_RDWR)
+    os.dup2(devnull_fd, 0)  # stdin
+    os.dup2(devnull_fd, 1)  # stdout
+    os.dup2(devnull_fd, 2)  # stderr
+    os.close(devnull_fd)
 
     try:
         _process(session_id, transcript, cwd)
     except Exception:
         pass  # Best-effort — don't crash orphaned process
     finally:
-        devnull.close()
         os._exit(0)
 
 
