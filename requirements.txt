@@ -1,0 +1,12 @@
+anthropic
+pyyaml
+rich
+mcp
+sqlite-vec
+openai
+
+# dev
+pytest
+pytest-asyncio
+pytest-mock
+ruff
