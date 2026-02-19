@@ -230,6 +230,146 @@ def cmd_merge(project, branch):
     return 0
 
 
+def cmd_gc(project="", days=90, dry_run=False, reindex=False):
+    """Garbage-collect merged branches older than --days."""
+    cfg = get_config()
+
+    # Determine projects to scan
+    if project:
+        projects = [project]
+    else:
+        projects = sorted(
+            d.name for d in cfg.byomem.iterdir()
+            if d.is_dir() and not d.name.startswith(".")
+            and ((d / "branches").exists() or (d / "main.md").exists())
+        )
+
+    from core.branch_manager import delete_branch, list_branches
+
+    total_deleted = 0
+    total_freed = 0
+
+    for proj in projects:
+        branches = list_branches(proj, status="merged", older_than_days=days)
+        if not branches:
+            continue
+
+        print(f"\n{proj}:")
+        for b in branches:
+            age_str = f"{b['age_days']}d old" if b['age_days'] is not None else "unknown age"
+            size_str = f"{b['size_bytes'] / 1024:.0f} KB"
+
+            if dry_run:
+                print(f"  [dry-run] would delete {b['name']} ({age_str}, {size_str})")
+            else:
+                # Delete from search index first
+                try:
+                    from core.search_index import delete_indexed_prefix
+                    rel_prefix = f"{proj}/branches/{b['name']}/"
+                    delete_indexed_prefix(rel_prefix)
+                except ImportError:
+                    pass
+
+                delete_branch(proj, b['name'])
+                print(f"  deleted {b['name']} ({age_str}, {size_str})")
+
+            total_deleted += 1
+            total_freed += b['size_bytes']
+
+    if not dry_run and total_deleted > 0:
+        # Clean up orphaned entries
+        try:
+            from core.search_index import cleanup_orphaned_entries
+            orphaned = cleanup_orphaned_entries()
+            if orphaned:
+                print(f"\nCleaned {orphaned} orphaned search index entries.")
+        except ImportError:
+            pass
+
+    if total_deleted == 0:
+        print("Nothing to clean up.")
+    else:
+        action = "Would delete" if dry_run else "Deleted"
+        print(f"\n{action} {total_deleted} branch(es), ~{total_freed / 1024:.0f} KB freed.")
+
+    if reindex and not dry_run and total_deleted > 0:
+        print("Rebuilding search index...")
+        cmd_reindex()
+
+    return 0
+
+
+def cmd_stats(project="", fmt="text"):
+    """Show project statistics."""
+    from core.reporting import compute_global_stats, compute_project_stats
+
+    if project:
+        stats = compute_project_stats(project)
+        if fmt == "json":
+            import json as json_mod
+            print(json_mod.dumps(stats, indent=2, default=str))
+            return 0
+
+        print(f"\n  {project}")
+        print(f"  Branches: {stats['branches_total']} ({stats['branches_active']} active, {stats['branches_merged']} merged)")
+        if stats["type_distribution"]:
+            types = ", ".join(f"{k}: {v}" for k, v in stats["type_distribution"].items())
+            print(f"  Types: {types}")
+        if stats["newest_branch"]:
+            print(f"  Newest: {stats['newest_branch']}")
+            print(f"  Oldest: {stats['oldest_branch']}")
+        print(f"  Disk: {stats['disk_usage_bytes'] / 1024:.0f} KB")
+        print(f"  main.md: {'yes' if stats['has_main'] else 'no'}")
+    else:
+        gstats = compute_global_stats()
+        if fmt == "json":
+            import json as json_mod
+            print(json_mod.dumps(gstats, indent=2, default=str))
+            return 0
+
+        print(f"\n  Projects: {gstats['total_projects']}")
+        print(f"  Total branches: {gstats['total_branches']}")
+        print(f"  Total disk: {gstats['total_disk_bytes'] / 1024:.0f} KB")
+        idx = gstats["search_index"]
+        print(f"  Search index: {idx['files_count']} files, {idx['chunks_count']} chunks, {idx['db_size_bytes'] / 1024:.0f} KB")
+
+        if gstats["projects"]:
+            print("\n  Per project:")
+            for ps in gstats["projects"]:
+                print(f"    {ps['project']}: {ps['branches_total']} branches, {ps['disk_usage_bytes'] / 1024:.0f} KB")
+
+    return 0
+
+
+def cmd_health(repair=False):
+    """Check index health and optionally repair."""
+    from core.reporting import check_index_health
+
+    health = check_index_health()
+
+    print(f"\n  Status: {health['status']}")
+    print(f"  Orphaned index entries: {health['orphaned_files']}")
+    print(f"  Missing metadata: {len(health['missing_metadata'])}")
+
+    if health["missing_metadata"]:
+        for path in health["missing_metadata"]:
+            print(f"    - {path}")
+
+    if health["issues"]:
+        for issue in health["issues"]:
+            print(f"  Issue: {issue}")
+
+    if repair and health["orphaned_files"] > 0:
+        try:
+            from core.search_index import cleanup_orphaned_entries
+            removed = cleanup_orphaned_entries()
+            print(f"\n  Repaired: removed {removed} orphaned entries.")
+        except ImportError:
+            print("  Could not import search index for repair.")
+
+    return 0
+
+
 def cmd_reindex():
     """Rebuild the search index from all commit.md and main.md files."""
     cfg = get_config()
@@ -323,6 +463,19 @@ def main():
 
     sub.add_parser("reindex", help="Rebuild the search index")
 
+    p_stats = sub.add_parser("stats", help="Show project statistics")
+    p_stats.add_argument("--project", default="", help="Show stats for one project")
+    p_stats.add_argument("--format", default="text", choices=["text", "json"], help="Output format")
+
+    p_health = sub.add_parser("health", help="Check index health")
+    p_health.add_argument("--repair", action="store_true", help="Fix orphaned entries")
+
+    p_gc = sub.add_parser("gc", help="Garbage-collect old merged branches")
+    p_gc.add_argument("--project", default="", help="Limit to one project")
+    p_gc.add_argument("--days", type=int, default=90, help="Delete merged branches older than N days (default: 90)")
+    p_gc.add_argument("--dry-run", action="store_true", help="Show what would be deleted")
+    p_gc.add_argument("--reindex", action="store_true", help="Rebuild search index after cleanup")
+
     args = parser.parse_args()
 
     if args.command == "install":
@@ -341,6 +494,12 @@ def main():
         sys.exit(cmd_merge(args.project, args.branch))
     elif args.command == "reindex":
         cmd_reindex()
+    elif args.command == "stats":
+        sys.exit(cmd_stats(project=args.project, fmt=args.format))
+    elif args.command == "health":
+        sys.exit(cmd_health(repair=args.repair))
+    elif args.command == "gc":
+        sys.exit(cmd_gc(project=args.project, days=args.days, dry_run=args.dry_run, reindex=args.reindex))
     else:
         parser.print_help()
 

@@ -21,6 +21,12 @@ class Config:
     min_score: float = 0.35
     vector_weight: float = 0.7
     keyword_weight: float = 0.3
+    candidate_multiplier: int = 4
+    approx_chars_per_token: int = 4
+    user_message_max: int = 2000
+    assistant_message_max: int = 3000
+    log_user_prefix: int = 300
+    log_assistant_prefix: int = 600
     settings_path: Path = field(
         default_factory=lambda: Path.home() / ".claude" / "settings.json"
     )
@@ -58,9 +64,15 @@ def _load_config() -> Config:
 
     memory = data.get("memory", {})
     for key in ("chunk_tokens", "chunk_overlap", "max_results", "min_score",
-                "vector_weight", "keyword_weight"):
+                "vector_weight", "keyword_weight",
+                "candidate_multiplier", "approx_chars_per_token"):
         if key in memory:
             kwargs[key] = memory[key]
+
+    truncation = data.get("truncation", {})
+    for key in ("user_message_max", "assistant_message_max", "log_user_prefix", "log_assistant_prefix"):
+        if key in truncation:
+            kwargs[key] = truncation[key]
 
     if "settings_path" in data:
         kwargs["settings_path"] = Path(data["settings_path"])

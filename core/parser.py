@@ -1,8 +1,11 @@
 import json
 from pathlib import Path
 
+from core.config import get_config
+
 
 def parse_new_turns(transcript: Path, since_id: str | None = None) -> list[dict]:
+    cfg = get_config()
     raw = transcript.read_text().strip()
     if not raw:
         return []
@@ -28,8 +31,8 @@ def parse_new_turns(transcript: Path, since_id: str | None = None) -> list[dict]
         turns.append({
             "id": msg["uuid"],
             "timestamp": msg.get("timestamp", ""),
-            "user": _text(msg)[:2000],
-            "assistant": " ".join(_text(m) for m in assistant_msgs)[:3000],
+            "user": _text(msg)[:cfg.user_message_max],
+            "assistant": " ".join(_text(m) for m in assistant_msgs)[:cfg.assistant_message_max],
         })
 
     return turns

@@ -248,6 +248,72 @@ def mem_list_projects() -> str:
     return out
 
 
+@mcp.tool()
+def mem_stats(project: str = "") -> str:
+    """Project statistics — branch counts, types, ages, disk usage."""
+    from core.reporting import compute_global_stats, compute_project_stats
+
+    if project:
+        stats = compute_project_stats(project)
+        out = f"## {project} Stats\n\n"
+        out += "| Metric | Value |\n|--------|-------|\n"
+        out += f"| Branches | {stats['branches_total']} ({stats['branches_active']} active, {stats['branches_merged']} merged) |\n"
+        if stats["type_distribution"]:
+            types = ", ".join(f"{k}: {v}" for k, v in stats["type_distribution"].items())
+            out += f"| Types | {types} |\n"
+        if stats["newest_branch"]:
+            out += f"| Newest | {stats['newest_branch']} |\n"
+            out += f"| Oldest | {stats['oldest_branch']} |\n"
+        out += f"| Disk | {stats['disk_usage_bytes'] / 1024:.0f} KB |\n"
+        out += f"| main.md | {'yes' if stats['has_main'] else 'no'} |\n"
+        return out
+
+    gstats = compute_global_stats()
+    out = "## Global Stats\n\n"
+    out += "| Metric | Value |\n|--------|-------|\n"
+    out += f"| Projects | {gstats['total_projects']} |\n"
+    out += f"| Total branches | {gstats['total_branches']} |\n"
+    out += f"| Total disk | {gstats['total_disk_bytes'] / 1024:.0f} KB |\n"
+    idx = gstats["search_index"]
+    out += f"| Index files | {idx['files_count']} |\n"
+    out += f"| Index chunks | {idx['chunks_count']} |\n"
+    out += f"| Index size | {idx['db_size_bytes'] / 1024:.0f} KB |\n"
+
+    if gstats["projects"]:
+        out += "\n### Per Project\n\n"
+        for ps in gstats["projects"]:
+            out += f"- **{ps['project']}**: {ps['branches_total']} branches, {ps['disk_usage_bytes'] / 1024:.0f} KB\n"
+
+    return out
+
+
+@mcp.tool()
+def mem_health_check() -> str:
+    """Check search index integrity and report issues."""
+    from core.reporting import check_index_health
+
+    health = check_index_health()
+
+    out = f"## Index Health: {health['status']}\n\n"
+    out += f"- Orphaned index entries: {health['orphaned_files']}\n"
+    out += f"- Branches missing metadata: {len(health['missing_metadata'])}\n"
+
+    if health["missing_metadata"]:
+        out += "\n### Missing Metadata\n"
+        for path in health["missing_metadata"]:
+            out += f"- {path}\n"
+
+    if health["issues"]:
+        out += "\n### Issues\n"
+        for issue in health["issues"]:
+            out += f"- {issue}\n"
+
+    if health["status"] == "issues_found":
+        out += "\nRun `byomem health --repair` to fix orphaned entries.\n"
+
+    return out
+
+
 def _branch_summary(branch_dir: Path) -> str:
     """Extract summary line from a branch's metadata.md."""
     meta = branch_dir / "metadata.md"

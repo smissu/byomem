@@ -2,10 +2,12 @@
 from mcp_server import (
     mem_context,
     mem_get,
+    mem_health_check,
     mem_latest,
     mem_list_projects,
     mem_search,
     mem_show,
+    mem_stats,
 )
 
 # ---------- mem_context ----------
@@ -192,3 +194,55 @@ def test_mem_list_projects_empty(tmp_byomem):
     """mem_list_projects with no projects returns empty message."""
     result = mem_list_projects()
     assert "no projects" in result.lower() or result.strip() != ""
+
+
+# ---------- mem_stats ----------
+
+
+def test_mem_stats_with_project(tmp_byomem):
+    """mem_stats returns project statistics."""
+    proj = tmp_byomem / "myproject" / "branches"
+    proj.mkdir(parents=True)
+    b = proj / "2026-02-19-abc12345"
+    b.mkdir()
+    (b / "metadata.md").write_text("status: active\ntype: fix\n")
+    (b / "commit.md").write_text("content")
+
+    result = mem_stats(project="myproject")
+    assert "myproject" in result
+    assert "1" in result  # branch count
+
+
+def test_mem_stats_global(tmp_byomem):
+    """mem_stats without project returns global stats."""
+    proj = tmp_byomem / "proj" / "branches"
+    proj.mkdir(parents=True)
+    b = proj / "2026-02-19-abc"
+    b.mkdir()
+    (b / "metadata.md").write_text("status: active\n")
+
+    result = mem_stats()
+    assert "Global" in result or "project" in result.lower()
+
+
+# ---------- mem_health_check ----------
+
+
+def test_mem_health_check_clean(tmp_byomem):
+    """mem_health_check reports healthy on clean state."""
+    result = mem_health_check()
+    assert "healthy" in result.lower()
+
+
+def test_mem_health_check_issues(tmp_byomem, mock_openai_embed):
+    """mem_health_check reports orphaned entries."""
+    proj = tmp_byomem / "proj"
+    proj.mkdir(parents=True)
+    f = proj / "doc.md"
+    f.write_text("orphan me")
+    from core.search_index import index_file
+    index_file(f, project="proj")
+    f.unlink()
+
+    result = mem_health_check()
+    assert "issues_found" in result.lower() or "1" in result

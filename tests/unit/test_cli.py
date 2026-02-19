@@ -2,12 +2,15 @@
 import json
 
 from cli import (
+    cmd_gc,
+    cmd_health,
     cmd_install,
     cmd_log,
     cmd_merge,
     cmd_reindex,
     cmd_search,
     cmd_show,
+    cmd_stats,
     cmd_status,
     cmd_uninstall,
 )
@@ -296,3 +299,144 @@ def test_reindex_empty(tmp_settings, mock_openai_embed, capsys):
     cmd_reindex()
     captured = capsys.readouterr()
     assert "0 file" in captured.out.lower()
+
+
+# ---------------------------------------------------------------------------
+# gc
+# ---------------------------------------------------------------------------
+
+
+def test_gc_dry_run(tmp_settings, capsys):
+    """--dry-run shows what would be deleted without deleting."""
+    cfg = get_config()
+    proj = cfg.byomem / "myproject" / "branches" / "2020-01-01-abc12345"
+    proj.mkdir(parents=True)
+    (proj / "metadata.md").write_text("status: merged\n")
+    (proj / "commit.md").write_text("content")
+
+    cmd_gc(project="myproject", days=0, dry_run=True)
+    captured = capsys.readouterr()
+    assert "dry-run" in captured.out.lower()
+    assert "2020-01-01-abc12345" in captured.out
+    # Directory still exists
+    assert proj.exists()
+
+
+def test_gc_deletes_merged(tmp_settings, capsys):
+    """Deletes merged branches older than --days."""
+    cfg = get_config()
+    proj = cfg.byomem / "myproject" / "branches" / "2020-01-01-abc12345"
+    proj.mkdir(parents=True)
+    (proj / "metadata.md").write_text("status: merged\n")
+    (proj / "commit.md").write_text("content")
+
+    cmd_gc(project="myproject", days=0)
+    assert not proj.exists()
+    captured = capsys.readouterr()
+    assert "deleted" in captured.out.lower() or "1 branch" in captured.out.lower()
+
+
+def test_gc_preserves_active(tmp_settings, capsys):
+    """Active branches are not deleted."""
+    cfg = get_config()
+    proj = cfg.byomem / "myproject" / "branches" / "2020-01-01-abc12345"
+    proj.mkdir(parents=True)
+    (proj / "metadata.md").write_text("status: active\n")
+    (proj / "commit.md").write_text("content")
+
+    cmd_gc(project="myproject", days=0)
+    assert proj.exists()
+
+
+def test_gc_respects_project_filter(tmp_settings, capsys):
+    """--project limits GC to one project."""
+    cfg = get_config()
+    for p in ["projA", "projB"]:
+        d = cfg.byomem / p / "branches" / "2020-01-01-abc12345"
+        d.mkdir(parents=True)
+        (d / "metadata.md").write_text("status: merged\n")
+        (d / "commit.md").write_text("content")
+
+    cmd_gc(project="projA", days=0)
+    assert not (cfg.byomem / "projA" / "branches" / "2020-01-01-abc12345").exists()
+    assert (cfg.byomem / "projB" / "branches" / "2020-01-01-abc12345").exists()
+
+
+def test_gc_nothing_to_clean(tmp_settings, capsys):
+    """No matching branches produces clean message."""
+    cmd_gc(project="nonexistent", days=0)
+    captured = capsys.readouterr()
+    assert "nothing" in captured.out.lower()
+
+
+# ---------------------------------------------------------------------------
+# stats
+# ---------------------------------------------------------------------------
+
+
+def test_stats_with_project(tmp_settings, capsys):
+    """Shows stats for a specific project."""
+    cfg = get_config()
+    proj = cfg.byomem / "myproject" / "branches" / "2026-02-19-abc12345"
+    proj.mkdir(parents=True)
+    (proj / "metadata.md").write_text("status: active\ntype: fix\n")
+    (proj / "commit.md").write_text("content")
+
+    cmd_stats(project="myproject")
+    captured = capsys.readouterr()
+    assert "myproject" in captured.out
+    assert "1" in captured.out  # branch count
+
+
+def test_stats_global(tmp_settings, capsys):
+    """Shows global stats."""
+    cfg = get_config()
+    proj = cfg.byomem / "proj" / "branches" / "2026-02-19-abc"
+    proj.mkdir(parents=True)
+    (proj / "metadata.md").write_text("status: active\n")
+
+    cmd_stats()
+    captured = capsys.readouterr()
+    assert "project" in captured.out.lower()
+
+
+def test_stats_json_format(tmp_settings, capsys):
+    """--format json outputs valid JSON."""
+    import json
+    cfg = get_config()
+    proj = cfg.byomem / "myproject" / "branches" / "2026-02-19-abc"
+    proj.mkdir(parents=True)
+    (proj / "metadata.md").write_text("status: active\n")
+
+    cmd_stats(project="myproject", fmt="json")
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["project"] == "myproject"
+
+
+# ---------------------------------------------------------------------------
+# health
+# ---------------------------------------------------------------------------
+
+
+def test_health_clean(tmp_settings, capsys):
+    """Health check on clean state reports healthy."""
+    cmd_health()
+    captured = capsys.readouterr()
+    assert "healthy" in captured.out.lower()
+
+
+def test_health_detects_issues(tmp_settings, capsys, mock_openai_embed):
+    """Health check detects orphaned entries."""
+    cfg = get_config()
+    proj = cfg.byomem / "proj"
+    proj.mkdir(parents=True)
+    f = proj / "doc.md"
+    f.write_text("orphan me")
+    from core.search_index import index_file
+    index_file(f, project="proj")
+    f.unlink()
+
+    cmd_health()
+    captured = capsys.readouterr()
+    assert "issues_found" in captured.out.lower() or "1" in captured.out

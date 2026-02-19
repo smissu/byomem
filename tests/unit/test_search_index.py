@@ -1,6 +1,8 @@
 """Tests for core/search_index.py — hybrid FTS5 + sqlite-vec search index."""
 from core.search_index import (
     _chunk_text,
+    cleanup_orphaned_entries,
+    delete_indexed_prefix,
     get_db,
     hybrid_search,
     index_file,
@@ -210,3 +212,65 @@ def test_empty_db_returns_empty(tmp_byomem):
     """hybrid_search on empty DB returns []."""
     results = hybrid_search("anything", min_score=0.0)
     assert results == []
+
+
+# ---------- delete_indexed_prefix / cleanup_orphaned_entries ----------
+
+
+def test_delete_indexed_prefix(tmp_byomem, mock_openai_embed):
+    """Deletes all indexed data matching a path prefix."""
+    proj = tmp_byomem / "proj" / "branches" / "2026-02-19-abc"
+    proj.mkdir(parents=True)
+    f = proj / "commit.md"
+    f.write_text("some indexed content")
+    index_file(f, project="proj")
+
+    # Also index a file NOT under that prefix
+    other = tmp_byomem / "proj"
+    other_f = other / "main.md"
+    other_f.write_text("main content here")
+    index_file(other_f, project="proj")
+
+    count = delete_indexed_prefix("proj/branches/2026-02-19-abc/")
+    assert count == 1
+
+    db = get_db()
+    # Branch file gone
+    remaining = db.execute("SELECT path FROM files").fetchall()
+    paths = [r[0] for r in remaining]
+    assert not any("2026-02-19-abc" in p for p in paths)
+    # Main.md still there
+    assert any("main.md" in p for p in paths)
+
+
+def test_cleanup_orphaned_entries(tmp_byomem, mock_openai_embed):
+    """Removes entries for files that no longer exist on disk."""
+    proj = tmp_byomem / "proj"
+    proj.mkdir(parents=True)
+    f = proj / "doc.md"
+    f.write_text("will be orphaned")
+    index_file(f, project="proj")
+
+    # Delete the file but leave index entries
+    f.unlink()
+
+    removed = cleanup_orphaned_entries()
+    assert removed == 1
+
+    db = get_db()
+    assert db.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
+
+
+def test_cleanup_preserves_valid(tmp_byomem, mock_openai_embed):
+    """cleanup_orphaned_entries preserves entries for existing files."""
+    proj = tmp_byomem / "proj"
+    proj.mkdir(parents=True)
+    f = proj / "valid.md"
+    f.write_text("still exists")
+    index_file(f, project="proj")
+
+    removed = cleanup_orphaned_entries()
+    assert removed == 0
+
+    db = get_db()
+    assert db.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 1

@@ -90,3 +90,60 @@ def test_get_config_caches_singleton(monkeypatch):
     cfg1 = get_config()
     cfg2 = get_config()
     assert cfg1 is cfg2
+
+
+def test_new_config_fields_defaults():
+    """New Sprint 04 config fields have correct defaults."""
+    cfg = Config()
+    assert cfg.candidate_multiplier == 4
+    assert cfg.approx_chars_per_token == 4
+    assert cfg.user_message_max == 2000
+    assert cfg.assistant_message_max == 3000
+    assert cfg.log_user_prefix == 300
+    assert cfg.log_assistant_prefix == 600
+
+
+def test_memory_section_new_fields(tmp_path, monkeypatch):
+    """memory section in YAML sets candidate_multiplier and approx_chars_per_token."""
+    config_yaml = tmp_path / ".byomem" / "config.yaml"
+    config_yaml.parent.mkdir(parents=True)
+    config_yaml.write_text(yaml.dump({
+        "memory": {"candidate_multiplier": 8, "approx_chars_per_token": 3},
+    }))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    cfg = _load_config()
+    assert cfg.candidate_multiplier == 8
+    assert cfg.approx_chars_per_token == 3
+
+
+def test_truncation_section(tmp_path, monkeypatch):
+    """truncation section in YAML sets message/log limits."""
+    config_yaml = tmp_path / ".byomem" / "config.yaml"
+    config_yaml.parent.mkdir(parents=True)
+    config_yaml.write_text(yaml.dump({
+        "truncation": {
+            "user_message_max": 1000,
+            "assistant_message_max": 1500,
+            "log_user_prefix": 200,
+            "log_assistant_prefix": 400,
+        },
+    }))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    cfg = _load_config()
+    assert cfg.user_message_max == 1000
+    assert cfg.assistant_message_max == 1500
+    assert cfg.log_user_prefix == 200
+    assert cfg.log_assistant_prefix == 400
+
+
+def test_partial_truncation_merges(tmp_path, monkeypatch):
+    """Setting only some truncation fields keeps defaults for others."""
+    config_yaml = tmp_path / ".byomem" / "config.yaml"
+    config_yaml.parent.mkdir(parents=True)
+    config_yaml.write_text(yaml.dump({
+        "truncation": {"user_message_max": 500},
+    }))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    cfg = _load_config()
+    assert cfg.user_message_max == 500
+    assert cfg.assistant_message_max == 3000  # default

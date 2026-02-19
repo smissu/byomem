@@ -1,5 +1,6 @@
 """GCC branch lifecycle — create, append, commit, metadata."""
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -45,10 +46,11 @@ def get_or_create_branch(project: str, session_id: str) -> Branch:
 
 
 def append_to_log(branch: Branch, turn: dict):
+    cfg = get_config()
     entry = (
         f"\n<!-- last_id: {turn['id']} -->\n"
-        f"---\n**[{turn['timestamp']}]** {turn['user'][:300]}\n\n"
-        f"{turn['assistant'][:600]}\n"
+        f"---\n**[{turn['timestamp']}]** {turn['user'][:cfg.log_user_prefix]}\n\n"
+        f"{turn['assistant'][:cfg.log_assistant_prefix]}\n"
     )
     with branch.log_md.open("a") as f:
         f.write(entry)
@@ -69,6 +71,73 @@ def update_metadata(branch: Branch, last_turn: dict):
     meta = re.sub(r"last_updated:.*\n", "", meta)
     meta += f"last_updated: {last_turn['timestamp']}\n"
     branch.meta_md.write_text(meta)
+
+
+def list_branches(project: str, status: str | None = None, older_than_days: int | None = None) -> list[dict]:
+    """List branches for a project with optional filtering.
+
+    Returns list of dicts: {name, status, age_days, size_bytes, path}
+    Age derived from branch name YYYY-MM-DD prefix.
+    """
+    cfg = get_config()
+    branches_dir = cfg.byomem / project / "branches"
+    if not branches_dir.exists():
+        return []
+
+    today = date.today()
+    results = []
+    for d in sorted(branches_dir.iterdir(), reverse=True):
+        if not d.is_dir():
+            continue
+
+        # Parse age from branch name (YYYY-MM-DD prefix)
+        age_days = None
+        m = re.match(r"(\d{4}-\d{2}-\d{2})", d.name)
+        if m:
+            try:
+                branch_date = date.fromisoformat(m.group(1))
+                age_days = (today - branch_date).days
+            except ValueError:
+                pass
+
+        # Read status from metadata.md
+        branch_status = ""
+        meta = d / "metadata.md"
+        if meta.exists():
+            for line in meta.read_text().splitlines():
+                sm = re.match(r"^status:\s*(.*)", line)
+                if sm:
+                    branch_status = sm.group(1).strip()
+                    break
+
+        # Calculate size
+        size_bytes = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+
+        # Apply filters
+        if status and branch_status != status:
+            continue
+        if older_than_days is not None and (age_days is None or age_days < older_than_days):
+            continue
+
+        results.append({
+            "name": d.name,
+            "status": branch_status,
+            "age_days": age_days,
+            "size_bytes": size_bytes,
+            "path": d,
+        })
+
+    return results
+
+
+def delete_branch(project: str, branch_name: str) -> bool:
+    """Delete a branch directory. Returns True if deleted, False if not found."""
+    cfg = get_config()
+    branch_dir = cfg.byomem / project / "branches" / branch_name
+    if not branch_dir.exists():
+        return False
+    shutil.rmtree(branch_dir)
+    return True
 
 
 def _last_turn_id(log_path: Path) -> str | None:

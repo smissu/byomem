@@ -7,8 +7,6 @@ import openai
 
 from core.config import get_config
 
-CANDIDATE_MULT = 4
-
 
 def get_db(db_path=None):
     """Connect to search DB, load sqlite-vec, and initialise schema."""
@@ -55,7 +53,7 @@ def index_file(path: Path, project: str):
         )
     db.execute("DELETE FROM chunks WHERE file_path=?", (rel_path,))
 
-    chunks = _chunk_text(content, cfg.chunk_tokens, cfg.chunk_overlap)
+    chunks = _chunk_text(content, cfg.chunk_tokens, cfg.chunk_overlap, cfg.approx_chars_per_token)
 
     for start_line, end_line, text in chunks:
         text_hash = hashlib.sha256(text.encode()).hexdigest()
@@ -97,7 +95,7 @@ def hybrid_search(query, project="", max_results=None, min_score=None):
     if min_score is None:
         min_score = cfg.min_score
     db = get_db()
-    candidates = max_results * CANDIDATE_MULT
+    candidates = max_results * cfg.candidate_multiplier
     path_filter = f"{project}/%" if project else "%"
 
     # Try to get query embedding
@@ -187,6 +185,60 @@ def hybrid_search(query, project="", max_results=None, min_score=None):
     return results[:max_results]
 
 
+def delete_indexed_prefix(prefix: str):
+    """Delete all indexed data for files matching a path prefix."""
+    db = get_db()
+    # Find all matching files
+    rows = db.execute(
+        "SELECT path FROM files WHERE path LIKE ?", (prefix + "%",)
+    ).fetchall()
+
+    for (file_path,) in rows:
+        # FTS5 sync: delete old entries
+        chunks = db.execute(
+            "SELECT id, text FROM chunks WHERE file_path=?", (file_path,)
+        ).fetchall()
+        for chunk_id, text in chunks:
+            db.execute(
+                "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
+                (chunk_id, text),
+            )
+        # Delete chunks and vec entries
+        db.execute("DELETE FROM chunks WHERE file_path=?", (file_path,))
+        # Delete from files table
+        db.execute("DELETE FROM files WHERE path=?", (file_path,))
+
+    db.commit()
+    return len(rows)
+
+
+def cleanup_orphaned_entries():
+    """Find and remove search index entries for files that no longer exist on disk."""
+    cfg = get_config()
+    db = get_db()
+    rows = db.execute("SELECT path FROM files").fetchall()
+
+    removed = 0
+    for (file_path,) in rows:
+        full_path = cfg.byomem / file_path
+        if not full_path.exists():
+            # FTS5 sync
+            chunks = db.execute(
+                "SELECT id, text FROM chunks WHERE file_path=?", (file_path,)
+            ).fetchall()
+            for chunk_id, text in chunks:
+                db.execute(
+                    "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
+                    (chunk_id, text),
+                )
+            db.execute("DELETE FROM chunks WHERE file_path=?", (file_path,))
+            db.execute("DELETE FROM files WHERE path=?", (file_path,))
+            removed += 1
+
+    db.commit()
+    return removed
+
+
 def _get_embedding(db, text, text_hash):
     """Return cached embedding or generate via OpenAI. Returns None on failure."""
     row = db.execute(
@@ -211,14 +263,13 @@ def _get_embedding(db, text, text_hash):
         return None
 
 
-def _chunk_text(text, chunk_tokens, chunk_overlap):
+def _chunk_text(text, chunk_tokens, chunk_overlap, chars_per_token=4):
     """Line-based chunking with overlap. ~4 chars per token approximation."""
     lines = text.splitlines()
     chunks = []
     i = 0
-    approx_chars_per_token = 4
-    chunk_chars = chunk_tokens * approx_chars_per_token
-    overlap_chars = chunk_overlap * approx_chars_per_token
+    chunk_chars = chunk_tokens * chars_per_token
+    overlap_chars = chunk_overlap * chars_per_token
 
     while i < len(lines):
         chunk_lines = []

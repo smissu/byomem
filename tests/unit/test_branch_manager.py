@@ -5,7 +5,9 @@ from core.branch_manager import (
     _last_turn_id,
     append_to_log,
     commit_milestone,
+    delete_branch,
     get_or_create_branch,
+    list_branches,
     update_metadata,
 )
 
@@ -105,3 +107,101 @@ def test_slug_uses_first_8_chars(tmp_byomem):
     branch = get_or_create_branch("myproject", long_id)
     assert "abcdefgh" in branch.path.name
     assert "abcdefghi" not in branch.path.name
+
+
+# ---------------------------------------------------------------------------
+# list_branches / delete_branch
+# ---------------------------------------------------------------------------
+
+
+def test_list_branches_all(tmp_byomem):
+    """Lists all branches for a project."""
+    proj = tmp_byomem / "myproject" / "branches"
+    proj.mkdir(parents=True)
+    b1 = proj / "2026-02-19-abc12345"
+    b1.mkdir()
+    (b1 / "metadata.md").write_text("status: active\n")
+    (b1 / "commit.md").write_text("content")
+    b2 = proj / "2026-02-10-def67890"
+    b2.mkdir()
+    (b2 / "metadata.md").write_text("status: merged\n")
+    (b2 / "commit.md").write_text("content")
+
+    result = list_branches("myproject")
+    assert len(result) == 2
+    names = [b["name"] for b in result]
+    assert "2026-02-19-abc12345" in names
+    assert "2026-02-10-def67890" in names
+
+
+def test_list_branches_by_status(tmp_byomem):
+    """Filters branches by status."""
+    proj = tmp_byomem / "myproject" / "branches"
+    proj.mkdir(parents=True)
+    b1 = proj / "2026-02-19-abc12345"
+    b1.mkdir()
+    (b1 / "metadata.md").write_text("status: active\n")
+    b2 = proj / "2026-02-10-def67890"
+    b2.mkdir()
+    (b2 / "metadata.md").write_text("status: merged\n")
+
+    merged = list_branches("myproject", status="merged")
+    assert len(merged) == 1
+    assert merged[0]["name"] == "2026-02-10-def67890"
+
+
+def test_list_branches_by_age(tmp_byomem):
+    """Filters branches older than N days."""
+    proj = tmp_byomem / "myproject" / "branches"
+    proj.mkdir(parents=True)
+    # Recent branch (today)
+    from datetime import date
+    today = date.today().isoformat()
+    b1 = proj / f"{today}-abc12345"
+    b1.mkdir()
+    (b1 / "metadata.md").write_text("status: merged\n")
+    # Old branch
+    b2 = proj / "2020-01-01-def67890"
+    b2.mkdir()
+    (b2 / "metadata.md").write_text("status: merged\n")
+
+    old = list_branches("myproject", older_than_days=30)
+    assert len(old) == 1
+    assert old[0]["name"] == "2020-01-01-def67890"
+
+
+def test_list_branches_empty(tmp_byomem):
+    """Empty project returns empty list."""
+    result = list_branches("nonexistent")
+    assert result == []
+
+
+def test_delete_branch_removes_dir(tmp_byomem):
+    """delete_branch removes the directory."""
+    proj = tmp_byomem / "myproject" / "branches"
+    proj.mkdir(parents=True)
+    b = proj / "2026-02-19-abc12345"
+    b.mkdir()
+    (b / "metadata.md").write_text("status: merged\n")
+    (b / "commit.md").write_text("content")
+
+    assert delete_branch("myproject", "2026-02-19-abc12345") is True
+    assert not b.exists()
+
+
+def test_delete_branch_nonexistent(tmp_byomem):
+    """delete_branch on nonexistent branch returns False."""
+    assert delete_branch("myproject", "2026-02-19-nonexist") is False
+
+
+def test_list_branches_has_size(tmp_byomem):
+    """Branch info includes size_bytes."""
+    proj = tmp_byomem / "myproject" / "branches"
+    proj.mkdir(parents=True)
+    b = proj / "2026-02-19-abc12345"
+    b.mkdir()
+    (b / "metadata.md").write_text("status: active\n")
+    (b / "commit.md").write_text("x" * 1000)
+
+    result = list_branches("myproject")
+    assert result[0]["size_bytes"] > 0
