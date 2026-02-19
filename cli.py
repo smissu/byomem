@@ -370,6 +370,51 @@ def cmd_health(repair=False):
     return 0
 
 
+def cmd_queue(purge=False):
+    """Show queue status: pending, processing, and worker lock."""
+    cfg = get_config()
+    pending_dir = cfg.queue_path / "pending"
+    processing_dir = cfg.queue_path / "processing"
+    pid_file = cfg.queue_path / "worker.pid"
+
+    pending = sorted(pending_dir.glob("*.json")) if pending_dir.exists() else []
+    processing = sorted(processing_dir.glob("*.json")) if processing_dir.exists() else []
+
+    # Worker lock status
+    worker_status = "not running"
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)
+            worker_status = f"running (PID {pid})"
+        except ProcessLookupError:
+            worker_status = f"stale lock (PID {pid})"
+        except (ValueError, OSError):
+            worker_status = "invalid lock file"
+
+    print(f"\n  Worker: {worker_status}")
+    print(f"  Pending: {len(pending)}")
+    print(f"  Processing: {len(processing)}")
+    print(f"  Overflow threshold: {cfg.overflow_threshold}")
+
+    if purge and processing:
+        for f in processing:
+            f.unlink()
+        print(f"\n  Purged {len(processing)} stale processing file(s).")
+        # Clean stale PID lock too
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, 0)
+            except (ProcessLookupError, ValueError, OSError):
+                pid_file.unlink(missing_ok=True)
+                print("  Removed stale worker lock.")
+    elif not purge and processing:
+        print("\n  Stale processing files detected. Run with --purge to clean.")
+
+    return 0
+
+
 def cmd_reindex():
     """Rebuild the search index from all commit.md and main.md files."""
     cfg = get_config()
@@ -461,6 +506,9 @@ def main():
     p_merge.add_argument("project", help="Project name")
     p_merge.add_argument("branch", help="Branch name")
 
+    p_queue = sub.add_parser("queue", help="Show queue status")
+    p_queue.add_argument("--purge", action="store_true", help="Remove stale processing files")
+
     sub.add_parser("reindex", help="Rebuild the search index")
 
     p_stats = sub.add_parser("stats", help="Show project statistics")
@@ -492,6 +540,8 @@ def main():
         cmd_search(args.query, project=args.project)
     elif args.command == "merge":
         sys.exit(cmd_merge(args.project, args.branch))
+    elif args.command == "queue":
+        sys.exit(cmd_queue(purge=args.purge))
     elif args.command == "reindex":
         cmd_reindex()
     elif args.command == "stats":
