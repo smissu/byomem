@@ -88,6 +88,23 @@ def test_update_metadata(tmp_byomem, sample_turn):
     assert f"last_updated: {sample_turn['timestamp']}" in content
 
 
+def test_update_metadata_with_summary(tmp_byomem, sample_turn, sample_summary):
+    """update_metadata with summary populates the summary field."""
+    branch = get_or_create_branch("myproject", "sess00001234")
+    update_metadata(branch, sample_turn, summary=sample_summary)
+    content = branch.meta_md.read_text()
+    assert f"summary: {sample_summary['title']}" in content
+    assert f"last_updated: {sample_turn['timestamp']}" in content
+
+
+def test_update_metadata_without_summary_keeps_empty(tmp_byomem, sample_turn):
+    """update_metadata without summary leaves summary field unchanged."""
+    branch = get_or_create_branch("myproject", "sess00001234")
+    update_metadata(branch, sample_turn)
+    content = branch.meta_md.read_text()
+    assert "summary:\n" in content
+
+
 def test_last_turn_id_empty(tmp_byomem):
     branch = get_or_create_branch("myproject", "sess00001234")
     assert branch.last_turn_id is None
@@ -192,6 +209,67 @@ def test_delete_branch_removes_dir(tmp_byomem):
 def test_delete_branch_nonexistent(tmp_byomem):
     """delete_branch on nonexistent branch returns False."""
     assert delete_branch("myproject", "2026-02-19-nonexist") is False
+
+
+def test_commit_milestone_with_turn_id(tmp_byomem, sample_summary):
+    """commit_milestone with turn_id embeds <!-- turn: --> anchor."""
+    branch = get_or_create_branch("myproject", "sess00001234")
+    commit_milestone(branch, sample_summary, turn_id="uuid-abc-123")
+    content = branch.commit_md.read_text()
+    assert "<!-- turn: uuid-abc-123 -->" in content
+    assert "[FIX]" in content
+
+
+def test_commit_milestone_without_turn_id(tmp_byomem, sample_summary):
+    """commit_milestone without turn_id has no anchor (backwards compat)."""
+    branch = get_or_create_branch("myproject", "sess00001234")
+    commit_milestone(branch, sample_summary)
+    content = branch.commit_md.read_text()
+    assert "<!-- turn:" not in content
+    assert "[FIX]" in content
+
+
+def test_extract_log_section_finds_turn(tmp_byomem, sample_turn):
+    """extract_log_section finds correct turn and returns bounded text."""
+    from core.branch_manager import extract_log_section
+
+    branch = get_or_create_branch("myproject", "sess00001234")
+    # Write two turns to log
+    append_to_log(branch, sample_turn)
+    turn2 = {**sample_turn, "id": "uuid-def-456", "user": "second question here"}
+    append_to_log(branch, turn2)
+
+    result = extract_log_section(branch.log_md, "uuid-abc-123")
+    assert result is not None
+    assert "uuid-abc-123" in result
+    assert "stop price" in result
+    # Should not include the second turn's content
+    assert "uuid-def-456" not in result
+
+    result2 = extract_log_section(branch.log_md, "uuid-def-456")
+    assert result2 is not None
+    assert "second question" in result2
+
+
+def test_extract_log_section_max_chars(tmp_byomem, sample_turn):
+    """extract_log_section respects max_chars limit."""
+    from core.branch_manager import extract_log_section
+
+    branch = get_or_create_branch("myproject", "sess00001234")
+    append_to_log(branch, sample_turn)
+    result = extract_log_section(branch.log_md, "uuid-abc-123", max_chars=30)
+    assert result is not None
+    assert len(result) <= 30
+
+
+def test_extract_log_section_missing_turn(tmp_byomem, sample_turn):
+    """extract_log_section returns None for non-existent turn_id."""
+    from core.branch_manager import extract_log_section
+
+    branch = get_or_create_branch("myproject", "sess00001234")
+    append_to_log(branch, sample_turn)
+    result = extract_log_section(branch.log_md, "nonexistent-id")
+    assert result is None
 
 
 def test_list_branches_has_size(tmp_byomem):

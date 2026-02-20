@@ -102,6 +102,38 @@ def test_mem_search_empty_results(tmp_byomem, mock_openai_embed):
     assert "0 results" in result or "no results" in result.lower()
 
 
+def test_mem_search_enrich_mode_appends_log(tmp_byomem, mock_openai_embed, monkeypatch):
+    """Enrich mode: search result from commit.md with turn anchor gets raw log context appended."""
+    from core.config import Config
+
+    test_config = Config(byomem=tmp_byomem, log_search_mode="enrich")
+    monkeypatch.setattr("core.config._config", test_config)
+
+    # Create branch with commit.md containing a turn anchor and log.md with matching turn
+    branch_dir = tmp_byomem / "proj" / "branches" / "2026-02-20-abc12345"
+    branch_dir.mkdir(parents=True)
+    (branch_dir / "commit.md").write_text(
+        "## This Commit's Contribution\n"
+        "**[FIX] Fix stop price** <!-- turn: uuid-abc-123 -->\n"
+        "Use aux_price not stop_price.\n"
+    )
+    (branch_dir / "log.md").write_text(
+        "<!-- last_id: uuid-abc-123 -->\n"
+        "---\n**[2026-02-20]** why is stop price wrong?\n\n"
+        "The field is aux_price not stop_price.\n"
+        "<!-- last_id: uuid-def-456 -->\n"
+        "---\n**[2026-02-20]** another question\n"
+    )
+    (branch_dir / "metadata.md").write_text("status: active\n")
+
+    from core.search_index import index_file
+    index_file(branch_dir / "commit.md", project="proj")
+
+    result = mem_search(query="stop price", project="proj", min_score=0.0)
+    assert "> Raw log:" in result
+    assert "aux_price" in result
+
+
 # ---------- mem_get ----------
 
 

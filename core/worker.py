@@ -84,24 +84,29 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
             all_summaries.extend(summarize_batch(batch, model_override=model_override))
 
         # Apply summaries to branch
+        enrich = cfg.log_search_mode == "enrich"
         for turn, summary in zip(new_turns, all_summaries):
             turn_dict = turn.model_dump()
             summary_dict = summary.model_dump()
+            tid = turn_dict["id"] if enrich else None
 
             append_to_log(branch, turn_dict)
 
             if summary_dict.get("milestone"):
-                commit_milestone(branch, summary_dict)
+                commit_milestone(branch, summary_dict, turn_id=tid)
                 index_file(branch.commit_md, project)
 
             if summary_dict.get("important"):
-                maybe_update_main(project, summary_dict)
+                maybe_update_main(project, summary_dict, turn_id=tid)
                 maybe_update_project_memory(job.cwd, summary_dict)
                 main_path = cfg.byomem / project / "main.md"
                 if main_path.exists():
                     index_file(main_path, project)
 
-        update_metadata(branch, new_turns[-1].model_dump())
+        if cfg.log_search_mode == "index":
+            index_file(branch.log_md, project)
+
+        update_metadata(branch, new_turns[-1].model_dump(), all_summaries[-1].model_dump())
         save_session_offset(job.session_id, end_offset)
     finally:
         fcntl.flock(lock_file, fcntl.LOCK_UN)

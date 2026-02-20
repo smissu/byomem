@@ -40,6 +40,22 @@ def test_update_main_adds_section_if_missing(tmp_byomem, sample_summary):
     assert "## Key Decisions & Fixes" in content
 
 
+def test_update_main_with_turn_id(tmp_byomem, sample_summary):
+    """maybe_update_main with turn_id embeds anchor."""
+    maybe_update_main("myproject", sample_summary, turn_id="uuid-abc-123")
+    content = (tmp_byomem / "myproject" / "main.md").read_text()
+    assert "<!-- turn: uuid-abc-123 -->" in content
+    assert sample_summary["title"] in content
+
+
+def test_update_main_without_turn_id_no_anchor(tmp_byomem, sample_summary):
+    """maybe_update_main without turn_id has no anchor."""
+    maybe_update_main("myproject", sample_summary)
+    content = (tmp_byomem / "myproject" / "main.md").read_text()
+    assert "<!-- turn:" not in content
+    assert sample_summary["title"] in content
+
+
 def test_update_project_memory_creates_file(tmp_byomem, sample_summary, tmp_path, monkeypatch):
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     maybe_update_project_memory("/Users/x/myproject", sample_summary)

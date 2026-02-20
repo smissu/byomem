@@ -173,6 +173,9 @@ def hybrid_search(query, project="", max_results=None, min_score=None):
         score = cfg.vector_weight * v.get("vec_score", 0.0) + cfg.keyword_weight * k.get(
             "kw_score", 0.0
         )
+        # Demote log.md hits when log_search_mode is "index"
+        if cfg.log_search_mode == "index" and info["path"].endswith("/log.md"):
+            score *= cfg.log_score_demotion
         if score < min_score:
             continue
         results.append(

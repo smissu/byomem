@@ -208,6 +208,41 @@ def test_keyword_only_fallback(tmp_byomem, mocker):
     assert "fallback" in results[0]["preview"]
 
 
+def test_log_score_demotion_in_index_mode(tmp_byomem, mock_openai_embed, monkeypatch):
+    """Index a log.md file, search, verify score is demoted by log_score_demotion."""
+    from core.config import Config
+
+    test_config = Config(
+        byomem=tmp_byomem,
+        log_search_mode="index",
+        log_score_demotion=0.5,
+    )
+    monkeypatch.setattr("core.config._config", test_config)
+
+    proj_dir = tmp_byomem / "proj" / "branches" / "2026-02-20-abc"
+    proj_dir.mkdir(parents=True)
+
+    # Index a commit.md (non-log) and a log.md with same content
+    commit_f = proj_dir / "commit.md"
+    commit_f.write_text("unique_search_token alpha beta")
+    index_file(commit_f, project="proj")
+
+    log_f = proj_dir / "log.md"
+    log_f.write_text("unique_search_token alpha beta")
+    index_file(log_f, project="proj")
+
+    results = hybrid_search("unique_search_token", min_score=0.0)
+    assert len(results) >= 2
+
+    # Find the log.md and commit.md results
+    log_result = [r for r in results if r["path"].endswith("/log.md")]
+    commit_result = [r for r in results if r["path"].endswith("/commit.md")]
+    assert len(log_result) == 1
+    assert len(commit_result) == 1
+    # Log score should be demoted (lower than commit score)
+    assert log_result[0]["score"] < commit_result[0]["score"]
+
+
 def test_empty_db_returns_empty(tmp_byomem):
     """hybrid_search on empty DB returns []."""
     results = hybrid_search("anything", min_score=0.0)

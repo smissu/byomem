@@ -139,6 +139,43 @@ def test_run_worker_logs_retry_then_failed(tmp_path, tmp_byomem, monkeypatch):
     assert len(list(failed_dir.glob("*.json"))) == 1
 
 
+def test_enrich_mode_embeds_turn_id(tmp_path, tmp_byomem, mock_anthropic, mock_openai_embed, monkeypatch):
+    """Enrich mode: verify commit.md contains <!-- turn: --> after processing."""
+    from core.config import Config
+
+    test_config = Config(byomem=tmp_byomem, log_search_mode="enrich")
+    monkeypatch.setattr("core.config._config", test_config)
+
+    transcript = _make_transcript(tmp_path)
+    job = _make_job(transcript)
+    process_job(job)
+
+    project_dir = tmp_byomem / "testproject" / "branches"
+    branches = list(project_dir.iterdir())
+    assert len(branches) == 1
+    commit_content = (branches[0] / "commit.md").read_text()
+    assert "<!-- turn: uuid-user-001 -->" in commit_content
+
+
+def test_index_mode_indexes_log(tmp_path, tmp_byomem, mock_anthropic, mock_openai_embed, monkeypatch):
+    """Index mode: verify log.md appears in search DB after processing."""
+    from core.config import Config
+    from core.search_index import get_db
+
+    test_config = Config(byomem=tmp_byomem, log_search_mode="index")
+    monkeypatch.setattr("core.config._config", test_config)
+
+    transcript = _make_transcript(tmp_path)
+    job = _make_job(transcript)
+    process_job(job)
+
+    db = get_db()
+    rows = db.execute("SELECT path FROM files WHERE path LIKE '%log.md'").fetchall()
+    assert len(rows) >= 1
+    assert any("log.md" in r[0] for r in rows)
+    db.close()
+
+
 def test_run_worker_empty_queue(tmp_byomem):
     run_worker()  # Should not raise
 

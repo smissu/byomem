@@ -35,6 +35,8 @@ class Config:
     batch_size: int = 6
     overflow_threshold: int = 4
     max_workers: int = 4
+    log_search_mode: str = "none"  # none | enrich | index
+    log_score_demotion: float = 0.5
     summarizer_debug: bool = False
     settings_path: Path = field(
         default_factory=lambda: Path.home() / ".claude" / "settings.json"
@@ -88,7 +90,8 @@ def _load_config() -> Config:
     memory = data.get("memory", {})
     for key in ("chunk_tokens", "chunk_overlap", "max_results", "min_score",
                 "vector_weight", "keyword_weight",
-                "candidate_multiplier", "approx_chars_per_token"):
+                "candidate_multiplier", "approx_chars_per_token",
+                "log_search_mode", "log_score_demotion"):
         if key in memory:
             kwargs[key] = memory[key]
 

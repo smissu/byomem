@@ -60,17 +60,38 @@ def append_to_log(branch: Branch, turn):
         f.write(entry)
 
 
-def commit_milestone(branch: Branch, summary: dict):
+def commit_milestone(branch: Branch, summary: dict, turn_id: str | None = None):
     existing = branch.commit_md.read_text() if branch.commit_md.exists() else ""
+    header = f"**[{summary['classification'].upper()}] {summary['title']}**"
+    if turn_id:
+        header += f" <!-- turn: {turn_id} -->"
     new_content = existing + (
         f"\n## This Commit's Contribution\n"
-        f"**[{summary['classification'].upper()}] {summary['title']}**\n"
+        f"{header}\n"
         f"{summary['summary']}\n"
     )
     branch.commit_md.write_text(new_content)
 
 
-def update_metadata(branch: Branch, last_turn):
+def extract_log_section(log_path: Path, turn_id: str, max_chars: int = 800) -> str | None:
+    """Find the log section for a turn_id anchor, return bounded text."""
+    if not log_path.exists():
+        return None
+    content = log_path.read_text()
+    anchor = f"<!-- last_id: {turn_id} -->"
+    start = content.find(anchor)
+    if start == -1:
+        return None
+    # Find next anchor after this one
+    next_anchor = content.find("<!-- last_id:", start + len(anchor))
+    if next_anchor == -1:
+        section = content[start:]
+    else:
+        section = content[start:next_anchor]
+    return section[:max_chars]
+
+
+def update_metadata(branch: Branch, last_turn, summary: dict | None = None):
     if isinstance(last_turn, dict):
         ts = last_turn["timestamp"]
     else:
@@ -78,6 +99,8 @@ def update_metadata(branch: Branch, last_turn):
     meta = branch.meta_md.read_text()
     meta = re.sub(r"last_updated:.*\n", "", meta)
     meta += f"last_updated: {ts}\n"
+    if summary and summary.get("title"):
+        meta = re.sub(r"summary:.*\n", f"summary: {summary['title']}\n", meta)
     branch.meta_md.write_text(meta)
 
 

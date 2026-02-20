@@ -117,6 +117,36 @@ def mem_search(
         query, project=effective_project, max_results=max_results, min_score=min_score
     )
 
+    cfg = get_config()
+    if cfg.log_search_mode == "enrich" and results:
+        from core.branch_manager import extract_log_section
+
+        for r in results:
+            turn_match = re.search(r"<!-- turn: ([a-zA-Z0-9_-]+) -->", r["preview"])
+            if not turn_match:
+                continue
+            turn_id = turn_match.group(1)
+            result_path = cfg.byomem / r["path"]
+            # Resolve sibling log.md
+            if result_path.name == "commit.md":
+                log_path = result_path.parent / "log.md"
+            elif r["path"].endswith("main.md"):
+                # Scan project branches for this turn
+                proj_dir = result_path.parent / "branches"
+                log_path = None
+                if proj_dir.exists():
+                    for b in proj_dir.iterdir():
+                        candidate = b / "log.md"
+                        if candidate.exists() and f"<!-- last_id: {turn_id} -->" in candidate.read_text():
+                            log_path = candidate
+                            break
+            else:
+                continue
+            if log_path and log_path.exists():
+                context = extract_log_section(log_path, turn_id)
+                if context:
+                    r["preview"] += f"\n> Raw log:\n{context}"
+
     if not results:
         out = f'## Search: "{query}"\n0 results'
         if project:
