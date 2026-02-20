@@ -608,6 +608,104 @@ def _wipe_branches(branches_dir, removed):
             removed.append(str(f))
 
 
+def cmd_merge_project(source, target, confirm=False):
+    """Merge all data from source project into target project.
+
+    Moves branches, appends main.md entries, and reindexes.
+    """
+    import shutil
+
+    cfg = get_config()
+    src_dir = cfg.byomem / source
+    tgt_dir = cfg.byomem / target
+
+    if not src_dir.exists():
+        print(f"Source project '{source}' not found.")
+        return 1
+    if not tgt_dir.exists():
+        print(f"Target project '{target}' not found.")
+        return 1
+
+    # Preview
+    src_branches = []
+    src_branches_dir = src_dir / "branches"
+    if src_branches_dir.exists():
+        src_branches = [b for b in src_branches_dir.iterdir() if b.is_dir()]
+
+    src_main = src_dir / "main.md"
+    main_entries = 0
+    if src_main.exists():
+        main_entries = sum(1 for line in src_main.read_text().splitlines() if line.startswith("- ["))
+
+    print(f"Merge '{source}' -> '{target}':")
+    print(f"  {len(src_branches)} branch(es) to move")
+    print(f"  {main_entries} main.md entries to append")
+
+    if not confirm:
+        print("\nRun with --confirm to proceed.")
+        return 1
+
+    # 1. Move branches
+    tgt_branches_dir = tgt_dir / "branches"
+    tgt_branches_dir.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for branch in src_branches:
+        dest = tgt_branches_dir / branch.name
+        if dest.exists():
+            # Append suffix to avoid collision
+            dest = tgt_branches_dir / f"{branch.name}-from-{source}"
+        shutil.move(str(branch), str(dest))
+        moved += 1
+    print(f"  Moved {moved} branch(es)")
+
+    # 2. Append main.md entries
+    if src_main.exists():
+        src_content = src_main.read_text()
+        entries = [line for line in src_content.splitlines() if line.startswith("- [")]
+        if entries:
+            tgt_main = tgt_dir / "main.md"
+            if not tgt_main.exists():
+                tgt_main.parent.mkdir(parents=True, exist_ok=True)
+                tgt_main.write_text(f"# {target}\n\n## Key Decisions & Fixes\n")
+            tgt_content = tgt_main.read_text()
+            tgt_content += "\n".join(entries) + "\n"
+            tgt_main.write_text(tgt_content)
+            print(f"  Appended {len(entries)} entries to {target}/main.md")
+
+    # 3. Remove source search index entries and reindex under target
+    try:
+        from core.search_index import delete_indexed_prefix, index_file
+
+        delete_indexed_prefix(f"{source}/")
+
+        # Reindex moved branches
+        for branch in tgt_branches_dir.iterdir():
+            if not branch.is_dir():
+                continue
+            commit = branch / "commit.md"
+            if commit.exists() and commit.read_text().strip():
+                index_file(commit, target)
+
+        # Reindex target main.md
+        tgt_main = tgt_dir / "main.md"
+        if tgt_main.exists():
+            index_file(tgt_main, target)
+
+        print("  Reindexed search entries")
+    except ImportError:
+        print("  Warning: could not reindex (search_index unavailable)")
+
+    # 4. Clean up empty source
+    if src_branches_dir.exists() and not list(src_branches_dir.iterdir()):
+        shutil.rmtree(str(src_dir))
+        print(f"  Removed empty '{source}' directory")
+    else:
+        print(f"  Note: '{source}' directory still has files, remove manually if empty")
+
+    print(f"\nDone. Merged '{source}' into '{target}'.")
+    return 0
+
+
 def cmd_reindex():
     """Rebuild the search index from all commit.md and main.md files."""
     cfg = get_config()
@@ -718,6 +816,11 @@ def main():
     p_health = sub.add_parser("health", help="Check index health")
     p_health.add_argument("--repair", action="store_true", help="Fix orphaned entries")
 
+    p_merge_proj = sub.add_parser("merge-project", help="Merge one project's data into another")
+    p_merge_proj.add_argument("source", help="Source project to merge from")
+    p_merge_proj.add_argument("target", help="Target project to merge into")
+    p_merge_proj.add_argument("--confirm", action="store_true", help="Actually merge (safety check)")
+
     p_gc = sub.add_parser("gc", help="Garbage-collect old merged branches")
     p_gc.add_argument("--project", default="", help="Limit to one project")
     p_gc.add_argument("--days", type=int, default=90, help="Delete merged branches older than N days (default: 90)")
@@ -755,6 +858,8 @@ def main():
         sys.exit(cmd_stats(project=args.project, fmt=args.format))
     elif args.command == "health":
         sys.exit(cmd_health(repair=args.repair))
+    elif args.command == "merge-project":
+        sys.exit(cmd_merge_project(args.source, args.target, confirm=args.confirm))
     elif args.command == "gc":
         sys.exit(cmd_gc(project=args.project, days=args.days, dry_run=args.dry_run, reindex=args.reindex))
     else:

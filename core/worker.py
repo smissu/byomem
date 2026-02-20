@@ -30,6 +30,23 @@ logger = logging.getLogger("byomem.worker")
 _history_lock = threading.Lock()
 
 
+def _resolve_project_name(cwd: str) -> str:
+    """Derive project name from cwd by walking up to the git root.
+
+    Looks for .git directory starting from cwd and walking up.
+    Falls back to the leaf directory name if no git root is found.
+    """
+    if not cwd:
+        return "unknown"
+    path = Path(cwd)
+    for parent in [path, *path.parents]:
+        if (parent / ".git").exists():
+            return parent.name
+        if parent == parent.parent:
+            break
+    return path.name
+
+
 def process_job(job: QueueJob, *, model_override: str | None = None):
     """Process a single queue job — the heavy lifting previously in stop_hook._process.
 
@@ -55,7 +72,7 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
         logger.warning("Transcript not found: %s", job.transcript_path)
         return
 
-    project = Path(job.cwd).name if job.cwd else "unknown"
+    project = _resolve_project_name(job.cwd)
     branch = get_or_create_branch(project, job.session_id)
 
     # File lock to prevent concurrent corruption of this branch
