@@ -1,7 +1,9 @@
 from core.summarizer import (
     BATCH_SYSTEM,
     SYSTEM,
+    _gemini_available,
     _ollama_api_url,
+    _strip_fences,
     _wrap_bare_array,
     summarize_batch,
     summarize_turn,
@@ -145,7 +147,7 @@ def test_single_turn_uses_native(sample_turn, mock_httpx_single, tmp_byomem_olla
     assert result["title"] == "Fix stop price field"
     mock_httpx_single.assert_called_once()
     call_json = mock_httpx_single.call_args.kwargs["json"]
-    assert call_json["model"] == "qwen3:4b"
+    assert call_json["model"] == "qwen3:8b"
     assert call_json["think"] is False
     assert "format" in call_json
 
@@ -169,7 +171,7 @@ def test_single_turn_fallback_to_openai_compat(
     assert result["title"] == "Fallback result"
     # Verify fallback model is used
     call_kwargs = mock_openai.return_value.chat.completions.create.call_args.kwargs
-    assert call_kwargs["model"] == "qwen2.5:3b"
+    assert call_kwargs["model"] == "qwen3:8b"
 
 
 def test_batch_uses_native(sample_turns, mock_httpx_batch, tmp_byomem_ollama):
@@ -180,7 +182,7 @@ def test_batch_uses_native(sample_turns, mock_httpx_batch, tmp_byomem_ollama):
     assert results[1].title == "Set trailing stop type"
     mock_httpx_batch.assert_called_once()
     call_json = mock_httpx_batch.call_args.kwargs["json"]
-    assert call_json["model"] == "qwen3:4b"
+    assert call_json["model"] == "qwen3:8b"
     assert call_json["think"] is False
 
 
@@ -209,4 +211,91 @@ def test_batch_fallback_to_openai_compat(
     assert results[0].title == "T1"
     # Verify fallback model is used
     call_kwargs = mock_openai.return_value.chat.completions.create.call_args.kwargs
-    assert call_kwargs["model"] == "qwen2.5:3b"
+    assert call_kwargs["model"] == "qwen3:8b"
+
+
+# ---------------------------------------------------------------------------
+# Gemini CLI path tests
+# ---------------------------------------------------------------------------
+
+
+def test_single_turn_uses_gemini(sample_turn, mock_gemini_single, tmp_byomem_gemini):
+    """When gemini_cli is configured, summarize_turn tries Gemini first."""
+    result = summarize_turn(sample_turn)
+    assert result["classification"] == "fix"
+    assert result["title"] == "Fix stop price field"
+    mock_gemini_single.assert_called_once()
+
+
+def test_batch_uses_gemini(sample_turns, mock_gemini_batch, tmp_byomem_gemini):
+    """When gemini_cli is configured, summarize_batch tries Gemini first."""
+    results = summarize_batch(sample_turns)
+    assert len(results) == 2
+    assert results[0].title == "Fix stop price field"
+    assert results[1].title == "Set trailing stop type"
+    mock_gemini_batch.assert_called_once()
+
+
+def test_gemini_fallback_to_ollama_on_failure(
+    sample_turn, mock_gemini_fail, mock_httpx_single, tmp_byomem_gemini,
+):
+    """When Gemini CLI fails, falls back to native Ollama."""
+    result = summarize_turn(sample_turn)
+    assert result["classification"] == "fix"
+    assert result["title"] == "Fix stop price field"
+    mock_httpx_single.assert_called_once()
+
+
+def test_gemini_skipped_when_not_installed(
+    sample_turn, mock_gemini_not_found, mock_httpx_single, tmp_byomem_gemini,
+):
+    """When shutil.which returns None, Gemini is skipped entirely."""
+    result = summarize_turn(sample_turn)
+    assert result["classification"] == "fix"
+    # Gemini subprocess should NOT have been called
+    mock_httpx_single.assert_called_once()
+
+
+def test_gemini_skipped_for_model_override(
+    sample_turn, mock_gemini_single, tmp_byomem_gemini, mocker,
+):
+    """model_override (overflow worker) bypasses Gemini CLI."""
+    import json
+    mock_openai = mocker.patch("core.summarizer.openai.OpenAI")
+    mock_openai.return_value.chat.completions.create.return_value.choices = [
+        mocker.Mock(message=mocker.Mock(content=json.dumps({
+            "title": "Overflow result", "summary": "From overflow.",
+            "classification": "general", "important": False, "milestone": False,
+        })))
+    ]
+    result = summarize_turn(sample_turn, model_override="qwen3:8b")
+    assert result["title"] == "Overflow result"
+    mock_gemini_single.assert_not_called()
+
+
+def test_gemini_handles_fenced_response():
+    """_strip_fences handles ```json blocks from Gemini output."""
+    fenced = '```json\n{"title": "Test"}\n```'
+    assert _strip_fences(fenced) == '{"title": "Test"}'
+
+
+def test_gemini_timeout_falls_through(
+    sample_turn, mock_httpx_single, tmp_byomem_gemini, mocker,
+):
+    """subprocess.TimeoutExpired from Gemini falls through to Ollama."""
+    import subprocess
+    mocker.patch("core.summarizer.shutil.which", return_value="/usr/bin/gemini")
+    mocker.patch(
+        "core.summarizer.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd="gemini", timeout=90),
+    )
+    result = summarize_turn(sample_turn)
+    assert result["classification"] == "fix"
+    mock_httpx_single.assert_called_once()
+
+
+def test_gemini_available_returns_false_when_not_configured(tmp_byomem):
+    """_gemini_available returns False when gemini_cli is None."""
+    from core.config import get_config
+    cfg = get_config()
+    assert not _gemini_available(cfg)

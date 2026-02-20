@@ -129,15 +129,15 @@ def test_list_content(tmp_path):
     assert turns[0].assistant == "reply one reply two"
 
 
-def test_empty_content(tmp_path):
+def test_empty_content_skipped(tmp_path):
+    """Empty turns (tool-only exchanges) are filtered out."""
     msgs = [
         _make_msg("u1", "user", ""),
         _make_msg("a1", "assistant", "", parent_uuid="u1"),
     ]
     f = _write_jsonl(tmp_path / "t.jsonl", msgs)
     turns, offset = parse_new_turns(f)
-    assert turns[0].user == ""
-    assert turns[0].assistant == ""
+    assert len(turns) == 0
 
 
 def test_user_truncated_to_2000(tmp_path):

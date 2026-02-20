@@ -1,6 +1,8 @@
 """Tests for core/worker.py — background job processing."""
 import json
 import os
+import threading
+import time
 
 from core.models import QueueJob
 from core.queue import enqueue
@@ -99,7 +101,7 @@ def test_run_worker_writes_history(tmp_path, tmp_byomem, mock_anthropic, mock_op
     assert len(lines) == 1
     entry = json.loads(lines[0])
     assert entry["session"] == "sess1234"
-    assert entry["model"] == "primary"
+    assert entry["model"] == "anthropic"
     assert entry["status"] == "ok"
     assert entry["duration_s"] >= 0
 
@@ -303,3 +305,105 @@ def test_overflow_even_split(
     overflow_count = overrides_seen.count("qwen2.5:3b")
     assert primary_count == 3, f"Expected 3 primary, got {primary_count}"
     assert overflow_count == 3, f"Expected 3 overflow, got {overflow_count}"
+
+
+# ---------------------------------------------------------------------------
+# Parallel worker tests
+# ---------------------------------------------------------------------------
+
+def test_parallel_processing_uses_thread_pool(
+    tmp_path, tmp_byomem, monkeypatch,
+):
+    """With max_workers=3 and 6 jobs, all 6 complete and processing overlaps."""
+    from core.config import Config
+
+    test_config = Config(byomem=tmp_byomem, max_workers=3)
+    monkeypatch.setattr("core.config._config", test_config)
+
+    threads_seen = []
+    lock = threading.Lock()
+
+    def fake_process(job, *, model_override=None):
+        with lock:
+            threads_seen.append(threading.current_thread().name)
+        time.sleep(0.05)  # simulate I/O
+
+    monkeypatch.setattr("core.worker.process_job", fake_process)
+
+    _enqueue_jobs(tmp_path, 6, tmp_byomem)
+    run_worker()
+
+    # All 6 jobs should have been processed
+    assert len(threads_seen) == 6
+    # With max_workers=3, we should see byomem-prefixed thread names
+    pool_threads = [t for t in threads_seen if t.startswith("byomem")]
+    assert len(pool_threads) == 6, f"Expected pool threads, got: {threads_seen}"
+    # Multiple distinct threads should have been used
+    assert len(set(pool_threads)) > 1, f"Expected >1 distinct threads, got: {set(pool_threads)}"
+
+
+def test_sequential_fallback_with_one_worker(
+    tmp_path, tmp_byomem, monkeypatch,
+):
+    """With max_workers=1, all jobs run sequentially in the main thread."""
+    from core.config import Config
+
+    test_config = Config(byomem=tmp_byomem, max_workers=1)
+    monkeypatch.setattr("core.config._config", test_config)
+
+    threads_seen = []
+
+    def fake_process(job, *, model_override=None):
+        threads_seen.append(threading.current_thread().name)
+
+    monkeypatch.setattr("core.worker.process_job", fake_process)
+
+    _enqueue_jobs(tmp_path, 4, tmp_byomem)
+    run_worker()
+
+    assert len(threads_seen) == 4
+    # All should run in the same thread (no pool threads)
+    pool_threads = [t for t in threads_seen if t.startswith("byomem")]
+    assert len(pool_threads) == 0, f"Expected no pool threads with max_workers=1, got: {threads_seen}"
+
+
+def test_overflow_with_parallel(
+    tmp_path, tmp_byomem_ollama, monkeypatch,
+):
+    """Overflow split + parallel: both primary and overflow threads parallelize."""
+    from core.config import Config
+
+    test_config = Config(
+        byomem=tmp_byomem_ollama,
+        summarizer_model="qwen3:4b",
+        summarizer_fallback_model="qwen2.5:3b",
+        summarizer_base_url="http://localhost:11434/v1",
+        overflow_threshold=2,
+        max_workers=4,
+    )
+    monkeypatch.setattr("core.config._config", test_config)
+
+    results = []
+    lock = threading.Lock()
+
+    def fake_process(job, *, model_override=None):
+        with lock:
+            results.append({
+                "thread": threading.current_thread().name,
+                "override": model_override,
+            })
+        time.sleep(0.05)
+
+    monkeypatch.setattr("core.worker.process_job", fake_process)
+
+    _enqueue_jobs(tmp_path, 8, tmp_byomem_ollama)
+    run_worker()
+
+    assert len(results) == 8
+    # Both primary (None) and overflow (qwen2.5:3b) should be present
+    overrides = [r["override"] for r in results]
+    assert None in overrides
+    assert "qwen2.5:3b" in overrides
+    # Primary jobs should use pool threads
+    primary_threads = {r["thread"] for r in results if r["override"] is None}
+    assert any(t.startswith("byomem") for t in primary_threads)

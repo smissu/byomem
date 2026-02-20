@@ -55,12 +55,101 @@ def tmp_byomem_ollama(tmp_path, monkeypatch):
     from core.config import Config
     test_config = Config(
         byomem=root,
-        summarizer_model="qwen3:4b",
-        summarizer_fallback_model="qwen2.5:3b",
+        summarizer_model="qwen3:8b",
+        summarizer_fallback_model="qwen3:8b",
         summarizer_base_url="http://localhost:11434/v1",
     )
     monkeypatch.setattr("core.config._config", test_config)
     return root
+
+
+@pytest.fixture
+def tmp_byomem_gemini(tmp_path, monkeypatch):
+    """Redirect ~/.byomem to temp dir with Gemini CLI + Ollama config."""
+    root = tmp_path / ".byomem"
+    root.mkdir()
+    from core.config import Config
+    test_config = Config(
+        byomem=root,
+        summarizer_gemini_cli="gemini",
+        summarizer_model="qwen3:8b",
+        summarizer_fallback_model="qwen3:8b",
+        summarizer_base_url="http://localhost:11434/v1",
+    )
+    monkeypatch.setattr("core.config._config", test_config)
+    return root
+
+
+@pytest.fixture
+def mock_gemini_single(mocker):
+    """Patch subprocess.run to simulate successful Gemini CLI single-turn response."""
+    import json
+    response_json = json.dumps({
+        "title": "Fix stop price field",
+        "summary": "Use aux_price not stop_price.",
+        "classification": "fix",
+        "important": True,
+        "milestone": True,
+    })
+    wrapper = json.dumps({
+        "session_id": "test-session",
+        "response": response_json,
+        "stats": {},
+    })
+    mock_result = mocker.Mock()
+    mock_result.returncode = 0
+    mock_result.stdout = wrapper
+    mock_result.stderr = ""
+    # Also mock shutil.which to return the binary path
+    mocker.patch("core.summarizer.shutil.which", return_value="/usr/bin/gemini")
+    mock = mocker.patch("core.summarizer.subprocess.run", return_value=mock_result)
+    return mock
+
+
+@pytest.fixture
+def mock_gemini_batch(mocker):
+    """Patch subprocess.run to simulate successful Gemini CLI batch response."""
+    import json
+    response_json = json.dumps({
+        "summaries": [
+            {"turn_id": "u1", "title": "Fix stop price field",
+             "summary": "Use aux_price.", "classification": "fix",
+             "important": True, "milestone": True},
+            {"turn_id": "u2", "title": "Set trailing stop type",
+             "summary": "Use trailing_stop_type=1.", "classification": "feature",
+             "important": False, "milestone": False},
+        ]
+    })
+    wrapper = json.dumps({
+        "session_id": "test-session",
+        "response": response_json,
+        "stats": {},
+    })
+    mock_result = mocker.Mock()
+    mock_result.returncode = 0
+    mock_result.stdout = wrapper
+    mock_result.stderr = ""
+    mocker.patch("core.summarizer.shutil.which", return_value="/usr/bin/gemini")
+    mock = mocker.patch("core.summarizer.subprocess.run", return_value=mock_result)
+    return mock
+
+
+@pytest.fixture
+def mock_gemini_fail(mocker):
+    """Patch subprocess.run to simulate Gemini CLI failure."""
+    mocker.patch("core.summarizer.shutil.which", return_value="/usr/bin/gemini")
+    mock = mocker.patch(
+        "core.summarizer.subprocess.run",
+        side_effect=RuntimeError("Gemini CLI not available"),
+    )
+    return mock
+
+
+@pytest.fixture
+def mock_gemini_not_found(mocker):
+    """Patch shutil.which to simulate missing Gemini binary."""
+    mock = mocker.patch("core.summarizer.shutil.which", return_value=None)
+    return mock
 
 
 @pytest.fixture

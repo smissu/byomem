@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from core.queue import (
 )
 
 logger = logging.getLogger("byomem.worker")
+_history_lock = threading.Lock()
 
 
 def process_job(job: QueueJob, *, model_override: str | None = None):
@@ -118,36 +120,68 @@ def _log_result(session_id: str, model: str, duration_s: float, status: str):
         "duration_s": round(duration_s, 2),
         "status": status,
     }
-    with open(history_path, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    with _history_lock:
+        with open(history_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+
+def _process_one(job_file, job, model_label, model_override):
+    """Process a single (job_file, job) tuple. Thread-safe."""
+    from core.summarizer import get_primary_backend, reset_backend_log
+
+    t0 = time.monotonic()
+    try:
+        logger.info("Processing job: %s (model=%s)", job.session_id, model_label)
+        reset_backend_log()
+        process_job(job, model_override=model_override)
+        actual_backend = get_primary_backend()
+        complete_job(job_file)
+        # Only log if summarizer actually ran (skip no-op jobs)
+        if actual_backend:
+            _log_result(job.session_id, actual_backend, time.monotonic() - t0, "ok")
+    except Exception as exc:
+        duration = time.monotonic() - t0
+        actual_backend = get_primary_backend() or model_label
+        error_msg = f"{type(exc).__name__}: {exc}"
+        logger.exception("Failed to process job %s", job.session_id)
+        if job.retry_count < 1:
+            logger.info("Requeueing job %s for retry (attempt %d)", job.session_id, job.retry_count + 1)
+            retry_job(job_file, error_msg)
+            _log_result(job.session_id, actual_backend, duration, "retry")
+        else:
+            logger.warning("Job %s failed after retry, moving to failed/", job.session_id)
+            fail_job(job_file, error_msg)
+            _log_result(job.session_id, actual_backend, duration, "failed")
 
 
 def _process_jobs(jobs, *, model_override: str | None = None):
-    """Process a list of (job_file, job) tuples, completing each on success.
+    """Process a list of (job_file, job) tuples, with concurrent execution.
 
+    Uses ThreadPoolExecutor when max_workers > 1 for I/O-bound parallelism.
     On failure: if retry_count == 0, move back to pending for one retry.
     If retry_count >= 1 (already retried), move to failed/ for troubleshooting.
     """
-    model_label = model_override or "primary"
-    for job_file, job in jobs:
-        t0 = time.monotonic()
-        try:
-            logger.info("Processing job: %s (model=%s)", job.session_id, model_label)
-            process_job(job, model_override=model_override)
-            complete_job(job_file)
-            _log_result(job.session_id, model_label, time.monotonic() - t0, "ok")
-        except Exception as exc:
-            duration = time.monotonic() - t0
-            error_msg = f"{type(exc).__name__}: {exc}"
-            logger.exception("Failed to process job %s", job.session_id)
-            if job.retry_count < 1:
-                logger.info("Requeueing job %s for retry (attempt %d)", job.session_id, job.retry_count + 1)
-                retry_job(job_file, error_msg)
-                _log_result(job.session_id, model_label, duration, "retry")
-            else:
-                logger.warning("Job %s failed after retry, moving to failed/", job.session_id)
-                fail_job(job_file, error_msg)
-                _log_result(job.session_id, model_label, duration, "failed")
+    cfg = get_config()
+    if model_override:
+        model_label = model_override
+    elif cfg.summarizer_gemini_cli:
+        model_label = cfg.summarizer_gemini_model or "gemini"
+    else:
+        model_label = cfg.summarizer_model
+
+    workers = cfg.max_workers if not model_override else max(1, cfg.max_workers // 2)
+    if workers <= 1:
+        # Sequential fallback
+        for job_file, job in jobs:
+            _process_one(job_file, job, model_label, model_override)
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="byomem") as pool:
+            futures = {
+                pool.submit(_process_one, job_file, job, model_label, model_override): job
+                for job_file, job in jobs
+            }
+            for future in as_completed(futures):
+                future.result()  # propagate any unhandled exceptions
 
 
 def run_worker():

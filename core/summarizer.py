@@ -2,6 +2,10 @@
 
 import json
 import logging
+import shutil
+import subprocess
+import threading
+from datetime import UTC, datetime
 
 import anthropic
 import httpx
@@ -11,10 +15,13 @@ from core.config import get_config
 from core.models import BatchSummaryResponse, Turn, TurnSummary
 
 logger = logging.getLogger(__name__)
+_debug_lock = threading.Lock()
+_thread_local = threading.local()
 
 SYSTEM = """You are a coding session analyzer. Summarize this exchange concisely.
 
-Return valid JSON only:
+Return ONLY valid JSON matching this exact schema — no commentary, no markdown fences, \
+no echoing of the template:
 {
   "title": "5-10 word imperative title",
   "summary": "2-3 sentences: what was done or decided",
@@ -23,13 +30,46 @@ Return valid JSON only:
   "milestone": true|false
 }
 
-important=true: non-obvious fix, architectural decision, pattern to remember, gotcha
-milestone=true: meaningful unit of work completed (bug fixed, approach validated, v1 done)
-Both false for: routine edits, simple questions, exploratory work."""
+Rules:
+- title: imperative verb phrase, 5-10 words, specific to what happened
+- summary: 2-3 sentences with concrete details — names, values, files
+- PRESERVE IDENTIFIERS: always include sprint numbers, task IDs, file paths, function names, \
+error codes, model names, and config values in both title and summary. These are critical \
+for later retrieval.
+- classification: fix (bug fix), decision (architectural choice), feature (new capability), \
+research (exploration), general (other)
+- important: true for non-obvious fixes, architectural decisions, patterns to remember, gotchas
+- milestone: true for meaningful completed work (bug fixed, approach validated, v1 done)
+- Both false for routine edits, simple questions, exploratory work
+
+Example input:
+User: why is the stop price not updating when I modify the order?
+Claude: The field is aux_price not stop_price in the IB API. Change order.stop_price to \
+order.auxPrice.
+
+Example output:
+{"title": "Fix stop price field to use auxPrice", "summary": "The modify-order endpoint \
+requires auxPrice instead of stop_price. Changed order.stop_price to order.auxPrice for IB \
+API compatibility.", "classification": "fix", "important": true, "milestone": false}
+
+Example input:
+User: implement the profit action processor for sprint 37
+Claude: Added ProfitActionProcessor to position_monitor.py at priority 2.75. Created \
+test_profit_actions.py with 6 tests. Wired into PositionMonitor.__init__ via optional injection.
+
+Example output:
+{"title": "Sprint 37: Implement ProfitActionProcessor in position_monitor.py", \
+"summary": "Added ProfitActionProcessor at priority 2.75 in position_monitor.py, between \
+long-leg tradeability check and decay re-entry. Created test_profit_actions.py with 6 tests \
+covering the bridge and min-comparison formula.", \
+"classification": "feature", "important": true, "milestone": true}
+
+DO NOT echo the template. Return ONLY the JSON object."""
 
 BATCH_SYSTEM = """You are a coding session analyzer. You will receive multiple turns, \
 each delimited by --- Turn {id} ---.
-Summarize EVERY turn. Return valid JSON only:
+Summarize EVERY turn. Return ONLY valid JSON — no commentary, no markdown fences, \
+no echoing of the template:
 {
   "summaries": [
     {
@@ -43,11 +83,20 @@ Summarize EVERY turn. Return valid JSON only:
   ]
 }
 
-Match each summary to its turn by turn_id, not by array position.
+Rules:
+- Match each summary to its turn by turn_id, not by array position
+- title: imperative verb phrase, 5-10 words, specific to what happened
+- summary: 2-3 sentences with concrete details — names, values, files
+- PRESERVE IDENTIFIERS: always include sprint numbers, task IDs, file paths, function names, \
+error codes, model names, and config values in both title and summary. These are critical \
+for later retrieval.
+- classification: fix (bug fix), decision (architectural choice), feature (new capability), \
+research (exploration), general (other)
+- important: true for non-obvious fixes, architectural decisions, patterns to remember, gotchas
+- milestone: true for meaningful completed work (bug fixed, approach validated, v1 done)
+- Both false for routine edits, simple questions, exploratory work
 
-important=true: non-obvious fix, architectural decision, pattern to remember, gotcha
-milestone=true: meaningful unit of work completed (bug fixed, approach validated, v1 done)
-Both false for: routine edits, simple questions, exploratory work."""
+DO NOT echo the template. Return ONLY the JSON object."""
 
 FALLBACK = {
     "title": "Session turn",
@@ -56,6 +105,56 @@ FALLBACK = {
     "important": False,
     "milestone": False,
 }
+
+
+# ---------------------------------------------------------------------------
+# Backend tracking (thread-safe)
+# ---------------------------------------------------------------------------
+
+def reset_backend_log():
+    """Clear the backend log for this thread. Call before processing a job."""
+    _thread_local.backends = []
+
+
+def get_backend_log() -> list[str]:
+    """Return list of backends used in this thread since last reset."""
+    return getattr(_thread_local, "backends", [])
+
+
+def get_primary_backend() -> str:
+    """Return the most-used backend, or empty string if none recorded."""
+    backends = get_backend_log()
+    if not backends:
+        return ""
+    # Return most frequent
+    counts = {}
+    for b in backends:
+        counts[b] = counts.get(b, 0) + 1
+    return max(counts, key=counts.get)
+
+
+def _track_backend(name: str):
+    """Record a backend usage for this thread."""
+    if not hasattr(_thread_local, "backends"):
+        _thread_local.backends = []
+    _thread_local.backends.append(name)
+
+
+# ---------------------------------------------------------------------------
+# Debug logging
+# ---------------------------------------------------------------------------
+
+def _debug_log(entry: dict):
+    """Append a debug entry to queue/summarizer_debug.jsonl if debug mode is on."""
+    cfg = get_config()
+    if not cfg.summarizer_debug:
+        return
+    debug_path = cfg.queue_path / "summarizer_debug.jsonl"
+    debug_path.parent.mkdir(parents=True, exist_ok=True)
+    entry["ts"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+    with _debug_lock:
+        with open(debug_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -119,30 +218,104 @@ def _ollama_api_url(cfg) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Gemini CLI backend
+# ---------------------------------------------------------------------------
+
+def _gemini_available(cfg) -> bool:
+    """Check if Gemini CLI is configured and the binary exists."""
+    return bool(cfg.summarizer_gemini_cli and shutil.which(cfg.summarizer_gemini_cli))
+
+
+def _run_gemini(cfg, prompt: str) -> str:
+    """Run Gemini CLI and return the response text from the JSON envelope."""
+    cmd = [cfg.summarizer_gemini_cli, "-p", prompt, "-o", "json"]
+    if cfg.summarizer_gemini_model:
+        cmd.extend(["-m", cfg.summarizer_gemini_model])
+    result = subprocess.run(
+        cmd,
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Gemini CLI failed (rc={result.returncode}): {result.stderr[:200]}"
+        )
+    wrapper = json.loads(result.stdout)
+    response_text = wrapper.get("response", "")
+    if not response_text or not response_text.strip():
+        raise ValueError("Empty response from Gemini CLI")
+    return response_text
+
+
+def _summarize_gemini(cfg, user_content: str) -> dict:
+    """Summarize a single turn via Gemini CLI."""
+    prompt = SYSTEM + "\n\n" + user_content
+    return json.loads(_strip_fences(_run_gemini(cfg, prompt)))
+
+
+def _batch_gemini(cfg, user_content: str) -> BatchSummaryResponse:
+    """Batch summarize via Gemini CLI."""
+    prompt = BATCH_SYSTEM + "\n\n" + user_content
+    text = _wrap_bare_array(_strip_fences(_run_gemini(cfg, prompt)))
+    return BatchSummaryResponse.model_validate_json(text)
+
+
+# ---------------------------------------------------------------------------
 # Single-turn summarization (backward compatible — returns dict)
 # ---------------------------------------------------------------------------
 
 def summarize_turn(turn, *, model_override: str | None = None) -> dict:
     """Summarize a single turn. Accepts Turn model or dict. Returns dict.
 
-    If model_override is set, skips the native Ollama path and goes directly
-    to OpenAI-compat with the specified model (used by overflow worker).
+    If model_override is set, skips Gemini CLI and the native Ollama path,
+    going directly to OpenAI-compat (used by overflow worker).
     """
     cfg = get_config()
     t = _coerce_turn(turn)
     user_content = _format_single(t, cfg)
+    result = None
+    backend = "unknown"
     try:
+        # Gemini CLI is primary when configured (skip for overflow workers)
+        if _gemini_available(cfg) and not model_override:
+            try:
+                result = _summarize_gemini(cfg, user_content)
+                backend = cfg.summarizer_gemini_model or "gemini"
+                return result
+            except Exception:
+                logger.debug("Gemini CLI single-turn failed", exc_info=True)
         if cfg.summarizer_base_url:
             if model_override:
-                return _summarize_openai_compat(cfg, user_content, model=model_override)
+                result = _summarize_openai_compat(cfg, user_content, model=model_override)
+                backend = f"openai-compat/{model_override}"
+                return result
             try:
-                return _summarize_ollama_native(cfg, user_content)
+                result = _summarize_ollama_native(cfg, user_content)
+                backend = "ollama-native"
+                return result
             except Exception:
                 logger.debug("Native Ollama single-turn failed", exc_info=True)
-            return _summarize_openai_compat(cfg, user_content)
-        return _summarize_anthropic(cfg, user_content)
+            result = _summarize_openai_compat(cfg, user_content)
+            backend = "openai-compat"
+            return result
+        result = _summarize_anthropic(cfg, user_content)
+        backend = "anthropic"
+        return result
     except Exception:
-        return dict(FALLBACK)
+        result = dict(FALLBACK)
+        backend = "fallback"
+        return result
+    finally:
+        _track_backend(backend)
+        _debug_log({
+            "mode": "single",
+            "turn_id": t.id,
+            "backend": backend,
+            "input": user_content,
+            "output": result,
+        })
 
 
 def _summarize_anthropic(cfg, user_content: str) -> dict:
@@ -216,24 +389,52 @@ def summarize_batch(turns: list, *, model_override: str | None = None) -> list[T
     cfg = get_config()
     coerced = [_coerce_turn(t) for t in turns]
     user_content = _format_batch(coerced, cfg)
+    results = None
+    backend = "unknown"
 
     try:
+        # Gemini CLI is primary when configured (skip for overflow workers)
+        if _gemini_available(cfg) and not model_override:
+            try:
+                batch_resp = _batch_gemini(cfg, user_content)
+                results = _align_results(coerced, batch_resp)
+                backend = cfg.summarizer_gemini_model or "gemini"
+                return results
+            except Exception:
+                logger.debug("Gemini CLI batch failed, falling back", exc_info=True)
         if cfg.summarizer_base_url:
             if model_override:
                 batch_resp = _batch_openai_compat(cfg, user_content, model=model_override)
+                backend = f"openai-compat/{model_override}"
             else:
                 try:
                     batch_resp = _batch_ollama_native(cfg, user_content)
-                    return _align_results(coerced, batch_resp)
+                    results = _align_results(coerced, batch_resp)
+                    backend = "ollama-native"
+                    return results
                 except Exception:
                     logger.debug("Native Ollama batch failed, trying OpenAI-compat", exc_info=True)
                 batch_resp = _batch_openai_compat(cfg, user_content)
+                backend = "openai-compat"
         else:
             batch_resp = _batch_anthropic(cfg, user_content)
-        return _align_results(coerced, batch_resp)
+            backend = "anthropic"
+        results = _align_results(coerced, batch_resp)
+        return results
     except Exception:
         logger.debug("Batch parse failed, falling back to sequential", exc_info=True)
-        return _sequential_fallback(coerced, model_override=model_override)
+        results = _sequential_fallback(coerced, model_override=model_override)
+        backend = "sequential-fallback"
+        return results
+    finally:
+        _track_backend(backend)
+        _debug_log({
+            "mode": "batch",
+            "turn_ids": [t.id for t in coerced],
+            "backend": backend,
+            "input": user_content,
+            "output": [s.model_dump() for s in results] if results else None,
+        })
 
 
 def _batch_anthropic(cfg, user_content: str) -> BatchSummaryResponse:

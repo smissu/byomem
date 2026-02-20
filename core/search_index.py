@@ -13,7 +13,9 @@ def get_db(db_path=None):
     cfg = get_config()
     path = db_path or cfg.db_path
     path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(str(path))
+    db = sqlite3.connect(str(path), timeout=10)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=30000")
     vec_available = False
     try:
         import sqlite_vec
@@ -40,6 +42,7 @@ def index_file(path: Path, project: str):
         "SELECT content_hash FROM files WHERE path=?", (rel_path,)
     ).fetchone()
     if row and row[0] == h:
+        db.close()
         return  # unchanged
 
     # FTS5 sync: explicitly delete old entries before removing chunks
@@ -85,6 +88,7 @@ def index_file(path: Path, project: str):
         (rel_path, h, path.stat().st_mtime),
     )
     db.commit()
+    db.close()
 
 
 def hybrid_search(query, project="", max_results=None, min_score=None):
@@ -182,6 +186,7 @@ def hybrid_search(query, project="", max_results=None, min_score=None):
         )
 
     results.sort(key=lambda r: r["score"], reverse=True)
+    db.close()
     return results[:max_results]
 
 
@@ -209,6 +214,7 @@ def delete_indexed_prefix(prefix: str):
         db.execute("DELETE FROM files WHERE path=?", (file_path,))
 
     db.commit()
+    db.close()
     return len(rows)
 
 
@@ -236,6 +242,7 @@ def cleanup_orphaned_entries():
             removed += 1
 
     db.commit()
+    db.close()
     return removed
 
 

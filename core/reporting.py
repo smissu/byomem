@@ -92,7 +92,7 @@ def compute_global_stats() -> dict:
     total_disk = sum(ps["disk_usage_bytes"] for ps in project_stats)
 
     # Search index stats
-    index_stats = {"files_count": 0, "chunks_count": 0, "db_size_bytes": 0}
+    index_stats = {"files_count": 0, "chunks_count": 0, "db_size_bytes": 0, "per_project": {}}
     if cfg.db_path.exists():
         index_stats["db_size_bytes"] = cfg.db_path.stat().st_size
         try:
@@ -100,6 +100,11 @@ def compute_global_stats() -> dict:
             db = get_db()
             index_stats["files_count"] = db.execute("SELECT COUNT(*) FROM files").fetchone()[0]
             index_stats["chunks_count"] = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            rows = db.execute(
+                "SELECT substr(file_path, 1, instr(file_path, '/') - 1) AS project,"
+                " COUNT(*) AS chunks FROM chunks GROUP BY project"
+            ).fetchall()
+            index_stats["per_project"] = {row[0]: row[1] for row in rows}
         except Exception:
             pass
 

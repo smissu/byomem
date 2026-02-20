@@ -288,9 +288,11 @@ def mem_stats(project: str = "") -> str:
     out += f"| Index size | {idx['db_size_bytes'] / 1024:.0f} KB |\n"
 
     if gstats["projects"]:
+        idx_by_project = idx.get("per_project", {})
         out += "\n### Per Project\n\n"
         for ps in gstats["projects"]:
-            out += f"- **{ps['project']}**: {ps['branches_total']} branches, {ps['disk_usage_bytes'] / 1024:.0f} KB\n"
+            chunks = idx_by_project.get(ps["project"], 0)
+            out += f"- **{ps['project']}**: {ps['branches_total']} branches, {ps['disk_usage_bytes'] / 1024:.0f} KB, {chunks} indexed chunks\n"
 
     return out
 

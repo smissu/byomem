@@ -121,6 +121,26 @@ def cmd_status():
     print(f"MCP Server: {'installed' if mcp_found else 'not installed'}")
 
 
+def cmd_projects():
+    """List all projects with basic stats."""
+    cfg = get_config()
+    projects = sorted(
+        d for d in cfg.byomem.iterdir()
+        if d.is_dir() and not d.name.startswith(".") and d.name != "queue"
+        and ((d / "branches").exists() or (d / "main.md").exists())
+    )
+    if not projects:
+        print("No projects found.")
+        return
+
+    for p in projects:
+        branches_dir = p / "branches"
+        branch_count = sum(1 for b in branches_dir.iterdir() if b.is_dir()) if branches_dir.exists() else 0
+        has_main = (p / "main.md").exists()
+        main_lines = len((p / "main.md").read_text().splitlines()) if has_main else 0
+        print(f"  {p.name:<20} {branch_count} branch(es), main.md: {main_lines} lines")
+
+
 def cmd_show(project):
     """List branches for a project with summaries from metadata.md."""
     cfg = get_config()
@@ -335,9 +355,11 @@ def cmd_stats(project="", fmt="text"):
         print(f"  Search index: {idx['files_count']} files, {idx['chunks_count']} chunks, {idx['db_size_bytes'] / 1024:.0f} KB")
 
         if gstats["projects"]:
+            idx_by_project = idx.get("per_project", {})
             print("\n  Per project:")
             for ps in gstats["projects"]:
-                print(f"    {ps['project']}: {ps['branches_total']} branches, {ps['disk_usage_bytes'] / 1024:.0f} KB")
+                chunks = idx_by_project.get(ps["project"], 0)
+                print(f"    {ps['project']}: {ps['branches_total']} branches, {ps['disk_usage_bytes'] / 1024:.0f} KB, {chunks} indexed chunks")
 
     return 0
 
@@ -437,13 +459,13 @@ def cmd_queue(purge=False, history=0):
         recent = lines[-n:]
         if recent:
             print(f"\n  Recent history ({len(recent)}/{len(lines)}):")
-            print(f"  {'Timestamp':<20} {'Session':<10} {'Model':<10} {'Duration':>8}  {'Status'}")
-            print(f"  {'-'*19}  {'-'*9} {'-'*9} {'-'*8}  {'-'*6}")
+            print(f"  {'Timestamp':<20} {'Session':<10} {'Model':<24} {'Duration':>8}  {'Status'}")
+            print(f"  {'-'*19}  {'-'*9} {'-'*23} {'-'*8}  {'-'*6}")
             for line in recent:
                 try:
                     entry = json.loads(line)
                     print(
-                        f"  {entry['ts']:<20} {entry['session']:<10} {entry['model']:<10} "
+                        f"  {entry['ts']:<20} {entry['session']:<10} {entry['model']:<24} "
                         f"{entry['duration_s']:>7.2f}s  {entry['status']}"
                     )
                 except (json.JSONDecodeError, KeyError):
@@ -452,6 +474,138 @@ def cmd_queue(purge=False, history=0):
         print("\n  No processing history yet.")
 
     return 0
+
+
+def cmd_wipe(confirm=False, project=""):
+    """Wipe data for a fresh start. Wipes one project or all.
+
+    Preserves config.yaml, hooks, MCP server, and installed state.
+    """
+    cfg = get_config()
+
+    scope = f"project '{project}'" if project else "ALL byomem"
+
+    if not confirm:
+        print(f"This will delete {scope} data:")
+        if not project:
+            print("  - Search database (search.db)")
+        else:
+            print(f"  - Search index entries for {project}")
+        print("  - Branch data (log.md, commit.md, metadata.md)")
+        print("  - main.md project memory")
+        if not project:
+            print("  - Queue history and debug logs")
+            print("  - Session offsets")
+        print()
+        print("Config, hooks, and MCP server are preserved.")
+        print()
+        # List available projects
+        projects = sorted(
+            d for d in cfg.byomem.iterdir()
+            if d.is_dir() and not d.name.startswith(".") and d.name != "queue"
+            and ((d / "branches").exists() or (d / "main.md").exists())
+        )
+        if projects:
+            print("Projects:")
+            for p in projects:
+                branches_dir = p / "branches"
+                branch_count = sum(1 for b in branches_dir.iterdir() if b.is_dir()) if branches_dir.exists() else 0
+                print(f"  {p.name:<20} {branch_count} branch(es)")
+            print()
+        print("Run with --confirm to proceed.")
+        return 1
+
+    removed = []
+
+    if project:
+        # --- Per-project wipe ---
+        project_dir = cfg.byomem / project
+        if not project_dir.exists():
+            print(f"Project '{project}' not found.")
+            return 1
+
+        # Remove project entries from search index
+        try:
+            from core.search_index import delete_indexed_prefix
+            count = delete_indexed_prefix(f"{project}/")
+            if count:
+                removed.append(f"search index: {count} file(s) for {project}")
+        except Exception:
+            pass
+
+        # Reset main.md
+        main_md = project_dir / "main.md"
+        if main_md.exists():
+            main_md.write_text(f"# {project}\n\n## Key Decisions & Fixes\n")
+            removed.append(str(main_md) + " (reset)")
+
+        # Clear branch files
+        _wipe_branches(project_dir / "branches", removed)
+
+    else:
+        # --- Full wipe ---
+        # 1. Search DB + WAL/SHM
+        for suffix in ("", "-shm", "-wal"):
+            p = Path(str(cfg.db_path) + suffix)
+            if p.exists():
+                p.unlink()
+                removed.append(str(p))
+
+        # 2. All projects
+        for project_dir in cfg.byomem.iterdir():
+            if not project_dir.is_dir() or project_dir.name.startswith(".") or project_dir.name == "queue":
+                continue
+
+            main_md = project_dir / "main.md"
+            if main_md.exists():
+                main_md.write_text(f"# {project_dir.name}\n\n## Key Decisions & Fixes\n")
+                removed.append(str(main_md) + " (reset)")
+
+            _wipe_branches(project_dir / "branches", removed)
+
+        # 3. Queue: history, debug log, session offsets
+        queue_dir = cfg.queue_path
+        if queue_dir.exists():
+            for name in ("history.jsonl", "summarizer_debug.jsonl"):
+                p = queue_dir / name
+                if p.exists():
+                    p.unlink()
+                    removed.append(str(p))
+
+            offsets_dir = queue_dir / "offsets"
+            if offsets_dir.exists():
+                for f in offsets_dir.iterdir():
+                    f.unlink()
+                    removed.append(str(f))
+
+            failed_dir = queue_dir / "failed"
+            if failed_dir.exists():
+                for f in failed_dir.glob("*.json"):
+                    f.unlink()
+                    removed.append(str(f))
+
+    print(f"Wiped {len(removed)} items ({scope}).")
+    for r in removed:
+        print(f"  {r}")
+
+    return 0
+
+
+def _wipe_branches(branches_dir, removed):
+    """Clear branch files under a branches/ directory."""
+    if not branches_dir.exists():
+        return
+    for branch in branches_dir.iterdir():
+        if not branch.is_dir():
+            continue
+        for f in branch.iterdir():
+            if f.name == ".lock":
+                continue
+            if f.name == "commit.md":
+                f.write_text("")
+            else:
+                f.unlink()
+            removed.append(str(f))
 
 
 def cmd_reindex():
@@ -529,6 +683,7 @@ def main():
     sub.add_parser("install", help="Register Stop hook and MCP server")
     sub.add_parser("uninstall", help="Remove byomem from settings.json")
     sub.add_parser("status", help="Show installation status")
+    sub.add_parser("projects", help="List all projects")
 
     p_show = sub.add_parser("show", help="List branches for a project")
     p_show.add_argument("project", help="Project name")
@@ -548,6 +703,11 @@ def main():
     p_queue = sub.add_parser("queue", help="Show queue status")
     p_queue.add_argument("--purge", action="store_true", help="Remove stale processing files")
     p_queue.add_argument("--history", type=int, default=0, metavar="N", help="Show last N history entries (default: 10)")
+
+    p_wipe = sub.add_parser("wipe", help="Wipe all data for a fresh start")
+    p_wipe.add_argument("action", nargs="?", default="", help="'list' to show projects, or omit to wipe")
+    p_wipe.add_argument("--confirm", action="store_true", help="Actually wipe (safety check)")
+    p_wipe.add_argument("--project", default="", help="Wipe only this project")
 
     sub.add_parser("reindex", help="Rebuild the search index")
 
@@ -572,6 +732,8 @@ def main():
         sys.exit(cmd_uninstall())
     elif args.command == "status":
         cmd_status()
+    elif args.command == "projects":
+        cmd_projects()
     elif args.command == "show":
         cmd_show(args.project)
     elif args.command == "log":
@@ -582,6 +744,11 @@ def main():
         sys.exit(cmd_merge(args.project, args.branch))
     elif args.command == "queue":
         sys.exit(cmd_queue(purge=args.purge, history=args.history))
+    elif args.command == "wipe":
+        if args.action == "list":
+            cmd_projects()
+        else:
+            sys.exit(cmd_wipe(confirm=args.confirm, project=args.project))
     elif args.command == "reindex":
         cmd_reindex()
     elif args.command == "stats":
