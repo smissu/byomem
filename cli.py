@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 from core.config import get_config
@@ -317,6 +318,82 @@ def cmd_gc(project="", days=90, dry_run=False, reindex=False):
         print("Rebuilding search index...")
         cmd_reindex()
 
+    return 0
+
+
+def cmd_backfill_summaries(project="", dry_run=False):
+    """Backfill empty summary fields from commit.md milestones or log.md."""
+    cfg = get_config()
+
+    # Determine projects to scan
+    if project:
+        projects = [project]
+    else:
+        projects = sorted(
+            d.name for d in cfg.byomem.iterdir()
+            if d.is_dir() and not d.name.startswith(".")
+            and (d / "branches").is_dir()
+        )
+
+    updated = 0
+    skipped = 0
+
+    for proj in projects:
+        branches_dir = cfg.byomem / proj / "branches"
+        if not branches_dir.is_dir():
+            continue
+
+        for branch_dir in sorted(branches_dir.iterdir()):
+            if not branch_dir.is_dir():
+                continue
+
+            meta_path = branch_dir / "metadata.md"
+            if not meta_path.exists():
+                continue
+
+            # Check if summary already populated
+            meta = meta_path.read_text()
+            match = re.search(r"^summary:[ \t]*(.+)$", meta, re.MULTILINE)
+            if match and match.group(1).strip():
+                skipped += 1
+                continue
+
+            # Strategy 1: last milestone title from commit.md
+            summary_text = None
+            commit_path = branch_dir / "commit.md"
+            if commit_path.exists():
+                titles = re.findall(
+                    r"\*\*\[(\w+)\]\s*(.+?)\*\*", commit_path.read_text()
+                )
+                if titles:
+                    cls, title = titles[-1]
+                    summary_text = f"[{cls}] {title.strip()}"
+
+            # Strategy 2: first user question from log.md
+            if not summary_text:
+                log_path = branch_dir / "log.md"
+                if log_path.exists():
+                    user_match = re.search(
+                        r"> \*\*User\*\*:\s*(.+)", log_path.read_text()
+                    )
+                    if user_match:
+                        summary_text = user_match.group(1)[:80].strip()
+
+            if not summary_text:
+                print(f"  {proj}/{branch_dir.name}: no data to infer summary")
+                continue
+
+            if dry_run:
+                print(f"  [dry-run] {proj}/{branch_dir.name}: {summary_text}")
+            else:
+                meta = re.sub(r"summary:.*\n", f"summary: {summary_text}\n", meta)
+                meta_path.write_text(meta)
+                print(f"  {proj}/{branch_dir.name}: {summary_text}")
+
+            updated += 1
+
+    action = "Would update" if dry_run else "Updated"
+    print(f"\n{action} {updated} branch(es), {skipped} already had summaries.")
     return 0
 
 
@@ -706,6 +783,313 @@ def cmd_merge_project(source, target, confirm=False):
     return 0
 
 
+def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None, prompt_file="", test_set="", ollama_opts=None, backend="ollama"):
+    """Replay summarizer debug entries against a model via Ollama or Gemini CLI."""
+    import hashlib
+    import time
+
+    import httpx
+
+    from core.models import BatchSummaryResponse, TurnSummary
+    from core.summarizer import (
+        BATCH_SYSTEM,
+        SYSTEM,
+        _run_gemini,
+        _strip_fences,
+        _wrap_bare_array,
+    )
+
+    cfg = get_config()
+
+    # Derive Ollama native API URL from config
+    base = (cfg.summarizer_base_url or "http://localhost:11434/v1").rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    ollama_base = base
+    api_url = base + "/api/chat"
+
+    # Use higher token limit for comparison (batch JSON needs more room)
+    num_predict = max_tokens if max_tokens > 0 else max(cfg.summarizer_max_tokens, 2048)
+
+    # Load model-specific prompt tweaks
+    prompt_extra = ""
+    if prompt_file:
+        pf = Path(prompt_file)
+        if not pf.exists():
+            print(f"Prompt file not found: {pf}", file=sys.stderr)
+            return 1
+        prompt_extra = pf.read_text().strip()
+
+    sys_single = SYSTEM + ("\n\n" + prompt_extra if prompt_extra else "")
+    sys_batch = BATCH_SYSTEM + ("\n\n" + prompt_extra if prompt_extra else "")
+
+    # Determine input source: test set (default) or raw debug log
+    test_set_path = Path(test_set) if test_set else cfg.queue_path / "test_set.jsonl"
+    if not test_set_path.exists():
+        # Fall back to raw debug log
+        test_set_path = cfg.queue_path / "summarizer_debug.jsonl"
+    if not test_set_path.exists():
+        print(f"No test data found: {test_set_path}", file=sys.stderr)
+        return 1
+
+    # Read entries
+    entries = []
+    with open(test_set_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                entries.append(json.loads(line))
+
+    if limit > 0:
+        entries = entries[:limit]
+
+    if not entries:
+        print("No entries to process.")
+        return 0
+
+    # Query model size (Ollama only)
+    model_size = ""
+    if backend == "ollama":
+        try:
+            show_resp = httpx.post(f"{ollama_base}/api/show", json={"name": model}, timeout=10.0)
+            if show_resp.status_code == 200:
+                details = show_resp.json().get("details", {})
+                model_size = details.get("parameter_size", "")
+        except Exception:
+            pass
+    elif backend == "gemini":
+        model_size = "cloud"
+
+    output_path = Path(output) if output else cfg.queue_path / "model_comparison.jsonl"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Build full Ollama options
+    extra_opts = ollama_opts or {}
+    ollama_options = {"num_predict": num_predict}
+    if temperature is not None:
+        ollama_options["temperature"] = temperature
+    ollama_options.update(extra_opts)
+
+    # Generate short run ID from settings hash
+    run_key = json.dumps({
+        "model": model, "test_set": test_set_path.name,
+        "options": ollama_options, "prompt_file": prompt_file,
+        "ts": datetime.now(UTC).isoformat(),
+    }, sort_keys=True)
+    run_id = hashlib.sha1(run_key.encode()).hexdigest()[:8]
+
+    temp_str = str(temperature) if temperature is not None else "default"
+    size_str = f" ({model_size})" if model_size else ""
+    print(f"Run {run_id}: {len(entries)} entries against {model}{size_str} [{backend}]")
+    print(f"Source: {test_set_path.name}")
+    if backend == "ollama":
+        print(f"API: {api_url}")
+        print(f"Temperature: {temp_str}  Max tokens: {num_predict}")
+    else:
+        print(f"Backend: {backend}")
+    if extra_opts:
+        print(f"Ollama opts: {extra_opts}")
+    if prompt_extra:
+        print(f"Prompt tweaks: {prompt_file} ({len(prompt_extra)} chars)")
+    print(f"Output: {output_path}\n")
+
+    success = 0
+    failed = 0
+    durations = []
+    _all_results = []
+    t_start = time.monotonic()
+
+    with open(output_path, "w") as out_f:
+        for i, entry in enumerate(entries, 1):
+            mode = entry.get("mode", "single")
+            input_text = entry.get("input", "")
+            if not input_text:
+                failed += 1
+                continue
+
+            # Pick prompt and schema based on mode
+            if mode == "batch":
+                sys_prompt = sys_batch
+                schema = BatchSummaryResponse.model_json_schema()
+            else:
+                sys_prompt = sys_single
+                schema = TurnSummary.model_json_schema()
+
+            t_entry = time.monotonic()
+            eval_stats = {}
+            try:
+                if backend == "gemini":
+                    # Gemini CLI: combine system + user into one prompt
+                    prompt = sys_prompt + "\n\n" + input_text
+                    raw_text = _run_gemini(cfg, prompt)
+                    text = _wrap_bare_array(_strip_fences(raw_text))
+                    compare_output = json.loads(text)
+                else:
+                    # Ollama native API
+                    resp = httpx.post(
+                        api_url,
+                        json={
+                            "model": model,
+                            "stream": False,
+                            "think": False,
+                            "format": schema,
+                            "options": ollama_options,
+                            "messages": [
+                                {"role": "system", "content": sys_prompt},
+                                {"role": "user", "content": input_text},
+                            ],
+                        },
+                        timeout=120.0,
+                    )
+                    resp.raise_for_status()
+                    body = resp.json()
+                    eval_stats = {
+                        "total_duration_ns": body.get("total_duration"),
+                        "prompt_eval_count": body.get("prompt_eval_count"),
+                        "eval_count": body.get("eval_count"),
+                        "eval_duration_ns": body.get("eval_duration"),
+                    }
+                    raw_text = body.get("message", {}).get("content", "")
+                    if not raw_text or not raw_text.strip():
+                        done_reason = body.get("done_reason", "?")
+                        raise ValueError(
+                            f"Empty response (done_reason={done_reason}, "
+                            f"eval_count={eval_stats.get('eval_count', '?')}, "
+                            f"input_len={len(input_text)})"
+                        )
+                    text = _wrap_bare_array(_strip_fences(raw_text))
+                    compare_output = json.loads(text)
+                status = "ok"
+                success += 1
+            except Exception as e:
+                compare_output = None
+                status = f"error: {e}"
+                failed += 1
+
+            entry_duration = time.monotonic() - t_entry
+            durations.append(entry_duration)
+
+            # Compute tokens/sec from Ollama stats (not available for Gemini)
+            tok_per_sec = None
+            if eval_stats.get("eval_count") and eval_stats.get("eval_duration_ns"):
+                tok_per_sec = round(
+                    eval_stats["eval_count"] / (eval_stats["eval_duration_ns"] / 1e9), 1
+                )
+
+            result = {
+                "input": input_text,
+                "mode": mode,
+                "original_backend": entry.get("backend", ""),
+                "original_output": entry.get("output"),
+                "compare_backend": model,
+                "compare_temperature": temperature,
+                "compare_output": compare_output,
+                "status": status,
+                "duration_s": round(entry_duration, 2),
+                "eval_count": eval_stats.get("eval_count"),
+                "prompt_eval_count": eval_stats.get("prompt_eval_count"),
+                "tokens_per_sec": tok_per_sec,
+                "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+            out_f.write(json.dumps(result) + "\n")
+            _all_results.append(result)
+
+            tok_info = f" {tok_per_sec} tok/s" if tok_per_sec else ""
+            print(f"  [{i}/{len(entries)}] {mode:<6} {entry_duration:>5.1f}s {status:<30}{tok_info}")
+
+    total_elapsed = time.monotonic() - t_start
+    avg = sum(durations) / len(durations) if durations else 0
+    mn = min(durations) if durations else 0
+    mx = max(durations) if durations else 0
+    tok_rates = [r["tokens_per_sec"] for r in _all_results if r.get("tokens_per_sec")]
+    avg_tok = sum(tok_rates) / len(tok_rates) if tok_rates else 0
+
+    print(f"\nDone in {total_elapsed:.1f}s: {success} ok, {failed} failed out of {len(entries)}")
+    if durations:
+        print(f"Per-entry: avg={avg:.1f}s  min={mn:.1f}s  max={mx:.1f}s  avg tok/s={avg_tok:.1f}")
+    print(f"Results: {output_path}")
+
+    # Write run index entry (full config for reference)
+    index_path = cfg.queue_path / "run_index.jsonl"
+    run_record = {
+        "run_id": run_id,
+        "model": model,
+        "model_size": model_size,
+        "test_set": test_set_path.name,
+        "ollama_options": ollama_options,
+        "prompt_file": prompt_file,
+        "prompt_extra_chars": len(prompt_extra),
+        "n": len(entries),
+        "ok": success,
+        "fail": failed,
+        "avg_s": round(avg, 1),
+        "total_s": round(total_elapsed, 1),
+        "avg_tok_per_sec": round(avg_tok, 1),
+        "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    with open(index_path, "a") as f:
+        f.write(json.dumps(run_record) + "\n")
+
+    # Append to leaderboard (one per test set)
+    test_set_stem = test_set_path.stem
+    leaderboard_path = cfg.queue_path / f"leaderboard_{test_set_stem}.md"
+    _append_leaderboard(
+        leaderboard_path,
+        run_id=run_id,
+        model=model,
+        model_size=model_size,
+        temperature=temperature,
+        max_tokens=num_predict,
+        prompt_file=prompt_file,
+        n=len(entries),
+        ok=success,
+        fail=failed,
+        avg_s=avg,
+        min_s=mn,
+        max_s=mx,
+        total_s=total_elapsed,
+        avg_tok=avg_tok,
+        test_set_name=test_set_path.name,
+    )
+    print(f"\nLeaderboard: {leaderboard_path}")
+    print(leaderboard_path.read_text())
+    print(f"Run index: {index_path} (run_id={run_id})")
+
+    return 0
+
+
+def _append_leaderboard(path, *, run_id, model, model_size, temperature, max_tokens,
+                         prompt_file, n, ok, fail, avg_s, min_s, max_s,
+                         total_s, avg_tok, test_set_name):
+    """Append a row to the leaderboard markdown file, creating it if needed."""
+    header = (
+        f"# Summarizer Model Comparison Leaderboard\n\n"
+        f"Benchmark: `{test_set_name}` — {n} entries sampled across input size distribution.\n"
+        "Full run config: `run_index.jsonl` (keyed by Run ID).\n\n"
+        "| Run | Date | Model | Size | Temp | Prompt | N | OK | Fail "
+        "| Avg | Min | Max | Total | tok/s |\n"
+        "|-----|------|-------|------|------|--------|---|----|----- "
+        "|-----|-----|-----|-------|-------|\n"
+    )
+
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(header)
+
+    temp_str = str(temperature) if temperature is not None else "def"
+    prompt_str = Path(prompt_file).stem if prompt_file else "-"
+    ts = datetime.now(UTC).strftime("%m-%d %H:%M")
+
+    row = (
+        f"| {run_id} | {ts} | {model} | {model_size or '?'} | {temp_str} "
+        f"| {prompt_str} | {n} | {ok} | {fail} "
+        f"| {avg_s:.1f}s | {min_s:.1f}s | {max_s:.1f}s | {total_s:.0f}s | {avg_tok:.1f} |\n"
+    )
+
+    with open(path, "a") as f:
+        f.write(row)
+
+
 def cmd_reindex():
     """Rebuild the search index from all commit.md and main.md files."""
     cfg = get_config()
@@ -821,6 +1205,21 @@ def main():
     p_merge_proj.add_argument("target", help="Target project to merge into")
     p_merge_proj.add_argument("--confirm", action="store_true", help="Actually merge (safety check)")
 
+    p_backfill = sub.add_parser("backfill-summaries", help="Backfill empty branch summaries from commit/log data")
+    p_backfill.add_argument("--project", default="", help="Limit to one project")
+    p_backfill.add_argument("--dry-run", action="store_true", help="Show what would be updated")
+
+    p_compare = sub.add_parser("compare-models", help="Replay debug entries against a different model")
+    p_compare.add_argument("--model", required=True, help="Ollama model name to test")
+    p_compare.add_argument("--limit", type=int, default=0, help="Process first N entries only (default: all)")
+    p_compare.add_argument("--output", default="", help="Output JSONL path (default: queue/model_comparison.jsonl)")
+    p_compare.add_argument("--max-tokens", type=int, default=0, help="Override num_predict (default: max(config, 1024))")
+    p_compare.add_argument("--temperature", type=float, default=None, help="Sampling temperature (default: model default, try 0 for concise output)")
+    p_compare.add_argument("--prompt-file", default="", help="File with extra instructions appended to system prompt")
+    p_compare.add_argument("--test-set", default="", help="Custom test set JSONL (default: queue/test_set.jsonl)")
+    p_compare.add_argument("--ollama-opts", default="", help="Extra Ollama options as JSON (e.g. '{\"top_p\": 0.9}')")
+    p_compare.add_argument("--backend", default="ollama", choices=["ollama", "gemini"], help="Inference backend (default: ollama)")
+
     p_gc = sub.add_parser("gc", help="Garbage-collect old merged branches")
     p_gc.add_argument("--project", default="", help="Limit to one project")
     p_gc.add_argument("--days", type=int, default=90, help="Delete merged branches older than N days (default: 90)")
@@ -860,8 +1259,13 @@ def main():
         sys.exit(cmd_health(repair=args.repair))
     elif args.command == "merge-project":
         sys.exit(cmd_merge_project(args.source, args.target, confirm=args.confirm))
+    elif args.command == "backfill-summaries":
+        sys.exit(cmd_backfill_summaries(project=args.project, dry_run=args.dry_run))
     elif args.command == "gc":
         sys.exit(cmd_gc(project=args.project, days=args.days, dry_run=args.dry_run, reindex=args.reindex))
+    elif args.command == "compare-models":
+        extra_opts = json.loads(args.ollama_opts) if args.ollama_opts else None
+        sys.exit(cmd_compare_models(model=args.model, limit=args.limit, output=args.output, max_tokens=args.max_tokens, temperature=args.temperature, prompt_file=args.prompt_file, test_set=args.test_set, ollama_opts=extra_opts, backend=args.backend))
     else:
         parser.print_help()
 
