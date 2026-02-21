@@ -17,6 +17,9 @@ class Config:
     summarizer_fallback_model: str | None = None
     summarizer_gemini_cli: str | None = None
     summarizer_gemini_model: str | None = None
+    summarizer_opencode_cli: str | None = None
+    summarizer_opencode_model: str | None = None
+    summarizer_concurrency: int = 1
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1536
     embedding_base_url: str | None = None
@@ -78,6 +81,12 @@ def _load_config() -> Config:
         kwargs["summarizer_gemini_cli"] = summarizer["gemini_cli"]
     if "gemini_model" in summarizer:
         kwargs["summarizer_gemini_model"] = summarizer["gemini_model"]
+    if "opencode_cli" in summarizer:
+        kwargs["summarizer_opencode_cli"] = summarizer["opencode_cli"]
+    if "opencode_model" in summarizer:
+        kwargs["summarizer_opencode_model"] = summarizer["opencode_model"]
+    if "concurrency" in summarizer:
+        kwargs["summarizer_concurrency"] = summarizer["concurrency"]
 
     embeddings = data.get("embeddings", {})
     if "model" in embeddings:

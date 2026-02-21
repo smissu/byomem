@@ -96,9 +96,23 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
         # Batch summarize for efficiency
         batch_size = cfg.batch_size
         all_summaries = []
-        for i in range(0, len(new_turns), batch_size):
-            batch = new_turns[i:i + batch_size]
-            all_summaries.extend(summarize_batch(batch, model_override=model_override))
+        batches = [new_turns[i:i + batch_size] for i in range(0, len(new_turns), batch_size)]
+
+        if cfg.summarizer_concurrency > 1 and len(batches) > 1:
+            with ThreadPoolExecutor(max_workers=cfg.summarizer_concurrency) as pool:
+                future_to_idx = {
+                    pool.submit(summarize_batch, batch, model_override=model_override): idx
+                    for idx, batch in enumerate(batches)
+                }
+                results_by_idx = {}
+                for future in as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    results_by_idx[idx] = future.result()
+                for idx in range(len(batches)):
+                    all_summaries.extend(results_by_idx[idx])
+        else:
+            for batch in batches:
+                all_summaries.extend(summarize_batch(batch, model_override=model_override))
 
         # Apply summaries to branch
         enrich = cfg.log_search_mode == "enrich"

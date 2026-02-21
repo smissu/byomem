@@ -1055,8 +1055,11 @@ def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None
         "ok": success,
         "fail": failed,
         "avg_s": round(avg, 1),
+        "min_s": round(mn, 1),
+        "max_s": round(mx, 1),
         "total_s": round(total_elapsed, 1),
         "avg_tok_per_sec": round(avg_tok, 1),
+        "quality": None,
         "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
     }
     with open(index_path, "a") as f:
@@ -1133,16 +1136,17 @@ def _run_opencode(model, prompt):
 
 def _append_leaderboard(path, *, run_id, model, model_size, temperature, max_tokens,
                          prompt_file, n, ok, fail, avg_s, min_s, max_s,
-                         total_s, avg_tok, test_set_name):
+                         total_s, avg_tok, test_set_name, quality=None, ts_override=None):
     """Append a row to the leaderboard markdown file, creating it if needed."""
     header = (
         f"# Summarizer Model Comparison Leaderboard\n\n"
         f"Benchmark: `{test_set_name}` — {n} entries sampled across input size distribution.\n"
         "Full run config: `run_index.jsonl` (keyed by Run ID).\n\n"
         "| Run | Date | Model | Size | Temp | Prompt | N | OK | Fail "
-        "| Avg | Min | Max | Total | tok/s |\n"
+        "| Avg | Min | Max | Total | tok/s | Quality |\n"
         "|-----|------|-------|------|------|--------|---|----|----- "
-        "|-----|-----|-----|-------|-------|\n"
+        "|-----|-----|-----|-------|-------|---------|"
+        "\n"
     )
 
     if not path.exists():
@@ -1151,16 +1155,114 @@ def _append_leaderboard(path, *, run_id, model, model_size, temperature, max_tok
 
     temp_str = str(temperature) if temperature is not None else "def"
     prompt_str = Path(prompt_file).stem if prompt_file else "-"
-    ts = datetime.now(UTC).strftime("%m-%d %H:%M")
+    if ts_override:
+        # Parse ISO timestamp from run index for rebuild
+        try:
+            dt = datetime.fromisoformat(ts_override)
+            ts = dt.strftime("%m-%d %H:%M")
+        except (ValueError, TypeError):
+            ts = datetime.now(UTC).strftime("%m-%d %H:%M")
+    else:
+        ts = datetime.now(UTC).strftime("%m-%d %H:%M")
 
+    quality_str = quality or "-"
     row = (
         f"| {run_id} | {ts} | {model} | {model_size or '?'} | {temp_str} "
         f"| {prompt_str} | {n} | {ok} | {fail} "
-        f"| {avg_s:.1f}s | {min_s:.1f}s | {max_s:.1f}s | {total_s:.0f}s | {avg_tok:.1f} |\n"
+        f"| {avg_s:.1f}s | {min_s:.1f}s | {max_s:.1f}s | {total_s:.0f}s | {avg_tok:.1f} | {quality_str} |\n"
     )
 
     with open(path, "a") as f:
         f.write(row)
+
+
+def cmd_rate_model(run_id, quality):
+    """Set the quality rating on a run and rebuild its leaderboard."""
+    valid_ratings = ("excellent", "good", "fair", "weak")
+    quality = quality.lower()
+    if quality not in valid_ratings:
+        print(f"Invalid quality '{quality}'. Must be one of: {', '.join(valid_ratings)}", file=sys.stderr)
+        return 1
+
+    cfg = get_config()
+    index_path = cfg.queue_path / "run_index.jsonl"
+    if not index_path.exists():
+        print("No run index found.", file=sys.stderr)
+        return 1
+
+    # Read all runs, find matching run(s), update quality
+    runs = []
+    matched = False
+    with open(index_path) as f:
+        for line in f:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record["run_id"].startswith(run_id):
+                record["quality"] = quality.capitalize()
+                matched = True
+                print(f"Rated run {record['run_id']} ({record['model']}) as: {record['quality']}")
+            runs.append(record)
+
+    if not matched:
+        print(f"No run matching '{run_id}' found.", file=sys.stderr)
+        return 1
+
+    # Rewrite run index
+    with open(index_path, "w") as f:
+        for record in runs:
+            f.write(json.dumps(record) + "\n")
+
+    # Rebuild leaderboards from run index
+    _rebuild_leaderboards(cfg, runs)
+    return 0
+
+
+def _rebuild_leaderboards(cfg, runs):
+    """Rebuild all leaderboard files from run index records."""
+    # Group runs by test_set
+    by_test_set = {}
+    for r in runs:
+        ts_name = r.get("test_set", "")
+        if ts_name not in by_test_set:
+            by_test_set[ts_name] = []
+        by_test_set[ts_name].append(r)
+
+    for test_set_name, test_runs in by_test_set.items():
+        stem = Path(test_set_name).stem if test_set_name else "unknown"
+        leaderboard_path = cfg.queue_path / f"leaderboard_{stem}.md"
+
+        # Delete and recreate
+        if leaderboard_path.exists():
+            leaderboard_path.unlink()
+
+        for r in test_runs:
+            prompt_file = r.get("prompt_file", "")
+            opts = r.get("ollama_options", {})
+            temperature = opts.get("temperature")
+            max_tokens = opts.get("num_predict", 0)
+            _append_leaderboard(
+                leaderboard_path,
+                run_id=r["run_id"],
+                model=r["model"],
+                model_size=r.get("model_size", "?"),
+                temperature=temperature,
+                max_tokens=max_tokens,
+                prompt_file=prompt_file,
+                n=r.get("n", 0),
+                ok=r.get("ok", 0),
+                fail=r.get("fail", 0),
+                avg_s=r.get("avg_s", 0),
+                min_s=r.get("min_s", 0),
+                max_s=r.get("max_s", 0),
+                total_s=r.get("total_s", 0),
+                avg_tok=r.get("avg_tok_per_sec", 0),
+                test_set_name=test_set_name,
+                quality=r.get("quality"),
+                ts_override=r.get("ts"),
+            )
+
+        print(f"Rebuilt {leaderboard_path}")
 
 
 def cmd_reindex():
@@ -1294,6 +1396,10 @@ def main():
     p_compare.add_argument("--backend", default="ollama", choices=["ollama", "gemini", "opencode"], help="Inference backend (default: ollama)")
     p_compare.add_argument("--concurrency", type=int, default=1, help="Parallel workers for cloud backends (default: 1)")
 
+    p_rate = sub.add_parser("rate-model", help="Set quality rating on a compare-models run")
+    p_rate.add_argument("run_id", help="Run ID (or prefix) to rate")
+    p_rate.add_argument("quality", choices=["excellent", "good", "fair", "weak"], help="Quality rating")
+
     p_gc = sub.add_parser("gc", help="Garbage-collect old merged branches")
     p_gc.add_argument("--project", default="", help="Limit to one project")
     p_gc.add_argument("--days", type=int, default=90, help="Delete merged branches older than N days (default: 90)")
@@ -1337,6 +1443,8 @@ def main():
         sys.exit(cmd_backfill_summaries(project=args.project, dry_run=args.dry_run))
     elif args.command == "gc":
         sys.exit(cmd_gc(project=args.project, days=args.days, dry_run=args.dry_run, reindex=args.reindex))
+    elif args.command == "rate-model":
+        sys.exit(cmd_rate_model(args.run_id, args.quality))
     elif args.command == "compare-models":
         extra_opts = json.loads(args.ollama_opts) if args.ollama_opts else None
         sys.exit(cmd_compare_models(model=args.model, limit=args.limit, output=args.output, max_tokens=args.max_tokens, temperature=args.temperature, prompt_file=args.prompt_file, test_set=args.test_set, ollama_opts=extra_opts, backend=args.backend, concurrency=args.concurrency))

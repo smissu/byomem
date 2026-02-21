@@ -263,6 +263,60 @@ def _batch_gemini(cfg, user_content: str) -> BatchSummaryResponse:
 
 
 # ---------------------------------------------------------------------------
+# OpenCode CLI backend
+# ---------------------------------------------------------------------------
+
+def _opencode_available(cfg) -> bool:
+    """Check if OpenCode CLI is configured and the binary exists."""
+    return bool(cfg.summarizer_opencode_cli and shutil.which(cfg.summarizer_opencode_cli))
+
+
+def _run_opencode(cfg, prompt: str) -> str:
+    """Run OpenCode CLI and return the response text."""
+    cmd = [cfg.summarizer_opencode_cli, "run", prompt, "-m", cfg.summarizer_opencode_model, "--format", "json"]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"OpenCode CLI failed (rc={result.returncode}): {result.stderr[:200]}"
+        )
+    # Parse NDJSON: collect type="text" parts
+    text_parts = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "text":
+            text_parts.append(event["part"]["text"])
+
+    response_text = "".join(text_parts)
+    if not response_text.strip():
+        raise ValueError("Empty response from OpenCode CLI")
+    return response_text
+
+
+def _summarize_opencode(cfg, user_content: str) -> dict:
+    """Summarize a single turn via OpenCode CLI."""
+    prompt = SYSTEM + "\n\n" + user_content
+    return json.loads(_strip_fences(_run_opencode(cfg, prompt)))
+
+
+def _batch_opencode(cfg, user_content: str) -> BatchSummaryResponse:
+    """Batch summarize via OpenCode CLI."""
+    prompt = BATCH_SYSTEM + "\n\n" + user_content
+    text = _wrap_bare_array(_strip_fences(_run_opencode(cfg, prompt)))
+    return BatchSummaryResponse.model_validate_json(text)
+
+
+# ---------------------------------------------------------------------------
 # Single-turn summarization (backward compatible — returns dict)
 # ---------------------------------------------------------------------------
 
@@ -286,6 +340,14 @@ def summarize_turn(turn, *, model_override: str | None = None) -> dict:
                 return result
             except Exception:
                 logger.debug("Gemini CLI single-turn failed", exc_info=True)
+        # OpenCode CLI is secondary cloud backend (skip for overflow workers)
+        if _opencode_available(cfg) and not model_override:
+            try:
+                result = _summarize_opencode(cfg, user_content)
+                backend = cfg.summarizer_opencode_model or "opencode"
+                return result
+            except Exception:
+                logger.debug("OpenCode CLI single-turn failed", exc_info=True)
         if cfg.summarizer_base_url:
             if model_override:
                 result = _summarize_openai_compat(cfg, user_content, model=model_override)
@@ -402,6 +464,15 @@ def summarize_batch(turns: list, *, model_override: str | None = None) -> list[T
                 return results
             except Exception:
                 logger.debug("Gemini CLI batch failed, falling back", exc_info=True)
+        # OpenCode CLI is secondary cloud backend (skip for overflow workers)
+        if _opencode_available(cfg) and not model_override:
+            try:
+                batch_resp = _batch_opencode(cfg, user_content)
+                results = _align_results(coerced, batch_resp)
+                backend = cfg.summarizer_opencode_model or "opencode"
+                return results
+            except Exception:
+                logger.debug("OpenCode CLI batch failed, falling back", exc_info=True)
         if cfg.summarizer_base_url:
             if model_override:
                 batch_resp = _batch_openai_compat(cfg, user_content, model=model_override)
