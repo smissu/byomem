@@ -1,5 +1,6 @@
 """Tests for core/search_index.py — hybrid FTS5 + sqlite-vec search index."""
 from core.search_index import (
+    _chunk_structured,
     _chunk_text,
     cleanup_orphaned_entries,
     delete_indexed_prefix,
@@ -309,3 +310,113 @@ def test_cleanup_preserves_valid(tmp_byomem, mock_openai_embed):
 
     db = get_db()
     assert db.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 1
+
+
+# ---------- _chunk_structured ----------
+
+
+def _make_cfg(**overrides):
+    """Helper to create a Config with defaults suitable for chunk tests."""
+    from core.config import Config
+    defaults = dict(chunk_tokens=400, chunk_overlap=80, approx_chars_per_token=4)
+    defaults.update(overrides)
+    return Config(**defaults)
+
+
+def test_chunk_structured_main_md():
+    """main.md entries become individual chunks with no cross-entry splits."""
+    content = (
+        "# Project Memory\n"
+        "\n"
+        "- [2026-02-19] Fixed stop price field to use aux_price\n"
+        "- [2026-02-18] Added trailing stop support with type=1\n"
+        "- [2026-02-17] Refactored order validation logic\n"
+    )
+    cfg = _make_cfg()
+    chunks = _chunk_structured(content, "proj/main.md", cfg)
+
+    # Header ("# Project Memory\n\n") is one chunk, then each entry is a chunk
+    texts = [c[2] for c in chunks]
+    assert len(chunks) == 4  # header + 3 entries
+    # Each entry chunk should contain exactly one "- [" line
+    entry_chunks = [t for t in texts if t.startswith("- [")]
+    assert len(entry_chunks) == 3
+    # No chunk mixes entries from different dates
+    for t in entry_chunks:
+        assert t.count("- [") == 1
+
+
+def test_chunk_structured_commit_md():
+    """Each milestone section in commit.md becomes one chunk."""
+    content = (
+        "# Session Summary\n"
+        "\n"
+        "## This Commit's Contribution — Fix auth flow\n"
+        "Resolved token refresh bug in middleware.\n"
+        "\n"
+        "## This Commit's Contribution — Add rate limiting\n"
+        "Implemented sliding window rate limiter.\n"
+    )
+    cfg = _make_cfg()
+    chunks = _chunk_structured(content, "proj/branches/2026-02-19-abc/commit.md", cfg)
+
+    texts = [c[2] for c in chunks]
+    assert len(chunks) == 3  # header + 2 milestone sections
+    milestone_chunks = [t for t in texts if "## This Commit" in t]
+    assert len(milestone_chunks) == 2
+    assert "auth flow" in milestone_chunks[0]
+    assert "rate limiting" in milestone_chunks[1]
+
+
+def test_chunk_structured_log_md():
+    """Each turn in log.md becomes one chunk."""
+    content = (
+        "<!-- last_id:abc-123 -->\n"
+        "**User:** Why is the price wrong?\n"
+        "**Assistant:** The field is aux_price.\n"
+        "\n"
+        "<!-- last_id:def-456 -->\n"
+        "**User:** How to set trailing stop?\n"
+        "**Assistant:** Use trailing_stop_type=1.\n"
+    )
+    cfg = _make_cfg()
+    chunks = _chunk_structured(content, "proj/branches/2026-02-19-abc/log.md", cfg)
+
+    texts = [c[2] for c in chunks]
+    assert len(chunks) == 2  # 2 turns
+    assert "aux_price" in texts[0]
+    assert "trailing_stop_type" in texts[1]
+
+
+def test_chunk_structured_fallback():
+    """Unrecognized files use the line-based chunker."""
+    content = "Some random content\nwith multiple lines\n"
+    cfg = _make_cfg()
+
+    structured = _chunk_structured(content, "proj/notes.txt", cfg)
+    line_based = _chunk_text(
+        content, cfg.chunk_tokens, cfg.chunk_overlap, cfg.approx_chars_per_token
+    )
+
+    assert structured == line_based
+
+
+def test_chunk_structured_oversized_entry():
+    """A single entry exceeding chunk_chars gets sub-chunked."""
+    # chunk_tokens=10, approx=4 → chunk_chars=40
+    # Build one entry with multiple lines totaling > 40 chars
+    big_lines = ["- [2026-02-19] Start of big entry"] + [
+        f"  detail line {i} " + "x" * 10 for i in range(5)
+    ]
+    big_entry = "\n".join(big_lines)
+    content = big_entry + "\n- [2026-02-18] small entry\n"
+    cfg = _make_cfg(chunk_tokens=10, chunk_overlap=2)
+
+    chunks = _chunk_structured(content, "proj/main.md", cfg)
+    texts = [c[2] for c in chunks]
+
+    # The big entry should produce multiple sub-chunks
+    # Plus one chunk for the small entry
+    assert len(chunks) >= 3
+    # The small entry should be its own chunk
+    assert any("small entry" in t for t in texts)

@@ -56,7 +56,7 @@ def index_file(path: Path, project: str):
         )
     db.execute("DELETE FROM chunks WHERE file_path=?", (rel_path,))
 
-    chunks = _chunk_text(content, cfg.chunk_tokens, cfg.chunk_overlap, cfg.approx_chars_per_token)
+    chunks = _chunk_structured(content, rel_path, cfg)
 
     for start_line, end_line, text in chunks:
         text_hash = hashlib.sha256(text.encode()).hexdigest()
@@ -276,6 +276,73 @@ def _get_embedding(db, text, text_hash):
         return embedding
     except Exception:
         return None
+
+
+def _chunk_structured(content, rel_path, cfg):
+    """Split content on semantic boundaries when file type is recognized.
+
+    Dispatches based on file name:
+      main.md    — split on ``- [`` entry lines
+      commit.md  — split on ``## This Commit`` headers
+      log.md     — split on ``<!-- last_id:`` anchors
+
+    Falls back to generic line-based chunking for unrecognized files.
+    Oversized single entries are sub-chunked via ``_chunk_text``.
+    """
+    import os
+
+    basename = os.path.basename(rel_path)
+    chunk_chars = cfg.chunk_tokens * cfg.approx_chars_per_token
+
+    if basename == "main.md":
+        return _split_on_delimiter(content, "- [", chunk_chars, cfg)
+    elif basename == "commit.md":
+        return _split_on_delimiter(content, "## This Commit", chunk_chars, cfg)
+    elif basename == "log.md":
+        return _split_on_delimiter(content, "<!-- last_id:", chunk_chars, cfg)
+    else:
+        return _chunk_text(content, cfg.chunk_tokens, cfg.chunk_overlap, cfg.approx_chars_per_token)
+
+
+def _split_on_delimiter(content, delimiter, chunk_chars, cfg):
+    """Split content into chunks at lines starting with *delimiter*.
+
+    Lines before the first delimiter become a header chunk (if non-empty).
+    Each subsequent section (delimiter line through the line before the next
+    delimiter) becomes one chunk.  If a section exceeds *chunk_chars* it is
+    sub-chunked via ``_chunk_text``.
+
+    Returns list of ``(start_line, end_line, text)`` tuples (1-indexed lines).
+    """
+    lines = content.splitlines()
+    sections = []  # list of (start_idx, end_idx) 0-indexed
+    current_start = 0
+
+    for i, line in enumerate(lines):
+        if line.startswith(delimiter) and i > current_start:
+            sections.append((current_start, i))
+            current_start = i
+
+    # Final section
+    if current_start < len(lines):
+        sections.append((current_start, len(lines)))
+
+    chunks = []
+    for start_idx, end_idx in sections:
+        text = "\n".join(lines[start_idx:end_idx])
+        if not text.strip():
+            continue
+        if len(text) > chunk_chars:
+            # Oversized entry — sub-chunk it
+            sub = _chunk_text(
+                text, cfg.chunk_tokens, cfg.chunk_overlap, cfg.approx_chars_per_token
+            )
+            for s_start, s_end, s_text in sub:
+                chunks.append((start_idx + s_start, start_idx + s_end, s_text))
+        else:
+            chunks.append((start_idx + 1, end_idx, text))
+
+    return chunks
 
 
 def _chunk_text(text, chunk_tokens, chunk_overlap, chars_per_token=4):
