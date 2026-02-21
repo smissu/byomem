@@ -783,10 +783,11 @@ def cmd_merge_project(source, target, confirm=False):
     return 0
 
 
-def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None, prompt_file="", test_set="", ollama_opts=None, backend="ollama"):
+def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None, prompt_file="", test_set="", ollama_opts=None, backend="ollama", concurrency=1):
     """Replay summarizer debug entries against a model via Ollama or Gemini CLI."""
     import hashlib
     import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     import httpx
 
@@ -857,7 +858,7 @@ def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None
                 model_size = details.get("parameter_size", "")
         except Exception:
             pass
-    elif backend == "gemini":
+    else:
         model_size = "cloud"
 
     output_path = Path(output) if output else cfg.queue_path / "model_comparison.jsonl"
@@ -878,6 +879,8 @@ def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None
     }, sort_keys=True)
     run_id = hashlib.sha1(run_key.encode()).hexdigest()[:8]
 
+    n_workers = concurrency if backend in ("gemini", "opencode") else 1
+
     temp_str = str(temperature) if temperature is not None else "default"
     size_str = f" ({model_size})" if model_size else ""
     print(f"Run {run_id}: {len(entries)} entries against {model}{size_str} [{backend}]")
@@ -891,7 +894,97 @@ def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None
         print(f"Ollama opts: {extra_opts}")
     if prompt_extra:
         print(f"Prompt tweaks: {prompt_file} ({len(prompt_extra)} chars)")
+    if n_workers > 1:
+        print(f"Concurrency: {n_workers} workers")
     print(f"Output: {output_path}\n")
+
+    def _process_entry(idx_entry):
+        """Process a single entry. Returns (index, result_dict)."""
+        idx, entry = idx_entry
+        mode = entry.get("mode", "single")
+        input_text = entry.get("input", "")
+        if not input_text:
+            return idx, {"status": "error: empty input", "mode": mode, "duration_s": 0}
+
+        sys_prompt = sys_batch if mode == "batch" else sys_single
+        schema = (BatchSummaryResponse.model_json_schema() if mode == "batch"
+                  else TurnSummary.model_json_schema())
+
+        t_entry = time.monotonic()
+        eval_stats = {}
+        try:
+            if backend == "gemini":
+                prompt = sys_prompt + "\n\n" + input_text
+                raw_text = _run_gemini(cfg, prompt)
+                text = _wrap_bare_array(_strip_fences(raw_text))
+                compare_output = json.loads(text)
+            elif backend == "opencode":
+                prompt = sys_prompt + "\n\n" + input_text
+                raw_text, eval_stats = _run_opencode(model, prompt)
+                text = _wrap_bare_array(_strip_fences(raw_text))
+                compare_output = json.loads(text)
+            else:
+                resp = httpx.post(
+                    api_url,
+                    json={
+                        "model": model,
+                        "stream": False,
+                        "think": False,
+                        "format": schema,
+                        "options": ollama_options,
+                        "messages": [
+                            {"role": "system", "content": sys_prompt},
+                            {"role": "user", "content": input_text},
+                        ],
+                    },
+                    timeout=120.0,
+                )
+                resp.raise_for_status()
+                body = resp.json()
+                eval_stats = {
+                    "total_duration_ns": body.get("total_duration"),
+                    "prompt_eval_count": body.get("prompt_eval_count"),
+                    "eval_count": body.get("eval_count"),
+                    "eval_duration_ns": body.get("eval_duration"),
+                }
+                raw_text = body.get("message", {}).get("content", "")
+                if not raw_text or not raw_text.strip():
+                    done_reason = body.get("done_reason", "?")
+                    raise ValueError(
+                        f"Empty response (done_reason={done_reason}, "
+                        f"eval_count={eval_stats.get('eval_count', '?')}, "
+                        f"input_len={len(input_text)})"
+                    )
+                text = _wrap_bare_array(_strip_fences(raw_text))
+                compare_output = json.loads(text)
+            status = "ok"
+        except Exception as e:
+            compare_output = None
+            status = f"error: {e}"
+
+        entry_duration = time.monotonic() - t_entry
+
+        tok_per_sec = None
+        if eval_stats.get("eval_count") and eval_stats.get("eval_duration_ns"):
+            tok_per_sec = round(
+                eval_stats["eval_count"] / (eval_stats["eval_duration_ns"] / 1e9), 1
+            )
+
+        return idx, {
+            "input": input_text,
+            "mode": mode,
+            "original_backend": entry.get("backend", ""),
+            "original_output": entry.get("output"),
+            "compare_backend": model,
+            "compare_temperature": temperature,
+            "compare_output": compare_output,
+            "status": status,
+            "duration_s": round(entry_duration, 2),
+            "eval_count": eval_stats.get("eval_count"),
+            "prompt_eval_count": eval_stats.get("prompt_eval_count"),
+            "tokens_per_sec": tok_per_sec,
+            "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
+        }
 
     success = 0
     failed = 0
@@ -899,103 +992,42 @@ def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None
     _all_results = []
     t_start = time.monotonic()
 
-    with open(output_path, "w") as out_f:
-        for i, entry in enumerate(entries, 1):
-            mode = entry.get("mode", "single")
-            input_text = entry.get("input", "")
-            if not input_text:
-                failed += 1
-                continue
+    # Process entries (parallel for cloud backends, sequential for Ollama)
+    indexed_entries = list(enumerate(entries))
+    results_by_idx = {}
 
-            # Pick prompt and schema based on mode
-            if mode == "batch":
-                sys_prompt = sys_batch
-                schema = BatchSummaryResponse.model_json_schema()
-            else:
-                sys_prompt = sys_single
-                schema = TurnSummary.model_json_schema()
-
-            t_entry = time.monotonic()
-            eval_stats = {}
-            try:
-                if backend == "gemini":
-                    # Gemini CLI: combine system + user into one prompt
-                    prompt = sys_prompt + "\n\n" + input_text
-                    raw_text = _run_gemini(cfg, prompt)
-                    text = _wrap_bare_array(_strip_fences(raw_text))
-                    compare_output = json.loads(text)
+    if n_workers > 1:
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            futures = {pool.submit(_process_entry, ie): ie[0] for ie in indexed_entries}
+            for future in as_completed(futures):
+                idx, result = future.result()
+                results_by_idx[idx] = result
+                if result["status"] == "ok":
+                    success += 1
                 else:
-                    # Ollama native API
-                    resp = httpx.post(
-                        api_url,
-                        json={
-                            "model": model,
-                            "stream": False,
-                            "think": False,
-                            "format": schema,
-                            "options": ollama_options,
-                            "messages": [
-                                {"role": "system", "content": sys_prompt},
-                                {"role": "user", "content": input_text},
-                            ],
-                        },
-                        timeout=120.0,
-                    )
-                    resp.raise_for_status()
-                    body = resp.json()
-                    eval_stats = {
-                        "total_duration_ns": body.get("total_duration"),
-                        "prompt_eval_count": body.get("prompt_eval_count"),
-                        "eval_count": body.get("eval_count"),
-                        "eval_duration_ns": body.get("eval_duration"),
-                    }
-                    raw_text = body.get("message", {}).get("content", "")
-                    if not raw_text or not raw_text.strip():
-                        done_reason = body.get("done_reason", "?")
-                        raise ValueError(
-                            f"Empty response (done_reason={done_reason}, "
-                            f"eval_count={eval_stats.get('eval_count', '?')}, "
-                            f"input_len={len(input_text)})"
-                        )
-                    text = _wrap_bare_array(_strip_fences(raw_text))
-                    compare_output = json.loads(text)
-                status = "ok"
+                    failed += 1
+                durations.append(result["duration_s"])
+                tok_info = f" {result['tokens_per_sec']} tok/s" if result.get("tokens_per_sec") else ""
+                elapsed = time.monotonic() - t_start
+                print(f"  [{len(results_by_idx)}/{len(entries)}] {result['mode']:<6} {result['duration_s']:>5.1f}s {result['status']:<30}{tok_info} ({elapsed:.0f}s)")
+    else:
+        for ie in indexed_entries:
+            idx, result = _process_entry(ie)
+            results_by_idx[idx] = result
+            if result["status"] == "ok":
                 success += 1
-            except Exception as e:
-                compare_output = None
-                status = f"error: {e}"
+            else:
                 failed += 1
+            durations.append(result["duration_s"])
+            tok_info = f" {result['tokens_per_sec']} tok/s" if result.get("tokens_per_sec") else ""
+            print(f"  [{len(results_by_idx)}/{len(entries)}] {result['mode']:<6} {result['duration_s']:>5.1f}s {result['status']:<30}{tok_info}")
 
-            entry_duration = time.monotonic() - t_entry
-            durations.append(entry_duration)
-
-            # Compute tokens/sec from Ollama stats (not available for Gemini)
-            tok_per_sec = None
-            if eval_stats.get("eval_count") and eval_stats.get("eval_duration_ns"):
-                tok_per_sec = round(
-                    eval_stats["eval_count"] / (eval_stats["eval_duration_ns"] / 1e9), 1
-                )
-
-            result = {
-                "input": input_text,
-                "mode": mode,
-                "original_backend": entry.get("backend", ""),
-                "original_output": entry.get("output"),
-                "compare_backend": model,
-                "compare_temperature": temperature,
-                "compare_output": compare_output,
-                "status": status,
-                "duration_s": round(entry_duration, 2),
-                "eval_count": eval_stats.get("eval_count"),
-                "prompt_eval_count": eval_stats.get("prompt_eval_count"),
-                "tokens_per_sec": tok_per_sec,
-                "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
-            }
+    # Write results in original order
+    with open(output_path, "w") as out_f:
+        for idx in range(len(entries)):
+            result = results_by_idx[idx]
             out_f.write(json.dumps(result) + "\n")
             _all_results.append(result)
-
-            tok_info = f" {tok_per_sec} tok/s" if tok_per_sec else ""
-            print(f"  [{i}/{len(entries)}] {mode:<6} {entry_duration:>5.1f}s {status:<30}{tok_info}")
 
     total_elapsed = time.monotonic() - t_start
     avg = sum(durations) / len(durations) if durations else 0
@@ -1056,6 +1088,47 @@ def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None
     print(f"Run index: {index_path} (run_id={run_id})")
 
     return 0
+
+
+def _run_opencode(model, prompt):
+    """Run opencode CLI and return (response_text, eval_stats)."""
+    import subprocess
+
+    result = subprocess.run(
+        ["opencode", "run", prompt, "-m", model, "--format", "json"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"opencode failed (rc={result.returncode}): {result.stderr[:200]}")
+
+    # Parse NDJSON: collect text parts and token stats from step_finish
+    text_parts = []
+    eval_stats = {}
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "text":
+            text_parts.append(event["part"]["text"])
+        elif event.get("type") == "step_finish":
+            tokens = event.get("part", {}).get("tokens", {})
+            eval_stats = {
+                "input_tokens": tokens.get("input"),
+                "output_tokens": tokens.get("output"),
+                "eval_count": tokens.get("output"),
+                "cost": event.get("part", {}).get("cost"),
+            }
+
+    response_text = "".join(text_parts)
+    if not response_text.strip():
+        raise ValueError("Empty response from opencode")
+    return response_text, eval_stats
 
 
 def _append_leaderboard(path, *, run_id, model, model_size, temperature, max_tokens,
@@ -1218,7 +1291,8 @@ def main():
     p_compare.add_argument("--prompt-file", default="", help="File with extra instructions appended to system prompt")
     p_compare.add_argument("--test-set", default="", help="Custom test set JSONL (default: queue/test_set.jsonl)")
     p_compare.add_argument("--ollama-opts", default="", help="Extra Ollama options as JSON (e.g. '{\"top_p\": 0.9}')")
-    p_compare.add_argument("--backend", default="ollama", choices=["ollama", "gemini"], help="Inference backend (default: ollama)")
+    p_compare.add_argument("--backend", default="ollama", choices=["ollama", "gemini", "opencode"], help="Inference backend (default: ollama)")
+    p_compare.add_argument("--concurrency", type=int, default=1, help="Parallel workers for cloud backends (default: 1)")
 
     p_gc = sub.add_parser("gc", help="Garbage-collect old merged branches")
     p_gc.add_argument("--project", default="", help="Limit to one project")
@@ -1265,7 +1339,7 @@ def main():
         sys.exit(cmd_gc(project=args.project, days=args.days, dry_run=args.dry_run, reindex=args.reindex))
     elif args.command == "compare-models":
         extra_opts = json.loads(args.ollama_opts) if args.ollama_opts else None
-        sys.exit(cmd_compare_models(model=args.model, limit=args.limit, output=args.output, max_tokens=args.max_tokens, temperature=args.temperature, prompt_file=args.prompt_file, test_set=args.test_set, ollama_opts=extra_opts, backend=args.backend))
+        sys.exit(cmd_compare_models(model=args.model, limit=args.limit, output=args.output, max_tokens=args.max_tokens, temperature=args.temperature, prompt_file=args.prompt_file, test_set=args.test_set, ollama_opts=extra_opts, backend=args.backend, concurrency=args.concurrency))
     else:
         parser.print_help()
 
