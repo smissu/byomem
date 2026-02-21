@@ -302,3 +302,70 @@ def tmp_settings(tmp_path, monkeypatch):
     test_config = Config(byomem=root, settings_path=settings)
     monkeypatch.setattr("core.config._config", test_config)
     return settings
+
+
+@pytest.fixture
+def tmp_byomem_lmstudio(tmp_path, monkeypatch):
+    """Redirect ~/.byomem to temp dir with LM Studio config."""
+    root = tmp_path / ".byomem"
+    root.mkdir()
+    from core.config import Config
+    test_config = Config(
+        byomem=root,
+        summarizer_lmstudio_url="http://localhost:1234/v1",
+        summarizer_lmstudio_model="qwen2.5-7b-instruct",
+        # Also set Ollama so fallback chain can be tested
+        summarizer_model="qwen3:8b",
+        summarizer_base_url="http://localhost:11434/v1",
+    )
+    monkeypatch.setattr("core.config._config", test_config)
+    return root
+
+
+@pytest.fixture
+def mock_lmstudio_single(mocker):
+    """Patch openai.OpenAI to return a valid single-turn LM Studio response."""
+    import json
+    response_json = json.dumps({
+        "title": "Fix stop price field",
+        "summary": "Use aux_price not stop_price.",
+        "classification": "fix",
+        "important": True,
+        "milestone": True,
+    })
+    mock = mocker.patch("core.summarizer.openai.OpenAI")
+    mock.return_value.chat.completions.create.return_value.choices = [
+        mocker.Mock(message=mocker.Mock(content=response_json))
+    ]
+    return mock
+
+
+@pytest.fixture
+def mock_lmstudio_batch(mocker):
+    """Patch openai.OpenAI to return a valid batch LM Studio response."""
+    import json
+    response_json = json.dumps({
+        "summaries": [
+            {"turn_id": "u1", "title": "Fix stop price field",
+             "summary": "Use aux_price.", "classification": "fix",
+             "important": True, "milestone": True},
+            {"turn_id": "u2", "title": "Set trailing stop type",
+             "summary": "Use trailing_stop_type=1.", "classification": "feature",
+             "important": False, "milestone": False},
+        ]
+    })
+    mock = mocker.patch("core.summarizer.openai.OpenAI")
+    mock.return_value.chat.completions.create.return_value.choices = [
+        mocker.Mock(message=mocker.Mock(content=response_json))
+    ]
+    return mock
+
+
+@pytest.fixture
+def mock_lmstudio_fail(mocker):
+    """Patch openai.OpenAI to raise an exception (LM Studio failure)."""
+    mock = mocker.patch(
+        "core.summarizer.openai.OpenAI",
+        side_effect=RuntimeError("LM Studio not available"),
+    )
+    return mock

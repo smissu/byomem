@@ -2,6 +2,7 @@ from core.summarizer import (
     BATCH_SYSTEM,
     SYSTEM,
     _gemini_available,
+    _lmstudio_available,
     _ollama_api_url,
     _strip_fences,
     _wrap_bare_array,
@@ -299,3 +300,64 @@ def test_gemini_available_returns_false_when_not_configured(tmp_byomem):
     from core.config import get_config
     cfg = get_config()
     assert not _gemini_available(cfg)
+
+
+# ---------------------------------------------------------------------------
+# LM Studio backend tests
+# ---------------------------------------------------------------------------
+
+
+def test_single_turn_uses_lmstudio(sample_turn, mock_lmstudio_single, tmp_byomem_lmstudio):
+    """When lmstudio_url is configured, summarize_turn tries LM Studio."""
+    result = summarize_turn(sample_turn)
+    assert result["classification"] == "fix"
+    assert result["title"] == "Fix stop price field"
+    mock_lmstudio_single.assert_called_once_with(
+        base_url="http://localhost:1234/v1", api_key="lm-studio",
+    )
+
+
+def test_batch_uses_lmstudio(sample_turns, mock_lmstudio_batch, tmp_byomem_lmstudio):
+    """When lmstudio_url is configured, summarize_batch tries LM Studio."""
+    results = summarize_batch(sample_turns)
+    assert len(results) == 2
+    assert results[0].title == "Fix stop price field"
+    assert results[1].title == "Set trailing stop type"
+    mock_lmstudio_batch.assert_called_once()
+
+
+def test_lmstudio_fallback_to_ollama_on_failure(
+    sample_turn, mock_lmstudio_fail, mock_httpx_single, tmp_byomem_lmstudio,
+):
+    """When LM Studio fails, falls back to native Ollama."""
+    result = summarize_turn(sample_turn)
+    assert result["classification"] == "fix"
+    assert result["title"] == "Fix stop price field"
+    mock_httpx_single.assert_called_once()
+
+
+def test_lmstudio_skipped_when_not_configured(sample_turn, mock_anthropic, tmp_byomem):
+    """When lmstudio_url is not set, LM Studio is skipped entirely."""
+    from core.config import get_config
+    cfg = get_config()
+    assert not _lmstudio_available(cfg)
+    result = summarize_turn(sample_turn)
+    assert isinstance(result, dict)
+
+
+def test_lmstudio_skipped_for_model_override(
+    sample_turn, mock_lmstudio_single, tmp_byomem_lmstudio, mocker,
+):
+    """model_override (overflow worker) bypasses LM Studio."""
+    import json
+    mock_openai = mocker.patch("core.summarizer.openai.OpenAI")
+    mock_openai.return_value.chat.completions.create.return_value.choices = [
+        mocker.Mock(message=mocker.Mock(content=json.dumps({
+            "title": "Overflow result", "summary": "From overflow.",
+            "classification": "general", "important": False, "milestone": False,
+        })))
+    ]
+    result = summarize_turn(sample_turn, model_override="qwen3:8b")
+    assert result["title"] == "Overflow result"
+    # LM Studio should NOT have been called directly
+    mock_lmstudio_single.assert_not_called()

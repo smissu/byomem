@@ -858,6 +858,8 @@ def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None
                 model_size = details.get("parameter_size", "")
         except Exception:
             pass
+    elif backend == "lmstudio":
+        model_size = "local"
     else:
         model_size = "cloud"
 
@@ -879,7 +881,7 @@ def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None
     }, sort_keys=True)
     run_id = hashlib.sha1(run_key.encode()).hexdigest()[:8]
 
-    n_workers = concurrency if backend in ("gemini", "opencode") else 1
+    n_workers = concurrency if backend in ("gemini", "opencode", "lmstudio") else 1
 
     temp_str = str(temperature) if temperature is not None else "default"
     size_str = f" ({model_size})" if model_size else ""
@@ -921,6 +923,23 @@ def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None
             elif backend == "opencode":
                 prompt = sys_prompt + "\n\n" + input_text
                 raw_text, eval_stats = _run_opencode(model, prompt)
+                text = _wrap_bare_array(_strip_fences(raw_text))
+                compare_output = json.loads(text)
+            elif backend == "lmstudio":
+                import openai as openai_mod
+                lmstudio_url = cfg.summarizer_lmstudio_url or "http://localhost:1234/v1"
+                client = openai_mod.OpenAI(base_url=lmstudio_url, api_key="lm-studio")
+                resp = client.chat.completions.create(
+                    model=model,
+                    max_tokens=num_predict,
+                    messages=[
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": input_text},
+                    ],
+                )
+                raw_text = resp.choices[0].message.content or ""
+                if not raw_text.strip():
+                    raise ValueError("Empty response from LM Studio")
                 text = _wrap_bare_array(_strip_fences(raw_text))
                 compare_output = json.loads(text)
             else:
@@ -1393,7 +1412,7 @@ def main():
     p_compare.add_argument("--prompt-file", default="", help="File with extra instructions appended to system prompt")
     p_compare.add_argument("--test-set", default="", help="Custom test set JSONL (default: queue/test_set.jsonl)")
     p_compare.add_argument("--ollama-opts", default="", help="Extra Ollama options as JSON (e.g. '{\"top_p\": 0.9}')")
-    p_compare.add_argument("--backend", default="ollama", choices=["ollama", "gemini", "opencode"], help="Inference backend (default: ollama)")
+    p_compare.add_argument("--backend", default="ollama", choices=["ollama", "gemini", "opencode", "lmstudio"], help="Inference backend (default: ollama)")
     p_compare.add_argument("--concurrency", type=int, default=1, help="Parallel workers for cloud backends (default: 1)")
 
     p_rate = sub.add_parser("rate-model", help="Set quality rating on a compare-models run")

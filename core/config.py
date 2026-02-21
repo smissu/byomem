@@ -19,6 +19,8 @@ class Config:
     summarizer_gemini_model: str | None = None
     summarizer_opencode_cli: str | None = None
     summarizer_opencode_model: str | None = None
+    summarizer_lmstudio_url: str | None = None
+    summarizer_lmstudio_model: str | None = None
     summarizer_concurrency: int = 1
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1536
@@ -85,6 +87,10 @@ def _load_config() -> Config:
         kwargs["summarizer_opencode_cli"] = summarizer["opencode_cli"]
     if "opencode_model" in summarizer:
         kwargs["summarizer_opencode_model"] = summarizer["opencode_model"]
+    if "lmstudio_url" in summarizer:
+        kwargs["summarizer_lmstudio_url"] = summarizer["lmstudio_url"]
+    if "lmstudio_model" in summarizer:
+        kwargs["summarizer_lmstudio_model"] = summarizer["lmstudio_model"]
     if "concurrency" in summarizer:
         kwargs["summarizer_concurrency"] = summarizer["concurrency"]
 

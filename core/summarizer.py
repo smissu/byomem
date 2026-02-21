@@ -317,6 +317,46 @@ def _batch_opencode(cfg, user_content: str) -> BatchSummaryResponse:
 
 
 # ---------------------------------------------------------------------------
+# LM Studio backend (OpenAI-compatible local server)
+# ---------------------------------------------------------------------------
+
+def _lmstudio_available(cfg) -> bool:
+    """Check if LM Studio is configured (URL must be set)."""
+    return bool(cfg.summarizer_lmstudio_url)
+
+
+def _summarize_lmstudio(cfg, user_content: str) -> dict:
+    """Summarize a single turn via LM Studio's OpenAI-compatible API."""
+    model = cfg.summarizer_lmstudio_model or "default"
+    client = openai.OpenAI(base_url=cfg.summarizer_lmstudio_url, api_key="lm-studio")
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=cfg.summarizer_max_tokens,
+        messages=[
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": user_content},
+        ],
+    )
+    return json.loads(_strip_fences(resp.choices[0].message.content))
+
+
+def _batch_lmstudio(cfg, user_content: str) -> BatchSummaryResponse:
+    """Batch summarize via LM Studio's OpenAI-compatible API."""
+    model = cfg.summarizer_lmstudio_model or "default"
+    client = openai.OpenAI(base_url=cfg.summarizer_lmstudio_url, api_key="lm-studio")
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=cfg.summarizer_max_tokens,
+        messages=[
+            {"role": "system", "content": BATCH_SYSTEM},
+            {"role": "user", "content": user_content},
+        ],
+    )
+    text = _wrap_bare_array(_strip_fences(resp.choices[0].message.content))
+    return BatchSummaryResponse.model_validate_json(text)
+
+
+# ---------------------------------------------------------------------------
 # Single-turn summarization (backward compatible — returns dict)
 # ---------------------------------------------------------------------------
 
@@ -348,6 +388,14 @@ def summarize_turn(turn, *, model_override: str | None = None) -> dict:
                 return result
             except Exception:
                 logger.debug("OpenCode CLI single-turn failed", exc_info=True)
+        # LM Studio local backend (skip for overflow workers)
+        if _lmstudio_available(cfg) and not model_override:
+            try:
+                result = _summarize_lmstudio(cfg, user_content)
+                backend = cfg.summarizer_lmstudio_model or "lmstudio"
+                return result
+            except Exception:
+                logger.debug("LM Studio single-turn failed", exc_info=True)
         if cfg.summarizer_base_url:
             if model_override:
                 result = _summarize_openai_compat(cfg, user_content, model=model_override)
@@ -473,6 +521,15 @@ def summarize_batch(turns: list, *, model_override: str | None = None) -> list[T
                 return results
             except Exception:
                 logger.debug("OpenCode CLI batch failed, falling back", exc_info=True)
+        # LM Studio local backend (skip for overflow workers)
+        if _lmstudio_available(cfg) and not model_override:
+            try:
+                batch_resp = _batch_lmstudio(cfg, user_content)
+                results = _align_results(coerced, batch_resp)
+                backend = cfg.summarizer_lmstudio_model or "lmstudio"
+                return results
+            except Exception:
+                logger.debug("LM Studio batch failed, falling back", exc_info=True)
         if cfg.summarizer_base_url:
             if model_override:
                 batch_resp = _batch_openai_compat(cfg, user_content, model=model_override)
