@@ -655,13 +655,20 @@ def get_last_indexed_sha(project: str, db_path=None):
 
 
 def set_last_indexed_sha(project: str, sha: str, db_path=None):
-    """Store the last indexed git SHA for project in code.db."""
+    """Store the last indexed git SHA and timestamp for project in code.db."""
+    import time
+
     if db_path is None:
         db_path = get_config().code_db_path
     db = get_code_db(db_path)
+    now = str(time.time())
     db.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
         (f"last_sha:{project}", sha),
+    )
+    db.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+        (f"last_indexed_at:{project}", now),
     )
     db.commit()
     db.close()

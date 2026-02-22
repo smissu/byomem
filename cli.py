@@ -570,10 +570,11 @@ def cmd_queue(purge=False, history=0):
                 "SELECT key, value FROM meta WHERE key LIKE 'last_sha:%'"
             ).fetchall()
         )
-        # Latest modified_at per project as proxy for last index time
+        # Actual indexing timestamps from meta table
         last_indexed = dict(
-            cdb.execute(
-                "SELECT substr(path, 1, instr(path, '/') - 1) AS proj, max(modified_at) FROM files GROUP BY proj"
+            (k.replace("last_indexed_at:", ""), float(v))
+            for k, v in cdb.execute(
+                "SELECT key, value FROM meta WHERE key LIKE 'last_indexed_at:%'"
             ).fetchall()
         )
         # Embedding model from meta (if stored), else from config
