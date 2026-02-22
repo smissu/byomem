@@ -1,4 +1,5 @@
 """Tests for core/reporting.py — stats and health check functions."""
+
 from core.reporting import check_index_health, compute_global_stats, compute_project_stats
 
 
@@ -88,6 +89,7 @@ def test_health_check_orphaned(tmp_byomem, mock_openai_embed):
     f = proj / "doc.md"
     f.write_text("will be orphaned")
     from core.search_index import index_file
+
     index_file(f, project="proj")
     # Delete file but leave index
     f.unlink()

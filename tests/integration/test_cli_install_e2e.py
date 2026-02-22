@@ -1,4 +1,5 @@
 """End-to-end integration tests for CLI install/uninstall."""
+
 import json
 
 from cli import cmd_install
@@ -51,7 +52,8 @@ def test_idempotent_install_no_duplicates(tmp_settings):
     stop_list = data.get("hooks", {}).get("Stop", [])
     # Count entries that contain byomem stop_hook
     byomem_count = sum(
-        1 for entry in stop_list
+        1
+        for entry in stop_list
         for h in entry.get("hooks", [])
         if "stop_hook.py" in h.get("command", "")
     )

@@ -1,4 +1,5 @@
 """Tests for mcp_server.py — FastMCP tool implementations."""
+
 from mcp_server import (
     mem_context,
     mem_get,
@@ -90,6 +91,7 @@ def test_mem_search_returns_results(tmp_byomem, mock_openai_embed):
     f = proj / "main.md"
     f.write_text("stop price uses aux_price field")
     from core.search_index import index_file
+
     index_file(f, project="proj")
 
     result = mem_search(query="stop price", project="proj", min_score=0.0)
@@ -127,6 +129,7 @@ def test_mem_search_enrich_mode_appends_log(tmp_byomem, mock_openai_embed, monke
     (branch_dir / "metadata.md").write_text("status: active\n")
 
     from core.search_index import index_file
+
     index_file(branch_dir / "commit.md", project="proj")
 
     result = mem_search(query="stop price", project="proj", min_score=0.0)
@@ -273,6 +276,7 @@ def test_mem_health_check_issues(tmp_byomem, mock_openai_embed):
     f = proj / "doc.md"
     f.write_text("orphan me")
     from core.search_index import index_file
+
     index_file(f, project="proj")
     f.unlink()
 

@@ -1,4 +1,5 @@
 """Integration tests for the full push loop (stop_hook.py)."""
+
 import io
 import json
 import sqlite3
@@ -34,11 +35,13 @@ def _assistant_msg(uuid, content, parent_uuid, timestamp="2026-02-19T10:00:01"):
 
 def _run_hook(session_id, transcript_path, cwd):
     """Run stop hook main() with simulated stdin."""
-    payload = json.dumps({
-        "session_id": session_id,
-        "transcript_path": str(transcript_path),
-        "cwd": str(cwd),
-    })
+    payload = json.dumps(
+        {
+            "session_id": session_id,
+            "transcript_path": str(transcript_path),
+            "cwd": str(cwd),
+        }
+    )
     old_stdin = sys.stdin
     sys.stdin = io.StringIO(payload)
     try:
@@ -50,10 +53,12 @@ def _run_hook(session_id, transcript_path, cwd):
 def test_full_push_loop(tmp_byomem, tmp_path, mock_anthropic, mock_openai_embed):
     """Full push loop creates branch, writes log/commit/metadata/main/MEMORY."""
     session_jsonl = tmp_path / "session.jsonl"
-    session_jsonl.write_text(_make_jsonl(
-        _user_msg("u1", "why is the stop price wrong?"),
-        _assistant_msg("a1", "The field is aux_price not stop_price.", "u1"),
-    ))
+    session_jsonl.write_text(
+        _make_jsonl(
+            _user_msg("u1", "why is the stop price wrong?"),
+            _assistant_msg("a1", "The field is aux_price not stop_price.", "u1"),
+        )
+    )
     project_dir = tmp_path / "myproject"
     project_dir.mkdir()
 
@@ -106,12 +111,14 @@ def test_empty_transcript(tmp_byomem, tmp_path, mock_anthropic, mock_openai_embe
 def test_resume_loop(tmp_byomem, tmp_path, mock_anthropic, mock_openai_embed):
     """Re-running the hook resumes from last processed turn — 3rd turn not re-processed."""
     session_jsonl = tmp_path / "session.jsonl"
-    session_jsonl.write_text(_make_jsonl(
-        _user_msg("u1", "first question", "2026-02-19T10:00:00"),
-        _assistant_msg("a1", "first answer", "u1", "2026-02-19T10:00:01"),
-        _user_msg("u2", "second question", "2026-02-19T10:01:00"),
-        _assistant_msg("a2", "second answer", "u2", "2026-02-19T10:01:01"),
-    ))
+    session_jsonl.write_text(
+        _make_jsonl(
+            _user_msg("u1", "first question", "2026-02-19T10:00:00"),
+            _assistant_msg("a1", "first answer", "u1", "2026-02-19T10:00:01"),
+            _user_msg("u2", "second question", "2026-02-19T10:01:00"),
+            _assistant_msg("a2", "second answer", "u2", "2026-02-19T10:01:01"),
+        )
+    )
     project_dir = tmp_path / "myproject"
     project_dir.mkdir()
 
@@ -125,14 +132,16 @@ def test_resume_loop(tmp_byomem, tmp_path, mock_anthropic, mock_openai_embed):
     assert "last_id: u2" in log_after_first
 
     # Add a third turn
-    session_jsonl.write_text(_make_jsonl(
-        _user_msg("u1", "first question", "2026-02-19T10:00:00"),
-        _assistant_msg("a1", "first answer", "u1", "2026-02-19T10:00:01"),
-        _user_msg("u2", "second question", "2026-02-19T10:01:00"),
-        _assistant_msg("a2", "second answer", "u2", "2026-02-19T10:01:01"),
-        _user_msg("u3", "third question", "2026-02-19T10:02:00"),
-        _assistant_msg("a3", "third answer", "u3", "2026-02-19T10:02:01"),
-    ))
+    session_jsonl.write_text(
+        _make_jsonl(
+            _user_msg("u1", "first question", "2026-02-19T10:00:00"),
+            _assistant_msg("a1", "first answer", "u1", "2026-02-19T10:00:01"),
+            _user_msg("u2", "second question", "2026-02-19T10:01:00"),
+            _assistant_msg("a2", "second answer", "u2", "2026-02-19T10:01:01"),
+            _user_msg("u3", "third question", "2026-02-19T10:02:00"),
+            _assistant_msg("a3", "third answer", "u3", "2026-02-19T10:02:01"),
+        )
+    )
 
     # Second run only processes u3
     _run_hook("abc12345def67890", session_jsonl, project_dir)
@@ -149,20 +158,26 @@ def test_no_milestone(tmp_byomem, tmp_path, mocker):
     # Override mock to return milestone=False
     mock = mocker.patch("core.summarizer.anthropic.Anthropic")
     mock.return_value.messages.create.return_value.content = [
-        mocker.Mock(text=json.dumps({
-            "title": "Routine edit",
-            "summary": "Small change.",
-            "classification": "general",
-            "important": False,
-            "milestone": False,
-        }))
+        mocker.Mock(
+            text=json.dumps(
+                {
+                    "title": "Routine edit",
+                    "summary": "Small change.",
+                    "classification": "general",
+                    "important": False,
+                    "milestone": False,
+                }
+            )
+        )
     ]
 
     session_jsonl = tmp_path / "session.jsonl"
-    session_jsonl.write_text(_make_jsonl(
-        _user_msg("u1", "minor edit"),
-        _assistant_msg("a1", "done", "u1"),
-    ))
+    session_jsonl.write_text(
+        _make_jsonl(
+            _user_msg("u1", "minor edit"),
+            _assistant_msg("a1", "done", "u1"),
+        )
+    )
     project_dir = tmp_path / "myproject"
     project_dir.mkdir()
 
@@ -182,10 +197,12 @@ def test_no_milestone(tmp_byomem, tmp_path, mocker):
 def test_idempotent_rerun(tmp_byomem, tmp_path, mock_anthropic, mock_openai_embed):
     """Re-running stop hook on same transcript produces no duplicate entries."""
     session_jsonl = tmp_path / "session.jsonl"
-    session_jsonl.write_text(_make_jsonl(
-        _user_msg("u1", "hello"),
-        _assistant_msg("a1", "hi there", "u1"),
-    ))
+    session_jsonl.write_text(
+        _make_jsonl(
+            _user_msg("u1", "hello"),
+            _assistant_msg("a1", "hi there", "u1"),
+        )
+    )
     project_dir = tmp_path / "myproject"
     project_dir.mkdir()
 
@@ -209,10 +226,12 @@ def test_index_populated_after_push(tmp_byomem, tmp_path, mock_anthropic, mock_o
     from core.config import get_config
 
     session_jsonl = tmp_path / "session.jsonl"
-    session_jsonl.write_text(_make_jsonl(
-        _user_msg("u1", "why is the stop price wrong?"),
-        _assistant_msg("a1", "The field is aux_price not stop_price.", "u1"),
-    ))
+    session_jsonl.write_text(
+        _make_jsonl(
+            _user_msg("u1", "why is the stop price wrong?"),
+            _assistant_msg("a1", "The field is aux_price not stop_price.", "u1"),
+        )
+    )
     project_dir = tmp_path / "myproject"
     project_dir.mkdir()
 
@@ -238,10 +257,12 @@ def test_search_after_push(tmp_byomem, tmp_path, mock_anthropic, mock_openai_emb
     from core.search_index import hybrid_search
 
     session_jsonl = tmp_path / "session.jsonl"
-    session_jsonl.write_text(_make_jsonl(
-        _user_msg("u1", "stop price modification issue"),
-        _assistant_msg("a1", "The aux_price field is what you need.", "u1"),
-    ))
+    session_jsonl.write_text(
+        _make_jsonl(
+            _user_msg("u1", "stop price modification issue"),
+            _assistant_msg("a1", "The aux_price field is what you need.", "u1"),
+        )
+    )
     project_dir = tmp_path / "myproject"
     project_dir.mkdir()
 
@@ -259,20 +280,26 @@ def test_no_milestone_skips_index(tmp_byomem, tmp_path, mocker, mock_openai_embe
 
     mock = mocker.patch("core.summarizer.anthropic.Anthropic")
     mock.return_value.messages.create.return_value.content = [
-        mocker.Mock(text=json.dumps({
-            "title": "Routine edit",
-            "summary": "Small change.",
-            "classification": "general",
-            "important": False,
-            "milestone": False,
-        }))
+        mocker.Mock(
+            text=json.dumps(
+                {
+                    "title": "Routine edit",
+                    "summary": "Small change.",
+                    "classification": "general",
+                    "important": False,
+                    "milestone": False,
+                }
+            )
+        )
     ]
 
     session_jsonl = tmp_path / "session.jsonl"
-    session_jsonl.write_text(_make_jsonl(
-        _user_msg("u1", "minor edit"),
-        _assistant_msg("a1", "done", "u1"),
-    ))
+    session_jsonl.write_text(
+        _make_jsonl(
+            _user_msg("u1", "minor edit"),
+            _assistant_msg("a1", "done", "u1"),
+        )
+    )
     project_dir = tmp_path / "myproject"
     project_dir.mkdir()
 
@@ -293,10 +320,12 @@ def test_mcp_context_after_push(tmp_byomem, tmp_path, mock_anthropic, mock_opena
     from mcp_server import mem_context, mem_latest, mem_show
 
     session_jsonl = tmp_path / "session.jsonl"
-    session_jsonl.write_text(_make_jsonl(
-        _user_msg("u1", "important question"),
-        _assistant_msg("a1", "important answer", "u1"),
-    ))
+    session_jsonl.write_text(
+        _make_jsonl(
+            _user_msg("u1", "important question"),
+            _assistant_msg("a1", "important answer", "u1"),
+        )
+    )
     project_dir = tmp_path / "myproject"
     project_dir.mkdir()
 

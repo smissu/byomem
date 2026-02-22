@@ -6,6 +6,7 @@ Fires after every Claude Code response via the Stop hook mechanism.
 Reads session data from stdin JSON, writes a queue job, and spawns
 the background worker. Returns in <100ms so Claude Code is not blocked.
 """
+
 import json
 import os
 import subprocess
@@ -79,6 +80,7 @@ def main():
     # In tests or sync mode, run worker inline
     if os.environ.get("BYOMEM_SYNC") or os.environ.get("PYTEST_CURRENT_TEST"):
         from core.worker import run_worker
+
         run_worker()
         _log("hook_complete", session_id=session_id, mode="sync")
         return

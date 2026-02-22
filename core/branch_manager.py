@@ -1,4 +1,5 @@
 """GCC branch lifecycle — create, append, commit, metadata."""
+
 import re
 import shutil
 from dataclasses import dataclass
@@ -53,8 +54,8 @@ def append_to_log(branch: Branch, turn):
         tid, ts, user, asst = turn.id, turn.timestamp, turn.user, turn.assistant
     entry = (
         f"\n<!-- last_id: {tid} -->\n"
-        f"---\n**[{ts}]** {user[:cfg.log_user_prefix]}\n\n"
-        f"{asst[:cfg.log_assistant_prefix]}\n"
+        f"---\n**[{ts}]** {user[: cfg.log_user_prefix]}\n\n"
+        f"{asst[: cfg.log_assistant_prefix]}\n"
     )
     with branch.log_md.open("a") as f:
         f.write(entry)
@@ -65,11 +66,7 @@ def commit_milestone(branch: Branch, summary: dict, turn_id: str | None = None):
     header = f"**[{summary['classification'].upper()}] {summary['title']}**"
     if turn_id:
         header += f" <!-- turn: {turn_id} -->"
-    new_content = existing + (
-        f"\n## This Commit's Contribution\n"
-        f"{header}\n"
-        f"{summary['summary']}\n"
-    )
+    new_content = existing + (f"\n## This Commit's Contribution\n{header}\n{summary['summary']}\n")
     branch.commit_md.write_text(new_content)
 
 
@@ -104,7 +101,9 @@ def update_metadata(branch: Branch, last_turn, summary: dict | None = None):
     branch.meta_md.write_text(meta)
 
 
-def list_branches(project: str, status: str | None = None, older_than_days: int | None = None) -> list[dict]:
+def list_branches(
+    project: str, status: str | None = None, older_than_days: int | None = None
+) -> list[dict]:
     """List branches for a project with optional filtering.
 
     Returns list of dicts: {name, status, age_days, size_bytes, path}
@@ -150,13 +149,15 @@ def list_branches(project: str, status: str | None = None, older_than_days: int 
         if older_than_days is not None and (age_days is None or age_days < older_than_days):
             continue
 
-        results.append({
-            "name": d.name,
-            "status": branch_status,
-            "age_days": age_days,
-            "size_bytes": size_bytes,
-            "path": d,
-        })
+        results.append(
+            {
+                "name": d.name,
+                "status": branch_status,
+                "age_days": age_days,
+                "size_bytes": size_bytes,
+                "path": d,
+            }
+        )
 
     return results
 

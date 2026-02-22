@@ -11,6 +11,7 @@ def tmp_byomem(tmp_path, monkeypatch):
     root = tmp_path / ".byomem"
     root.mkdir()
     from core.config import Config
+
     test_config = Config(byomem=root)
     monkeypatch.setattr("core.config._config", test_config)
     return root
@@ -40,10 +41,8 @@ def sample_summary():
 @pytest.fixture
 def mock_openai_embed(mocker):
     """Patch openai.OpenAI to return a fixed 1536-dim zero embedding."""
-    mock = mocker.patch("core.search_index.openai.OpenAI")
-    mock.return_value.embeddings.create.return_value.data = [
-        mocker.Mock(embedding=[0.0] * 1536)
-    ]
+    mock = mocker.patch("core.indexing_utils.openai.OpenAI")
+    mock.return_value.embeddings.create.return_value.data = [mocker.Mock(embedding=[0.0] * 1536)]
     return mock
 
 
@@ -53,6 +52,7 @@ def tmp_byomem_ollama(tmp_path, monkeypatch):
     root = tmp_path / ".byomem"
     root.mkdir()
     from core.config import Config
+
     test_config = Config(
         byomem=root,
         summarizer_model="qwen3:8b",
@@ -69,6 +69,7 @@ def tmp_byomem_gemini(tmp_path, monkeypatch):
     root = tmp_path / ".byomem"
     root.mkdir()
     from core.config import Config
+
     test_config = Config(
         byomem=root,
         summarizer_gemini_cli="gemini",
@@ -84,18 +85,23 @@ def tmp_byomem_gemini(tmp_path, monkeypatch):
 def mock_gemini_single(mocker):
     """Patch subprocess.run to simulate successful Gemini CLI single-turn response."""
     import json
-    response_json = json.dumps({
-        "title": "Fix stop price field",
-        "summary": "Use aux_price not stop_price.",
-        "classification": "fix",
-        "important": True,
-        "milestone": True,
-    })
-    wrapper = json.dumps({
-        "session_id": "test-session",
-        "response": response_json,
-        "stats": {},
-    })
+
+    response_json = json.dumps(
+        {
+            "title": "Fix stop price field",
+            "summary": "Use aux_price not stop_price.",
+            "classification": "fix",
+            "important": True,
+            "milestone": True,
+        }
+    )
+    wrapper = json.dumps(
+        {
+            "session_id": "test-session",
+            "response": response_json,
+            "stats": {},
+        }
+    )
     mock_result = mocker.Mock()
     mock_result.returncode = 0
     mock_result.stdout = wrapper
@@ -110,21 +116,36 @@ def mock_gemini_single(mocker):
 def mock_gemini_batch(mocker):
     """Patch subprocess.run to simulate successful Gemini CLI batch response."""
     import json
-    response_json = json.dumps({
-        "summaries": [
-            {"turn_id": "u1", "title": "Fix stop price field",
-             "summary": "Use aux_price.", "classification": "fix",
-             "important": True, "milestone": True},
-            {"turn_id": "u2", "title": "Set trailing stop type",
-             "summary": "Use trailing_stop_type=1.", "classification": "feature",
-             "important": False, "milestone": False},
-        ]
-    })
-    wrapper = json.dumps({
-        "session_id": "test-session",
-        "response": response_json,
-        "stats": {},
-    })
+
+    response_json = json.dumps(
+        {
+            "summaries": [
+                {
+                    "turn_id": "u1",
+                    "title": "Fix stop price field",
+                    "summary": "Use aux_price.",
+                    "classification": "fix",
+                    "important": True,
+                    "milestone": True,
+                },
+                {
+                    "turn_id": "u2",
+                    "title": "Set trailing stop type",
+                    "summary": "Use trailing_stop_type=1.",
+                    "classification": "feature",
+                    "important": False,
+                    "milestone": False,
+                },
+            ]
+        }
+    )
+    wrapper = json.dumps(
+        {
+            "session_id": "test-session",
+            "response": response_json,
+            "stats": {},
+        }
+    )
     mock_result = mocker.Mock()
     mock_result.returncode = 0
     mock_result.stdout = wrapper
@@ -156,13 +177,16 @@ def mock_gemini_not_found(mocker):
 def mock_httpx_single(mocker):
     """Patch httpx.post to return a valid single-turn Ollama native response."""
     import json
-    response_json = json.dumps({
-        "title": "Fix stop price field",
-        "summary": "Use aux_price not stop_price.",
-        "classification": "fix",
-        "important": True,
-        "milestone": True,
-    })
+
+    response_json = json.dumps(
+        {
+            "title": "Fix stop price field",
+            "summary": "Use aux_price not stop_price.",
+            "classification": "fix",
+            "important": True,
+            "milestone": True,
+        }
+    )
     mock_resp = mocker.Mock()
     mock_resp.raise_for_status = mocker.Mock()
     mock_resp.json.return_value = {
@@ -178,26 +202,29 @@ def mock_httpx_single(mocker):
 def mock_httpx_batch(mocker):
     """Patch httpx.post to return a valid batch Ollama native response."""
     import json
-    response_json = json.dumps({
-        "summaries": [
-            {
-                "turn_id": "u1",
-                "title": "Fix stop price field",
-                "summary": "Use aux_price not stop_price.",
-                "classification": "fix",
-                "important": True,
-                "milestone": True,
-            },
-            {
-                "turn_id": "u2",
-                "title": "Set trailing stop type",
-                "summary": "Use trailing_stop_type=1.",
-                "classification": "feature",
-                "important": False,
-                "milestone": False,
-            },
-        ]
-    })
+
+    response_json = json.dumps(
+        {
+            "summaries": [
+                {
+                    "turn_id": "u1",
+                    "title": "Fix stop price field",
+                    "summary": "Use aux_price not stop_price.",
+                    "classification": "fix",
+                    "important": True,
+                    "milestone": True,
+                },
+                {
+                    "turn_id": "u2",
+                    "title": "Set trailing stop type",
+                    "summary": "Use trailing_stop_type=1.",
+                    "classification": "feature",
+                    "important": False,
+                    "milestone": False,
+                },
+            ]
+        }
+    )
     mock_resp = mocker.Mock()
     mock_resp.raise_for_status = mocker.Mock()
     mock_resp.json.return_value = {
@@ -223,17 +250,18 @@ def mock_httpx_fail(mocker):
 def mock_anthropic(mocker):
     """Patch anthropic.Anthropic to return a fixed summarizer response."""
     import json
-    response_json = json.dumps({
-        "title": "Test",
-        "summary": "Test summary.",
-        "classification": "fix",
-        "important": True,
-        "milestone": True,
-    })
+
+    response_json = json.dumps(
+        {
+            "title": "Test",
+            "summary": "Test summary.",
+            "classification": "fix",
+            "important": True,
+            "milestone": True,
+        }
+    )
     mock = mocker.patch("core.summarizer.anthropic.Anthropic")
-    mock.return_value.messages.create.return_value.content = [
-        mocker.Mock(text=response_json)
-    ]
+    mock.return_value.messages.create.return_value.content = [mocker.Mock(text=response_json)]
     return mock
 
 
@@ -241,13 +269,20 @@ def mock_anthropic(mocker):
 def sample_turns():
     """Multiple Turn-like dicts for batch testing."""
     from core.models import Turn
+
     return [
-        Turn(id="u1", timestamp="2026-02-19T10:00:00",
-             user="why is the stop price wrong?",
-             assistant="The field is aux_price not stop_price."),
-        Turn(id="u2", timestamp="2026-02-19T10:01:00",
-             user="how do I set trailing stop?",
-             assistant="Use the trailing_stop_type field with value 1."),
+        Turn(
+            id="u1",
+            timestamp="2026-02-19T10:00:00",
+            user="why is the stop price wrong?",
+            assistant="The field is aux_price not stop_price.",
+        ),
+        Turn(
+            id="u2",
+            timestamp="2026-02-19T10:01:00",
+            user="how do I set trailing stop?",
+            assistant="Use the trailing_stop_type field with value 1.",
+        ),
     ]
 
 
@@ -255,30 +290,31 @@ def sample_turns():
 def mock_anthropic_batch(mocker):
     """Patch anthropic.Anthropic to return a batch summarizer response."""
     import json
-    response_json = json.dumps({
-        "summaries": [
-            {
-                "turn_id": "u1",
-                "title": "Fix stop price field",
-                "summary": "Use aux_price not stop_price.",
-                "classification": "fix",
-                "important": True,
-                "milestone": True,
-            },
-            {
-                "turn_id": "u2",
-                "title": "Set trailing stop type",
-                "summary": "Use trailing_stop_type=1.",
-                "classification": "feature",
-                "important": False,
-                "milestone": False,
-            },
-        ]
-    })
+
+    response_json = json.dumps(
+        {
+            "summaries": [
+                {
+                    "turn_id": "u1",
+                    "title": "Fix stop price field",
+                    "summary": "Use aux_price not stop_price.",
+                    "classification": "fix",
+                    "important": True,
+                    "milestone": True,
+                },
+                {
+                    "turn_id": "u2",
+                    "title": "Set trailing stop type",
+                    "summary": "Use trailing_stop_type=1.",
+                    "classification": "feature",
+                    "important": False,
+                    "milestone": False,
+                },
+            ]
+        }
+    )
     mock = mocker.patch("core.summarizer.anthropic.Anthropic")
-    mock.return_value.messages.create.return_value.content = [
-        mocker.Mock(text=response_json)
-    ]
+    mock.return_value.messages.create.return_value.content = [mocker.Mock(text=response_json)]
     return mock
 
 
@@ -299,6 +335,7 @@ def tmp_settings(tmp_path, monkeypatch):
     (hooks_dir / "stop_hook.py").touch()
     (root / "mcp_server.py").touch()
     from core.config import Config
+
     test_config = Config(byomem=root, settings_path=settings)
     monkeypatch.setattr("core.config._config", test_config)
     return settings
@@ -310,6 +347,7 @@ def tmp_byomem_lmstudio(tmp_path, monkeypatch):
     root = tmp_path / ".byomem"
     root.mkdir()
     from core.config import Config
+
     test_config = Config(
         byomem=root,
         summarizer_lmstudio_url="http://localhost:1234/v1",
@@ -326,13 +364,16 @@ def tmp_byomem_lmstudio(tmp_path, monkeypatch):
 def mock_lmstudio_single(mocker):
     """Patch openai.OpenAI to return a valid single-turn LM Studio response."""
     import json
-    response_json = json.dumps({
-        "title": "Fix stop price field",
-        "summary": "Use aux_price not stop_price.",
-        "classification": "fix",
-        "important": True,
-        "milestone": True,
-    })
+
+    response_json = json.dumps(
+        {
+            "title": "Fix stop price field",
+            "summary": "Use aux_price not stop_price.",
+            "classification": "fix",
+            "important": True,
+            "milestone": True,
+        }
+    )
     mock = mocker.patch("core.summarizer.openai.OpenAI")
     mock.return_value.chat.completions.create.return_value.choices = [
         mocker.Mock(message=mocker.Mock(content=response_json))
@@ -344,16 +385,29 @@ def mock_lmstudio_single(mocker):
 def mock_lmstudio_batch(mocker):
     """Patch openai.OpenAI to return a valid batch LM Studio response."""
     import json
-    response_json = json.dumps({
-        "summaries": [
-            {"turn_id": "u1", "title": "Fix stop price field",
-             "summary": "Use aux_price.", "classification": "fix",
-             "important": True, "milestone": True},
-            {"turn_id": "u2", "title": "Set trailing stop type",
-             "summary": "Use trailing_stop_type=1.", "classification": "feature",
-             "important": False, "milestone": False},
-        ]
-    })
+
+    response_json = json.dumps(
+        {
+            "summaries": [
+                {
+                    "turn_id": "u1",
+                    "title": "Fix stop price field",
+                    "summary": "Use aux_price.",
+                    "classification": "fix",
+                    "important": True,
+                    "milestone": True,
+                },
+                {
+                    "turn_id": "u2",
+                    "title": "Set trailing stop type",
+                    "summary": "Use trailing_stop_type=1.",
+                    "classification": "feature",
+                    "important": False,
+                    "milestone": False,
+                },
+            ]
+        }
+    )
     mock = mocker.patch("core.summarizer.openai.OpenAI")
     mock.return_value.chat.completions.create.return_value.choices = [
         mocker.Mock(message=mocker.Mock(content=response_json))

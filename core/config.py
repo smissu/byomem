@@ -2,10 +2,16 @@
 Single source of truth for all byomem configuration.
 Replaces scattered module-level BYOMEM/DB_PATH constants.
 """
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+
+@dataclass
+class ProjectConfig:
+    source_root: Path | None = None
 
 
 @dataclass
@@ -43,9 +49,9 @@ class Config:
     log_search_mode: str = "none"  # none | enrich | index
     log_score_demotion: float = 0.5
     summarizer_debug: bool = False
-    settings_path: Path = field(
-        default_factory=lambda: Path.home() / ".claude" / "settings.json"
-    )
+    code_db_path: Path = field(default_factory=lambda: Path.home() / ".byomem" / "code.db")
+    projects: dict[str, ProjectConfig] = field(default_factory=dict)
+    settings_path: Path = field(default_factory=lambda: Path.home() / ".claude" / "settings.json")
 
     @property
     def db_path(self) -> Path:
@@ -103,10 +109,18 @@ def _load_config() -> Config:
         kwargs["embedding_base_url"] = embeddings["base_url"]
 
     memory = data.get("memory", {})
-    for key in ("chunk_tokens", "chunk_overlap", "max_results", "min_score",
-                "vector_weight", "keyword_weight",
-                "candidate_multiplier", "approx_chars_per_token",
-                "log_search_mode", "log_score_demotion"):
+    for key in (
+        "chunk_tokens",
+        "chunk_overlap",
+        "max_results",
+        "min_score",
+        "vector_weight",
+        "keyword_weight",
+        "candidate_multiplier",
+        "approx_chars_per_token",
+        "log_search_mode",
+        "log_score_demotion",
+    ):
         if key in memory:
             kwargs[key] = memory[key]
 
@@ -123,9 +137,28 @@ def _load_config() -> Config:
         kwargs["summarizer_debug"] = summarizer_cfg["debug"]
 
     truncation = data.get("truncation", {})
-    for key in ("user_message_max", "assistant_message_max", "log_user_prefix", "log_assistant_prefix"):
+    for key in (
+        "user_message_max",
+        "assistant_message_max",
+        "log_user_prefix",
+        "log_assistant_prefix",
+    ):
         if key in truncation:
             kwargs[key] = truncation[key]
+
+    if "code_db_path" in data:
+        kwargs["code_db_path"] = Path(data["code_db_path"])
+
+    projects_data = data.get("projects", {}) or {}
+    if projects_data:
+        projects = {}
+        for name, proj_data in projects_data.items():
+            proj_data = proj_data or {}
+            source_root = None
+            if "source_root" in proj_data and proj_data["source_root"]:
+                source_root = Path(proj_data["source_root"]).expanduser()
+            projects[name] = ProjectConfig(source_root=source_root)
+        kwargs["projects"] = projects
 
     if "settings_path" in data:
         kwargs["settings_path"] = Path(data["settings_path"])

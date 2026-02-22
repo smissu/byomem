@@ -4,6 +4,7 @@ byomem MCP server — exposes memory tools to Claude Code over stdio.
 
 Tools: mem_context, mem_search, mem_get, mem_show, mem_latest, mem_list_projects.
 """
+
 import re
 import sys
 from pathlib import Path
@@ -137,7 +138,10 @@ def mem_search(
                 if proj_dir.exists():
                     for b in proj_dir.iterdir():
                         candidate = b / "log.md"
-                        if candidate.exists() and f"<!-- last_id: {turn_id} -->" in candidate.read_text():
+                        if (
+                            candidate.exists()
+                            and f"<!-- last_id: {turn_id} -->" in candidate.read_text()
+                        ):
                             log_path = candidate
                             break
             else:
@@ -255,17 +259,14 @@ def mem_list_projects() -> str:
         return "No projects found."
 
     projects = sorted(
-        d.name
-        for d in cfg.byomem.iterdir()
-        if d.is_dir() and not d.name.startswith(".")
+        d.name for d in cfg.byomem.iterdir() if d.is_dir() and not d.name.startswith(".")
     )
 
     # Filter out non-project dirs (search.db parent, etc.)
     projects = [
         p
         for p in projects
-        if (cfg.byomem / p / "main.md").exists()
-        or (cfg.byomem / p / "branches").exists()
+        if (cfg.byomem / p / "main.md").exists() or (cfg.byomem / p / "branches").exists()
     ]
 
     if not projects:
@@ -390,6 +391,51 @@ def mem_failed_jobs() -> str:
         except (json.JSONDecodeError, KeyError):
             out += f"### {f.name}\n(unreadable)\n\n"
 
+    return out
+
+
+@mcp.tool()
+def code_search(
+    query: str,
+    project: str = "",
+    max_results: int = 6,
+    min_score: float = 0.35,
+) -> str:
+    """Search indexed source code files across projects.
+
+    Args:
+        query: Natural language or keyword search query.
+        project: Optional project name to restrict search (e.g. "byomem"). Empty = all projects.
+        max_results: Maximum results to return (default 6).
+        min_score: Minimum relevance score 0.0-1.0 (default 0.35).
+
+    Returns:
+        Formatted markdown with scored snippets and file:line references.
+    """
+    from core.code_index import code_search as _search
+
+    results = _search(query, project=project, max_results=max_results, min_score=min_score)
+
+    # Sort: score descending, path ascending for ties
+    results = sorted(results, key=lambda r: (-r["score"], r["path"]))
+
+    if not results:
+        out = f'## Code Search: "{query}"\n0 results'
+        if project:
+            out += f" in {project}"
+        return out
+
+    out = f'## Code Search: "{query}"\n{len(results)} results (min score {min_score})\n\n'
+    out += "─" * 40 + "\n"
+
+    for i, r in enumerate(results, 1):
+        out += (
+            f"[{i}] score: {r['score']:.2f} | "
+            f"{r['path']} (lines {r['start_line']}–{r['end_line']})\n"
+            f"{r['preview']}\n\n"
+        )
+
+    out += "─" * 40 + "\n"
     return out
 
 

@@ -111,6 +111,7 @@ FALLBACK = {
 # Backend tracking (thread-safe)
 # ---------------------------------------------------------------------------
 
+
 def reset_backend_log():
     """Clear the backend log for this thread. Call before processing a job."""
     _thread_local.backends = []
@@ -144,6 +145,7 @@ def _track_backend(name: str):
 # Debug logging
 # ---------------------------------------------------------------------------
 
+
 def _debug_log(entry: dict):
     """Append a debug entry to queue/summarizer_debug.jsonl if debug mode is on."""
     cfg = get_config()
@@ -160,6 +162,7 @@ def _debug_log(entry: dict):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _strip_fences(text: str) -> str:
     """Strip markdown code fences from LLM response."""
@@ -178,7 +181,7 @@ def _wrap_bare_array(text: str) -> str:
     """
     stripped = text.strip()
     if stripped.startswith("["):
-        return '{"summaries":' + stripped + '}'
+        return '{"summaries":' + stripped + "}"
     return stripped
 
 
@@ -192,8 +195,8 @@ def _coerce_turn(turn) -> Turn:
 def _format_single(turn: Turn, cfg) -> str:
     """Format a single turn into the user-message payload."""
     return (
-        f"User: {turn.user[:cfg.user_message_max]}\n\n"
-        f"Claude: {turn.assistant[:cfg.assistant_message_max]}"
+        f"User: {turn.user[: cfg.user_message_max]}\n\n"
+        f"Claude: {turn.assistant[: cfg.assistant_message_max]}"
     )
 
 
@@ -203,8 +206,8 @@ def _format_batch(turns: list[Turn], cfg) -> str:
     for t in turns:
         parts.append(
             f"--- Turn {t.id} ---\n"
-            f"User: {t.user[:cfg.user_message_max]}\n\n"
-            f"Claude: {t.assistant[:cfg.assistant_message_max]}"
+            f"User: {t.user[: cfg.user_message_max]}\n\n"
+            f"Claude: {t.assistant[: cfg.assistant_message_max]}"
         )
     return "\n\n".join(parts)
 
@@ -220,6 +223,7 @@ def _ollama_api_url(cfg) -> str:
 # ---------------------------------------------------------------------------
 # Gemini CLI backend
 # ---------------------------------------------------------------------------
+
 
 def _gemini_available(cfg) -> bool:
     """Check if Gemini CLI is configured and the binary exists."""
@@ -239,9 +243,7 @@ def _run_gemini(cfg, prompt: str) -> str:
         timeout=90,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"Gemini CLI failed (rc={result.returncode}): {result.stderr[:200]}"
-        )
+        raise RuntimeError(f"Gemini CLI failed (rc={result.returncode}): {result.stderr[:200]}")
     wrapper = json.loads(result.stdout)
     response_text = wrapper.get("response", "")
     if not response_text or not response_text.strip():
@@ -266,6 +268,7 @@ def _batch_gemini(cfg, user_content: str) -> BatchSummaryResponse:
 # OpenCode CLI backend
 # ---------------------------------------------------------------------------
 
+
 def _opencode_available(cfg) -> bool:
     """Check if OpenCode CLI is configured and the binary exists."""
     return bool(cfg.summarizer_opencode_cli and shutil.which(cfg.summarizer_opencode_cli))
@@ -273,7 +276,15 @@ def _opencode_available(cfg) -> bool:
 
 def _run_opencode(cfg, prompt: str) -> str:
     """Run OpenCode CLI and return the response text."""
-    cmd = [cfg.summarizer_opencode_cli, "run", prompt, "-m", cfg.summarizer_opencode_model, "--format", "json"]
+    cmd = [
+        cfg.summarizer_opencode_cli,
+        "run",
+        prompt,
+        "-m",
+        cfg.summarizer_opencode_model,
+        "--format",
+        "json",
+    ]
     result = subprocess.run(
         cmd,
         capture_output=True,
@@ -281,9 +292,7 @@ def _run_opencode(cfg, prompt: str) -> str:
         timeout=120,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"OpenCode CLI failed (rc={result.returncode}): {result.stderr[:200]}"
-        )
+        raise RuntimeError(f"OpenCode CLI failed (rc={result.returncode}): {result.stderr[:200]}")
     # Parse NDJSON: collect type="text" parts
     text_parts = []
     for line in result.stdout.splitlines():
@@ -319,6 +328,7 @@ def _batch_opencode(cfg, user_content: str) -> BatchSummaryResponse:
 # ---------------------------------------------------------------------------
 # LM Studio backend (OpenAI-compatible local server)
 # ---------------------------------------------------------------------------
+
 
 def _lmstudio_available(cfg) -> bool:
     """Check if LM Studio is configured (URL must be set)."""
@@ -359,6 +369,7 @@ def _batch_lmstudio(cfg, user_content: str) -> BatchSummaryResponse:
 # ---------------------------------------------------------------------------
 # Single-turn summarization (backward compatible — returns dict)
 # ---------------------------------------------------------------------------
+
 
 def summarize_turn(turn, *, model_override: str | None = None) -> dict:
     """Summarize a single turn. Accepts Turn model or dict. Returns dict.
@@ -419,13 +430,15 @@ def summarize_turn(turn, *, model_override: str | None = None) -> dict:
         return result
     finally:
         _track_backend(backend)
-        _debug_log({
-            "mode": "single",
-            "turn_id": t.id,
-            "backend": backend,
-            "input": user_content,
-            "output": result,
-        })
+        _debug_log(
+            {
+                "mode": "single",
+                "turn_id": t.id,
+                "backend": backend,
+                "input": user_content,
+                "output": result,
+            }
+        )
 
 
 def _summarize_anthropic(cfg, user_content: str) -> dict:
@@ -484,6 +497,7 @@ def _summarize_openai_compat(cfg, user_content: str, *, model: str | None = None
 # ---------------------------------------------------------------------------
 # Batch summarization
 # ---------------------------------------------------------------------------
+
 
 def summarize_batch(turns: list, *, model_override: str | None = None) -> list[TurnSummary]:
     """Summarize multiple turns in a single LLM call.
@@ -556,13 +570,15 @@ def summarize_batch(turns: list, *, model_override: str | None = None) -> list[T
         return results
     finally:
         _track_backend(backend)
-        _debug_log({
-            "mode": "batch",
-            "turn_ids": [t.id for t in coerced],
-            "backend": backend,
-            "input": user_content,
-            "output": [s.model_dump() for s in results] if results else None,
-        })
+        _debug_log(
+            {
+                "mode": "batch",
+                "turn_ids": [t.id for t in coerced],
+                "backend": backend,
+                "input": user_content,
+                "output": [s.model_dump() for s in results] if results else None,
+            }
+        )
 
 
 def _batch_anthropic(cfg, user_content: str) -> BatchSummaryResponse:
@@ -606,7 +622,9 @@ def _batch_ollama_native(cfg, user_content: str) -> BatchSummaryResponse:
     return BatchSummaryResponse.model_validate_json(text)
 
 
-def _batch_openai_compat(cfg, user_content: str, *, model: str | None = None) -> BatchSummaryResponse:
+def _batch_openai_compat(
+    cfg, user_content: str, *, model: str | None = None
+) -> BatchSummaryResponse:
     """OpenAI-compat fallback with 3-tier structured output strategy.
 
     Uses fallback_model if configured (for when primary is a thinking model).
@@ -656,7 +674,8 @@ def _batch_openai_compat(cfg, user_content: str, *, model: str | None = None) ->
 
 
 def _align_results(
-    turns: list[Turn], batch_resp: BatchSummaryResponse,
+    turns: list[Turn],
+    batch_resp: BatchSummaryResponse,
 ) -> list[TurnSummary]:
     """Match batch summaries to input turns by turn_id, preserving input order."""
     by_id = {item.turn_id: item for item in batch_resp.summaries}
@@ -664,20 +683,24 @@ def _align_results(
     for t in turns:
         item = by_id.get(t.id)
         if item is not None:
-            results.append(TurnSummary(
-                title=item.title,
-                summary=item.summary,
-                classification=item.classification,
-                important=item.important,
-                milestone=item.milestone,
-            ))
+            results.append(
+                TurnSummary(
+                    title=item.title,
+                    summary=item.summary,
+                    classification=item.classification,
+                    important=item.important,
+                    milestone=item.milestone,
+                )
+            )
         else:
             results.append(TurnSummary(**FALLBACK))
     return results
 
 
 def _sequential_fallback(
-    turns: list[Turn], *, model_override: str | None = None,
+    turns: list[Turn],
+    *,
+    model_override: str | None = None,
 ) -> list[TurnSummary]:
     """Fall back to one-at-a-time summarization when batch fails."""
     results: list[TurnSummary] = []

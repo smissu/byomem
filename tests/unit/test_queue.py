@@ -1,4 +1,5 @@
 """Tests for core/queue.py — file-based job queue."""
+
 import os
 
 from core.models import QueueJob
@@ -76,6 +77,7 @@ def test_complete_removes_file(tmp_byomem):
 
 def test_complete_missing_file_noop(tmp_byomem):
     from pathlib import Path
+
     complete_job(Path("/nonexistent/file.json"))
 
 
@@ -115,6 +117,7 @@ def test_stale_lock_cleaned_up(tmp_byomem):
 def test_invalid_job_file_skipped(tmp_byomem):
     """Invalid JSON files in pending/ are renamed to .failed."""
     from core.config import get_config
+
     cfg = get_config()
     pending = cfg.queue_path / "pending"
     pending.mkdir(parents=True, exist_ok=True)

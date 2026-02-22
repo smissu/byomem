@@ -4,6 +4,7 @@ Supports dynamic overflow: when queue depth >= overflow_threshold,
 spawns a second thread using the fallback model (qwen2.5:3b via
 OpenAI-compat) to help drain the queue faster.
 """
+
 from __future__ import annotations
 
 import json
@@ -27,6 +28,26 @@ from core.queue import (
 )
 
 logger = logging.getLogger("byomem.worker")
+
+
+def _get_current_sha(source_root: Path) -> str | None:
+    """Return current HEAD sha for the git repo at source_root, or None if unavailable."""
+    import subprocess
+
+    cwd = source_root if source_root.exists() else None
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip() or None
+    except Exception:
+        return None
+
+
 _history_lock = threading.Lock()
 
 
@@ -86,7 +107,9 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
 
     try:
         new_turns, end_offset = parse_new_turns(
-            transcript, branch.last_turn_id, byte_offset=job.transcript_offset,
+            transcript,
+            branch.last_turn_id,
+            byte_offset=job.transcript_offset,
         )
         if not new_turns:
             # No new turns but update offset so we don't re-read this range
@@ -96,7 +119,7 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
         # Batch summarize for efficiency
         batch_size = cfg.batch_size
         all_summaries = []
-        batches = [new_turns[i:i + batch_size] for i in range(0, len(new_turns), batch_size)]
+        batches = [new_turns[i : i + batch_size] for i in range(0, len(new_turns), batch_size)]
 
         if cfg.summarizer_concurrency > 1 and len(batches) > 1:
             with ThreadPoolExecutor(max_workers=cfg.summarizer_concurrency) as pool:
@@ -139,6 +162,47 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
 
         update_metadata(branch, new_turns[-1].model_dump(), all_summaries[-1].model_dump())
         save_session_offset(job.session_id, end_offset)
+
+        # Reindex changed source files if project has source_root configured
+        project_cfg = cfg.projects.get(project)
+        if project_cfg and project_cfg.source_root:
+            try:
+                from core.code_index import (
+                    delete_indexed_source_file,
+                    get_changed_source_files,
+                    get_last_indexed_sha,
+                    index_source_file,
+                    set_last_indexed_sha,
+                )
+
+                root = project_cfg.source_root
+                last_sha = get_last_indexed_sha(project)
+                changed = get_changed_source_files(root, last_sha)
+                for path, status in changed:
+                    if status == "D":
+                        delete_indexed_source_file(
+                            str(path), project, cfg.code_db_path, source_root=root
+                        )
+                    else:
+                        index_source_file(path, project, cfg.code_db_path, source_root=root)
+
+                current_sha = _get_current_sha(root)
+                if current_sha:
+                    set_last_indexed_sha(project, current_sha)
+            except Exception as exc:
+                import json as _json
+                import sys as _sys
+
+                print(
+                    _json.dumps(
+                        {
+                            "event": "reindex_error",
+                            "project": project,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    ),
+                    file=_sys.stderr,
+                )
     finally:
         fcntl.flock(lock_file, fcntl.LOCK_UN)
         lock_file.close()
@@ -181,7 +245,9 @@ def _process_one(job_file, job, model_label, model_override):
         error_msg = f"{type(exc).__name__}: {exc}"
         logger.exception("Failed to process job %s", job.session_id)
         if job.retry_count < 1:
-            logger.info("Requeueing job %s for retry (attempt %d)", job.session_id, job.retry_count + 1)
+            logger.info(
+                "Requeueing job %s for retry (attempt %d)", job.session_id, job.retry_count + 1
+            )
             retry_job(job_file, error_msg)
             _log_result(job.session_id, actual_backend, duration, "retry")
         else:
@@ -252,8 +318,11 @@ def run_worker():
 
                 logger.info(
                     "Queue depth %d >= threshold %d, splitting: %d primary + %d overflow (%s)",
-                    len(pending), cfg.overflow_threshold,
-                    len(primary_jobs), len(overflow_jobs), cfg.summarizer_fallback_model,
+                    len(pending),
+                    cfg.overflow_threshold,
+                    len(primary_jobs),
+                    len(overflow_jobs),
+                    cfg.summarizer_fallback_model,
                 )
 
                 overflow_thread = threading.Thread(

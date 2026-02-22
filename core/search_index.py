@@ -1,11 +1,11 @@
 """Hybrid search index: SQLite FTS5 (BM25) + sqlite-vec (cosine)."""
+
 import hashlib
 import sqlite3
 from pathlib import Path
 
-import openai
-
 from core.config import get_config
+from core.indexing_utils import _chunk_text, _get_embedding
 
 
 def get_db(db_path=None):
@@ -38,17 +38,13 @@ def index_file(path: Path, project: str):
     content = path.read_text()
     h = hashlib.sha256(content.encode()).hexdigest()
 
-    row = db.execute(
-        "SELECT content_hash FROM files WHERE path=?", (rel_path,)
-    ).fetchone()
+    row = db.execute("SELECT content_hash FROM files WHERE path=?", (rel_path,)).fetchone()
     if row and row[0] == h:
         db.close()
         return  # unchanged
 
     # FTS5 sync: explicitly delete old entries before removing chunks
-    old_chunks = db.execute(
-        "SELECT id, text FROM chunks WHERE file_path=?", (rel_path,)
-    ).fetchall()
+    old_chunks = db.execute("SELECT id, text FROM chunks WHERE file_path=?", (rel_path,)).fetchall()
     for chunk_id, old_text in old_chunks:
         db.execute(
             "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
@@ -68,9 +64,7 @@ def index_file(path: Path, project: str):
         )
         chunk_id = cur.lastrowid
         # Sync to FTS5
-        db.execute(
-            "INSERT INTO chunks_fts(rowid, text) VALUES(?, ?)", (chunk_id, text)
-        )
+        db.execute("INSERT INTO chunks_fts(rowid, text) VALUES(?, ?)", (chunk_id, text))
         # Vec insert only if embedding available
         if embedding is not None:
             try:
@@ -197,9 +191,7 @@ def delete_indexed_prefix(prefix: str):
     """Delete all indexed data for files matching a path prefix."""
     db = get_db()
     # Find all matching files
-    rows = db.execute(
-        "SELECT path FROM files WHERE path LIKE ?", (prefix + "%",)
-    ).fetchall()
+    rows = db.execute("SELECT path FROM files WHERE path LIKE ?", (prefix + "%",)).fetchall()
 
     for (file_path,) in rows:
         # FTS5 sync: delete old entries
@@ -247,35 +239,6 @@ def cleanup_orphaned_entries():
     db.commit()
     db.close()
     return removed
-
-
-def _get_embedding(db, text, text_hash):
-    """Return cached embedding or generate via OpenAI. Returns None on failure."""
-    row = db.execute(
-        "SELECT embedding FROM embedding_cache WHERE text_hash=?", (text_hash,)
-    ).fetchone()
-    if row:
-        import struct
-
-        blob = row[0]
-        return list(struct.unpack(f"{len(blob) // 4}f", blob))
-    try:
-        cfg = get_config()
-        client_kwargs = {}
-        if cfg.embedding_base_url:
-            client_kwargs["base_url"] = cfg.embedding_base_url
-            client_kwargs["api_key"] = "ollama"
-        resp = openai.OpenAI(**client_kwargs).embeddings.create(model=cfg.embedding_model, input=text)
-        embedding = resp.data[0].embedding
-        import sqlite_vec
-
-        db.execute(
-            "INSERT INTO embedding_cache (text_hash, embedding) VALUES (?,?)",
-            (text_hash, sqlite_vec.serialize_float32(embedding)),
-        )
-        return embedding
-    except Exception:
-        return None
 
 
 def _chunk_structured(content, rel_path, cfg):
@@ -334,48 +297,11 @@ def _split_on_delimiter(content, delimiter, chunk_chars, cfg):
             continue
         if len(text) > chunk_chars:
             # Oversized entry — sub-chunk it
-            sub = _chunk_text(
-                text, cfg.chunk_tokens, cfg.chunk_overlap, cfg.approx_chars_per_token
-            )
+            sub = _chunk_text(text, cfg.chunk_tokens, cfg.chunk_overlap, cfg.approx_chars_per_token)
             for s_start, s_end, s_text in sub:
                 chunks.append((start_idx + s_start, start_idx + s_end, s_text))
         else:
             chunks.append((start_idx + 1, end_idx, text))
-
-    return chunks
-
-
-def _chunk_text(text, chunk_tokens, chunk_overlap, chars_per_token=4):
-    """Line-based chunking with overlap. ~4 chars per token approximation."""
-    lines = text.splitlines()
-    chunks = []
-    i = 0
-    chunk_chars = chunk_tokens * chars_per_token
-    overlap_chars = chunk_overlap * chars_per_token
-
-    while i < len(lines):
-        chunk_lines = []
-        char_count = 0
-        j = i
-        while j < len(lines) and char_count < chunk_chars:
-            chunk_lines.append(lines[j])
-            char_count += len(lines[j])
-            j += 1
-
-        if chunk_lines:
-            chunks.append((i + 1, j, "\n".join(chunk_lines)))
-
-        # If we consumed all remaining lines, we're done
-        if j >= len(lines):
-            break
-
-        # Walk back from j to find overlap start
-        next_start = j
-        overlap_so_far = 0
-        while next_start > i and overlap_so_far < overlap_chars:
-            next_start -= 1
-            overlap_so_far += len(lines[next_start])
-        i = max(i + 1, next_start)
 
     return chunks
 

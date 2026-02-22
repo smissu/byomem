@@ -1,4 +1,5 @@
 """Tests for cli.py — all CLI subcommands."""
+
 import json
 
 from cli import (
@@ -75,8 +76,11 @@ def test_install_fails_missing_venv(tmp_settings, capsys):
     venv_python.unlink()
     cmd_install()
     captured = capsys.readouterr()
-    assert "venv" in captured.err.lower() or "python" in captured.err.lower() \
+    assert (
+        "venv" in captured.err.lower()
+        or "python" in captured.err.lower()
         or "not found" in captured.err.lower()
+    )
     # settings.json should NOT be created on failure
     assert not tmp_settings.exists()
 
@@ -87,6 +91,7 @@ def test_install_creates_settings_dir(tmp_settings):
     nested = cfg.settings_path.parent / "subdir" / "settings.json"
     import core.config as config_mod
     from core.config import Config
+
     new_cfg = Config(byomem=cfg.byomem, settings_path=nested)
     old = config_mod._config
     config_mod._config = new_cfg
@@ -124,13 +129,19 @@ def test_uninstall_removes_entries(tmp_settings):
 
 def test_uninstall_preserves_other(tmp_settings):
     """Other settings are untouched after uninstall."""
-    tmp_settings.write_text(json.dumps({
-        "myKey": "myValue",
-        "hooks": {"Stop": [
-            {"matcher": "", "hooks": [{"type": "command", "command": "other-hook"}]},
-        ]},
-        "mcpServers": {"other": {"command": "other"}},
-    }))
+    tmp_settings.write_text(
+        json.dumps(
+            {
+                "myKey": "myValue",
+                "hooks": {
+                    "Stop": [
+                        {"matcher": "", "hooks": [{"type": "command", "command": "other-hook"}]},
+                    ]
+                },
+                "mcpServers": {"other": {"command": "other"}},
+            }
+        )
+    )
     cmd_install()
     cmd_uninstall()
     data = json.loads(tmp_settings.read_text())
@@ -178,9 +189,7 @@ def test_show_lists_branches(tmp_settings, capsys):
     cfg = get_config()
     project_dir = cfg.byomem / "myproject" / "branches" / "2026-02-19-abcdef12"
     project_dir.mkdir(parents=True)
-    (project_dir / "metadata.md").write_text(
-        "status: open\nlast_updated: 2026-02-19T10:00:00\n"
-    )
+    (project_dir / "metadata.md").write_text("status: open\nlast_updated: 2026-02-19T10:00:00\n")
     cmd_show("myproject")
     captured = capsys.readouterr()
     assert "2026-02-19-abcdef12" in captured.out
@@ -223,10 +232,18 @@ def test_log_missing_branch(tmp_settings, capsys):
 
 def test_search_calls_hybrid(tmp_settings, mocker, capsys):
     """Calls hybrid_search and formats output."""
-    mock_search = mocker.patch("core.search_index.hybrid_search", return_value=[
-        {"path": "proj/commit.md", "score": 0.85, "start_line": 1, "end_line": 5,
-         "preview": "Fixed the bug"},
-    ])
+    mock_search = mocker.patch(
+        "core.search_index.hybrid_search",
+        return_value=[
+            {
+                "path": "proj/commit.md",
+                "score": 0.85,
+                "start_line": 1,
+                "end_line": 5,
+                "preview": "Fixed the bug",
+            },
+        ],
+    )
     cmd_search("stop price bug")
     mock_search.assert_called_once()
     captured = capsys.readouterr()
@@ -244,9 +261,7 @@ def test_merge_updates_main(tmp_settings):
     project_dir = cfg.byomem / "myproject"
     branch_dir = project_dir / "branches" / "2026-02-19-abcdef12"
     branch_dir.mkdir(parents=True)
-    (branch_dir / "commit.md").write_text(
-        "## This Commit's Contribution\n[FIX] Fixed stop price\n"
-    )
+    (branch_dir / "commit.md").write_text("## This Commit's Contribution\n[FIX] Fixed stop price\n")
     (branch_dir / "metadata.md").write_text("status: open\nlast_updated: 2026-02-19\n")
     cmd_merge("myproject", "2026-02-19-abcdef12")
     main_md = project_dir / "main.md"
@@ -404,6 +419,7 @@ def test_stats_global(tmp_settings, capsys):
 def test_stats_json_format(tmp_settings, capsys):
     """--format json outputs valid JSON."""
     import json
+
     cfg = get_config()
     proj = cfg.byomem / "myproject" / "branches" / "2026-02-19-abc"
     proj.mkdir(parents=True)
@@ -435,6 +451,7 @@ def test_health_detects_issues(tmp_settings, capsys, mock_openai_embed):
     f = proj / "doc.md"
     f.write_text("orphan me")
     from core.search_index import index_file
+
     index_file(f, project="proj")
     f.unlink()
 
@@ -452,18 +469,31 @@ def _write_history(cfg, entries):
     """Write history.jsonl with the given list of dicts."""
     history_path = cfg.queue_path / "history.jsonl"
     history_path.parent.mkdir(parents=True, exist_ok=True)
-    history_path.write_text(
-        "\n".join(json.dumps(e) for e in entries) + "\n"
-    )
+    history_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
 
 
 def test_queue_shows_history(tmp_settings, capsys):
     """Queue command displays recent history entries."""
     cfg = get_config()
-    _write_history(cfg, [
-        {"ts": "2026-02-19T18:30:00", "session": "72a0d04b", "model": "primary", "duration_s": 1.23, "status": "ok"},
-        {"ts": "2026-02-19T18:31:00", "session": "abcd1234", "model": "qwen2.5:3b", "duration_s": 0.87, "status": "ok"},
-    ])
+    _write_history(
+        cfg,
+        [
+            {
+                "ts": "2026-02-19T18:30:00",
+                "session": "72a0d04b",
+                "model": "primary",
+                "duration_s": 1.23,
+                "status": "ok",
+            },
+            {
+                "ts": "2026-02-19T18:31:00",
+                "session": "abcd1234",
+                "model": "qwen2.5:3b",
+                "duration_s": 0.87,
+                "status": "ok",
+            },
+        ],
+    )
     cmd_queue()
     captured = capsys.readouterr()
     assert "72a0d04b" in captured.out
@@ -476,7 +506,13 @@ def test_queue_history_limit(tmp_settings, capsys):
     """--history N limits to last N entries."""
     cfg = get_config()
     entries = [
-        {"ts": f"2026-02-19T18:{i:02d}:00", "session": f"sess{i:04d}", "model": "primary", "duration_s": 0.5, "status": "ok"}
+        {
+            "ts": f"2026-02-19T18:{i:02d}:00",
+            "session": f"sess{i:04d}",
+            "model": "primary",
+            "duration_s": 0.5,
+            "status": "ok",
+        }
         for i in range(20)
     ]
     _write_history(cfg, entries)
@@ -498,9 +534,18 @@ def test_queue_no_history_file(tmp_settings, capsys):
 def test_queue_history_error_entries(tmp_settings, capsys):
     """Error-status entries display correctly."""
     cfg = get_config()
-    _write_history(cfg, [
-        {"ts": "2026-02-19T18:30:00", "session": "fail0001", "model": "primary", "duration_s": 0.10, "status": "error"},
-    ])
+    _write_history(
+        cfg,
+        [
+            {
+                "ts": "2026-02-19T18:30:00",
+                "session": "fail0001",
+                "model": "primary",
+                "duration_s": 0.10,
+                "status": "error",
+            },
+        ],
+    )
     cmd_queue()
     captured = capsys.readouterr()
     assert "error" in captured.out

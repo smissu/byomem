@@ -1,4 +1,5 @@
 """Tests for core.models Pydantic models."""
+
 import json
 
 import pytest
@@ -231,13 +232,15 @@ def test_queue_job_model_dump_json_roundtrip():
 
 
 def test_queue_job_model_validate_json():
-    raw = json.dumps({
-        "session_id": "s2",
-        "transcript_path": "/data/x.jsonl",
-        "cwd": "/work",
-        "model_override": "haiku",
-        "created_at": "2026-02-19T14:00:00",
-    })
+    raw = json.dumps(
+        {
+            "session_id": "s2",
+            "transcript_path": "/data/x.jsonl",
+            "cwd": "/work",
+            "model_override": "haiku",
+            "created_at": "2026-02-19T14:00:00",
+        }
+    )
     job = QueueJob.model_validate_json(raw)
     assert job.session_id == "s2"
     assert job.transcript_path == "/data/x.jsonl"

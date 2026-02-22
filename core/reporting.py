@@ -1,4 +1,5 @@
 """Reporting and health-check functions shared by CLI and MCP server."""
+
 import re
 
 from core.config import get_config
@@ -52,7 +53,9 @@ def compute_project_stats(project: str) -> dict:
             stats["branches_merged"] += 1
 
         if branch_type:
-            stats["type_distribution"][branch_type] = stats["type_distribution"].get(branch_type, 0) + 1
+            stats["type_distribution"][branch_type] = (
+                stats["type_distribution"].get(branch_type, 0) + 1
+            )
 
         # Size
         stats["disk_usage_bytes"] += sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
@@ -80,11 +83,17 @@ def compute_global_stats() -> dict:
     cfg = get_config()
 
     # Find all projects
-    projects = sorted(
-        d.name for d in cfg.byomem.iterdir()
-        if d.is_dir() and not d.name.startswith(".")
-        and ((d / "branches").exists() or (d / "main.md").exists())
-    ) if cfg.byomem.exists() else []
+    projects = (
+        sorted(
+            d.name
+            for d in cfg.byomem.iterdir()
+            if d.is_dir()
+            and not d.name.startswith(".")
+            and ((d / "branches").exists() or (d / "main.md").exists())
+        )
+        if cfg.byomem.exists()
+        else []
+    )
 
     project_stats = [compute_project_stats(p) for p in projects]
 
@@ -97,6 +106,7 @@ def compute_global_stats() -> dict:
         index_stats["db_size_bytes"] = cfg.db_path.stat().st_size
         try:
             from core.search_index import get_db
+
             db = get_db()
             index_stats["files_count"] = db.execute("SELECT COUNT(*) FROM files").fetchone()[0]
             index_stats["chunks_count"] = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
@@ -137,6 +147,7 @@ def check_index_health() -> dict:
     if cfg.db_path.exists():
         try:
             from core.search_index import get_db
+
             db = get_db()
             rows = db.execute("SELECT path FROM files").fetchall()
             for (file_path,) in rows:

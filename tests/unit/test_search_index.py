@@ -1,4 +1,5 @@
 """Tests for core/search_index.py — hybrid FTS5 + sqlite-vec search index."""
+
 from core.search_index import (
     _chunk_structured,
     _chunk_text,
@@ -57,6 +58,7 @@ def test_chunk_text_exact_boundary():
 def test_index_file_creates_db(tmp_byomem, mock_openai_embed):
     """Indexing into non-existent DB path creates the database."""
     from core.config import get_config
+
     cfg = get_config()
     assert not cfg.db_path.exists()
 
@@ -119,9 +121,7 @@ def test_fts5_sync_regression(tmp_byomem, mock_openai_embed):
     f.write_text("alpha beta gamma")
     index_file(f, project="proj")
     db = get_db()
-    rows = db.execute(
-        "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'alpha'"
-    ).fetchall()
+    rows = db.execute("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'alpha'").fetchall()
     assert len(rows) > 0
 
     # Step 2: re-index with "delta epsilon zeta"
@@ -130,15 +130,11 @@ def test_fts5_sync_regression(tmp_byomem, mock_openai_embed):
     db = get_db()
 
     # Old content must NOT match
-    rows_old = db.execute(
-        "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'alpha'"
-    ).fetchall()
+    rows_old = db.execute("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'alpha'").fetchall()
     assert len(rows_old) == 0
 
     # New content must match
-    rows_new = db.execute(
-        "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'delta'"
-    ).fetchall()
+    rows_new = db.execute("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'delta'").fetchall()
     assert len(rows_new) > 0
 
 
@@ -318,6 +314,7 @@ def test_cleanup_preserves_valid(tmp_byomem, mock_openai_embed):
 def _make_cfg(**overrides):
     """Helper to create a Config with defaults suitable for chunk tests."""
     from core.config import Config
+
     defaults = dict(chunk_tokens=400, chunk_overlap=80, approx_chars_per_token=4)
     defaults.update(overrides)
     return Config(**defaults)

@@ -1,8 +1,12 @@
 """Tests for core/worker.py — background job processing."""
+
 import json
 import os
 import threading
 import time
+from pathlib import Path
+
+import pytest
 
 from core.models import QueueJob
 from core.queue import enqueue
@@ -139,7 +143,9 @@ def test_run_worker_logs_retry_then_failed(tmp_path, tmp_byomem, monkeypatch):
     assert len(list(failed_dir.glob("*.json"))) == 1
 
 
-def test_enrich_mode_embeds_turn_id(tmp_path, tmp_byomem, mock_anthropic, mock_openai_embed, monkeypatch):
+def test_enrich_mode_embeds_turn_id(
+    tmp_path, tmp_byomem, mock_anthropic, mock_openai_embed, monkeypatch
+):
     """Enrich mode: verify commit.md contains <!-- turn: --> after processing."""
     from core.config import Config
 
@@ -157,7 +163,9 @@ def test_enrich_mode_embeds_turn_id(tmp_path, tmp_byomem, mock_anthropic, mock_o
     assert "<!-- turn: uuid-user-001 -->" in commit_content
 
 
-def test_index_mode_indexes_log(tmp_path, tmp_byomem, mock_anthropic, mock_openai_embed, monkeypatch):
+def test_index_mode_indexes_log(
+    tmp_path, tmp_byomem, mock_anthropic, mock_openai_embed, monkeypatch
+):
     """Index mode: verify log.md appears in search DB after processing."""
     from core.config import Config
     from core.search_index import get_db
@@ -235,6 +243,7 @@ def test_run_worker_skips_if_locked(tmp_path, tmp_byomem, mock_anthropic, mock_o
 # Overflow worker tests
 # ---------------------------------------------------------------------------
 
+
 def _enqueue_jobs(tmp_path, n, tmp_byomem):
     """Enqueue n jobs with unique transcripts."""
     paths = []
@@ -257,7 +266,9 @@ def _enqueue_jobs(tmp_path, n, tmp_byomem):
 
 
 def test_overflow_splits_jobs_above_threshold(
-    tmp_path, tmp_byomem_ollama, monkeypatch,
+    tmp_path,
+    tmp_byomem_ollama,
+    monkeypatch,
 ):
     """When queue depth >= overflow_threshold, work is split across two threads."""
     from core.config import Config
@@ -289,7 +300,9 @@ def test_overflow_splits_jobs_above_threshold(
 
 
 def test_no_overflow_below_threshold(
-    tmp_path, tmp_byomem_ollama, monkeypatch,
+    tmp_path,
+    tmp_byomem_ollama,
+    monkeypatch,
 ):
     """When queue depth < overflow_threshold, all jobs use primary model."""
     from core.config import Config
@@ -319,7 +332,9 @@ def test_no_overflow_below_threshold(
 
 
 def test_no_overflow_without_fallback_model(
-    tmp_path, tmp_byomem, monkeypatch,
+    tmp_path,
+    tmp_byomem,
+    monkeypatch,
 ):
     """Without fallback_model configured, overflow is never triggered."""
     from core.config import Config
@@ -346,7 +361,9 @@ def test_no_overflow_without_fallback_model(
 
 
 def test_overflow_even_split(
-    tmp_path, tmp_byomem_ollama, monkeypatch,
+    tmp_path,
+    tmp_byomem_ollama,
+    monkeypatch,
 ):
     """Overflow splits at midpoint: 3 primary + 3 overflow for 6 jobs."""
     from core.config import Config
@@ -380,8 +397,11 @@ def test_overflow_even_split(
 # Parallel worker tests
 # ---------------------------------------------------------------------------
 
+
 def test_parallel_processing_uses_thread_pool(
-    tmp_path, tmp_byomem, monkeypatch,
+    tmp_path,
+    tmp_byomem,
+    monkeypatch,
 ):
     """With max_workers=3 and 6 jobs, all 6 complete and processing overlaps."""
     from core.config import Config
@@ -412,7 +432,9 @@ def test_parallel_processing_uses_thread_pool(
 
 
 def test_sequential_fallback_with_one_worker(
-    tmp_path, tmp_byomem, monkeypatch,
+    tmp_path,
+    tmp_byomem,
+    monkeypatch,
 ):
     """With max_workers=1, all jobs run sequentially in the main thread."""
     from core.config import Config
@@ -433,11 +455,15 @@ def test_sequential_fallback_with_one_worker(
     assert len(threads_seen) == 4
     # All should run in the same thread (no pool threads)
     pool_threads = [t for t in threads_seen if t.startswith("byomem")]
-    assert len(pool_threads) == 0, f"Expected no pool threads with max_workers=1, got: {threads_seen}"
+    assert len(pool_threads) == 0, (
+        f"Expected no pool threads with max_workers=1, got: {threads_seen}"
+    )
 
 
 def test_overflow_with_parallel(
-    tmp_path, tmp_byomem_ollama, monkeypatch,
+    tmp_path,
+    tmp_byomem_ollama,
+    monkeypatch,
 ):
     """Overflow split + parallel: both primary and overflow threads parallelize."""
     from core.config import Config
@@ -457,10 +483,12 @@ def test_overflow_with_parallel(
 
     def fake_process(job, *, model_override=None):
         with lock:
-            results.append({
-                "thread": threading.current_thread().name,
-                "override": model_override,
-            })
+            results.append(
+                {
+                    "thread": threading.current_thread().name,
+                    "override": model_override,
+                }
+            )
         time.sleep(0.05)
 
     monkeypatch.setattr("core.worker.process_job", fake_process)
@@ -476,3 +504,211 @@ def test_overflow_with_parallel(
     # Primary jobs should use pool threads
     primary_threads = {r["thread"] for r in results if r["override"] is None}
     assert any(t.startswith("byomem") for t in primary_threads)
+
+
+# ---------------------------------------------------------------------------
+# Reindex integration tests (Phase 0.5 — RED state)
+#
+# These test the reindex block that WILL be added to process_job().
+# The block does not exist yet, so all tests should FAIL.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _mock_code_index(monkeypatch):
+    """Insert a fake core.code_index module into sys.modules.
+
+    The module doesn't exist yet (Phase 2), so we pre-create it as a
+    MagicMock so that ``from core.code_index import ...`` inside
+    process_job() won't raise ModuleNotFoundError.
+    """
+    import sys
+    from unittest.mock import MagicMock
+
+    fake_mod = MagicMock()
+    monkeypatch.setitem(sys.modules, "core.code_index", fake_mod)
+    return fake_mod
+
+
+@pytest.fixture
+def cfg_with_source_root(tmp_path, monkeypatch):
+    """Config with a projects dict containing source_root for 'testproject'."""
+    from core.config import Config, ProjectConfig
+
+    root = tmp_path / ".byomem"
+    root.mkdir()
+    cfg = Config(byomem=root)
+    cfg.projects = {"testproject": ProjectConfig(source_root=tmp_path / "src")}
+
+    monkeypatch.setattr("core.config._config", cfg)
+    return root, cfg
+
+
+@pytest.fixture
+def cfg_without_source_root(tmp_path, monkeypatch):
+    """Config with no projects dict — reindex should be skipped."""
+    from core.config import Config
+
+    root = tmp_path / ".byomem"
+    root.mkdir()
+    cfg = Config(byomem=root)
+    # No projects attribute or empty projects dict
+    cfg.projects = {}
+    monkeypatch.setattr("core.config._config", cfg)
+    return root, cfg
+
+
+def test_reindex_called_when_source_root_set(
+    tmp_path,
+    cfg_with_source_root,
+    _mock_code_index,
+    mock_anthropic,
+    mock_openai_embed,
+):
+    """AC-1: When source_root is set, get_changed_source_files is called
+    and index_source_file / delete_indexed_source_file are dispatched."""
+    transcript = _make_transcript(tmp_path)
+    job = _make_job(transcript)
+
+    # Set up code_index mock returns
+    _mock_code_index.get_changed_source_files.return_value = [
+        (Path("src/foo.py"), "M"),
+    ]
+    _mock_code_index.get_last_indexed_sha.return_value = None
+
+    process_job(job)
+
+    _mock_code_index.get_changed_source_files.assert_called_once()
+    _mock_code_index.index_source_file.assert_called_once()
+    _mock_code_index.set_last_indexed_sha.assert_called_once()
+
+
+def test_reindex_dispatches_delete_for_D_status(
+    tmp_path,
+    cfg_with_source_root,
+    _mock_code_index,
+    mock_anthropic,
+    mock_openai_embed,
+):
+    """AC-1 (delete path): Deleted files dispatch delete_indexed_source_file."""
+    transcript = _make_transcript(tmp_path)
+    job = _make_job(transcript)
+
+    _mock_code_index.get_changed_source_files.return_value = [
+        (Path("src/removed.py"), "D"),
+    ]
+    _mock_code_index.get_last_indexed_sha.return_value = "oldsha"
+
+    process_job(job)
+
+    _mock_code_index.delete_indexed_source_file.assert_called_once()
+    _mock_code_index.index_source_file.assert_not_called()
+
+
+def test_reindex_skipped_when_no_source_root(
+    tmp_path,
+    cfg_without_source_root,
+    _mock_code_index,
+    mock_anthropic,
+    mock_openai_embed,
+):
+    """AC-2: When project has no source_root, reindex block is skipped entirely."""
+    transcript = _make_transcript(tmp_path)
+    job = _make_job(transcript)
+
+    process_job(job)
+
+    _mock_code_index.get_changed_source_files.assert_not_called()
+    _mock_code_index.index_source_file.assert_not_called()
+    _mock_code_index.delete_indexed_source_file.assert_not_called()
+    _mock_code_index.set_last_indexed_sha.assert_not_called()
+
+
+def test_reindex_skipped_when_project_not_in_config(
+    tmp_path,
+    cfg_with_source_root,
+    _mock_code_index,
+    mock_anthropic,
+    mock_openai_embed,
+):
+    """AC-2 (variant): cwd resolves to a project not in cfg.projects."""
+    transcript = _make_transcript(tmp_path)
+    # cwd resolves to "otherproject" which is NOT in cfg.projects
+    job = _make_job(transcript, cwd="/tmp/otherproject")
+
+    process_job(job)
+
+    _mock_code_index.get_changed_source_files.assert_not_called()
+    _mock_code_index.set_last_indexed_sha.assert_not_called()
+
+
+def test_reindex_exception_does_not_crash_pipeline(
+    tmp_path,
+    cfg_with_source_root,
+    _mock_code_index,
+    mock_anthropic,
+    mock_openai_embed,
+):
+    """AC-3: Reindex exception is caught and swallowed — process_job completes."""
+    transcript = _make_transcript(tmp_path)
+    job = _make_job(transcript)
+
+    _mock_code_index.get_changed_source_files.side_effect = RuntimeError("git failed")
+
+    # Should NOT raise — the reindex block must catch all exceptions
+    process_job(job)
+
+    # Memory pipeline should still have run (branch created, log written)
+    root = cfg_with_source_root[0]
+    project_dir = root / "testproject" / "branches"
+    assert project_dir.exists()
+
+
+def test_sha_updated_after_successful_reindex(
+    tmp_path,
+    cfg_with_source_root,
+    _mock_code_index,
+    mock_anthropic,
+    mock_openai_embed,
+    monkeypatch,
+):
+    """AC-4: set_last_indexed_sha is called with current HEAD after success."""
+    transcript = _make_transcript(tmp_path)
+    job = _make_job(transcript)
+
+    _mock_code_index.get_changed_source_files.return_value = [
+        (Path("src/bar.py"), "A"),
+    ]
+    _mock_code_index.get_last_indexed_sha.return_value = "oldsha123"
+
+    # Mock _get_current_sha helper that will be added to worker.py
+    monkeypatch.setattr(
+        "core.worker._get_current_sha",
+        lambda source_root: "newsha456",
+        raising=False,
+    )
+
+    process_job(job)
+
+    _mock_code_index.set_last_indexed_sha.assert_called_once_with(
+        "testproject",
+        "newsha456",
+    )
+
+
+def test_sha_not_updated_on_reindex_exception(
+    tmp_path,
+    cfg_with_source_root,
+    _mock_code_index,
+    mock_anthropic,
+    mock_openai_embed,
+):
+    """AC-5: set_last_indexed_sha is NOT called when reindex loop raises."""
+    transcript = _make_transcript(tmp_path)
+    job = _make_job(transcript)
+
+    _mock_code_index.get_changed_source_files.side_effect = RuntimeError("git diff failed")
+
+    process_job(job)
+
+    _mock_code_index.set_last_indexed_sha.assert_not_called()

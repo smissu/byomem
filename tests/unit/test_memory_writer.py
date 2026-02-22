@@ -1,4 +1,5 @@
 """Tests for core.memory_writer — main.md and project MEMORY.md updates."""
+
 from datetime import date
 
 from core.memory_writer import (

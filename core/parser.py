@@ -53,9 +53,7 @@ def parse_new_turns(
     turns, processed, found_since = [], set(), since_id is None or byte_offset > 0
 
     # Check if parentUUID linking is available
-    has_parent_links = any(
-        _parent_uuid(m) for m in messages if m.get("type") == "assistant"
-    )
+    has_parent_links = any(_parent_uuid(m) for m in messages if m.get("type") == "assistant")
 
     if has_parent_links:
         # Tree traversal: follow parentUUID chain to find all assistant descendants
@@ -85,18 +83,20 @@ def parse_new_turns(
             processed.update(m["uuid"] for m in assistant_msgs if m.get("uuid"))
             processed.add(msg["uuid"])
 
-            user_text = _text(msg)[:cfg.user_message_max]
+            user_text = _text(msg)[: cfg.user_message_max]
             assistant_text = _join_assistant(assistant_msgs, cfg.assistant_message_max)
 
             if not assistant_text.strip():
                 continue
 
-            turns.append(Turn(
-                id=msg["uuid"],
-                timestamp=msg.get("timestamp", ""),
-                user=user_text,
-                assistant=assistant_text,
-            ))
+            turns.append(
+                Turn(
+                    id=msg["uuid"],
+                    timestamp=msg.get("timestamp", ""),
+                    user=user_text,
+                    assistant=assistant_text,
+                )
+            )
     else:
         # Fallback: sequential pairing (after context compaction, parentUUID is lost)
         # Pair each real user message with assistant messages until the next real user message
@@ -120,18 +120,20 @@ def parse_new_turns(
                     assistant_msgs.append(messages[j])
                     processed.add(messages[j].get("uuid", ""))
 
-            user_text = _text(msg)[:cfg.user_message_max]
+            user_text = _text(msg)[: cfg.user_message_max]
             assistant_text = _join_assistant(assistant_msgs, cfg.assistant_message_max)
 
             if not assistant_text.strip():
                 continue
 
-            turns.append(Turn(
-                id=msg["uuid"],
-                timestamp=msg.get("timestamp", ""),
-                user=user_text,
-                assistant=assistant_text,
-            ))
+            turns.append(
+                Turn(
+                    id=msg["uuid"],
+                    timestamp=msg.get("timestamp", ""),
+                    user=user_text,
+                    assistant=assistant_text,
+                )
+            )
 
     return turns, end_offset
 
@@ -171,10 +173,7 @@ def _is_tool_result(msg: dict) -> bool:
         return False
     content = msg.get("message", {}).get("content", "")
     if isinstance(content, list):
-        return any(
-            isinstance(b, dict) and b.get("type") == "tool_result"
-            for b in content
-        )
+        return any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
     return False
 
 
@@ -184,7 +183,6 @@ def _text(msg: dict) -> str:
         return content
     if isinstance(content, list):
         return " ".join(
-            b.get("text", "") for b in content
-            if isinstance(b, dict) and b.get("type") == "text"
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
         )
     return ""

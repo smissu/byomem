@@ -5,6 +5,7 @@ fallback in summarizer.py. Measures speed, quality, and reliability.
 
 Run: python tests/live/test_ollama_structured.py
 """
+
 import json
 import sys
 import time
@@ -120,14 +121,20 @@ def test_single_turn(model: str, client: openai.OpenAI) -> TestResult:
         parsed = json.loads(text)
         ts = TurnSummary(**parsed)
         return TestResult(
-            model=model, test_name="single_turn", tier="text_parse",
-            success=True, elapsed_s=time.time() - start,
+            model=model,
+            test_name="single_turn",
+            tier="text_parse",
+            success=True,
+            elapsed_s=time.time() - start,
             output=ts.model_dump(),
         )
     except Exception as e:
         return TestResult(
-            model=model, test_name="single_turn", tier="text_parse",
-            success=False, elapsed_s=time.time() - start,
+            model=model,
+            test_name="single_turn",
+            tier="text_parse",
+            success=False,
+            elapsed_s=time.time() - start,
             error=str(e),
         )
 
@@ -148,19 +155,28 @@ def test_batch_tier1(model: str, client: openai.OpenAI) -> TestResult:
         parsed = resp.choices[0].message.parsed
         if parsed is None:
             return TestResult(
-                model=model, test_name="batch_tier1", tier="beta_parse",
-                success=False, elapsed_s=time.time() - start,
+                model=model,
+                test_name="batch_tier1",
+                tier="beta_parse",
+                success=False,
+                elapsed_s=time.time() - start,
                 error="parsed is None",
             )
         return TestResult(
-            model=model, test_name="batch_tier1", tier="beta_parse",
-            success=True, elapsed_s=time.time() - start,
+            model=model,
+            test_name="batch_tier1",
+            tier="beta_parse",
+            success=True,
+            elapsed_s=time.time() - start,
             output=[s.model_dump() for s in parsed.summaries],
         )
     except Exception as e:
         return TestResult(
-            model=model, test_name="batch_tier1", tier="beta_parse",
-            success=False, elapsed_s=time.time() - start,
+            model=model,
+            test_name="batch_tier1",
+            tier="beta_parse",
+            success=False,
+            elapsed_s=time.time() - start,
             error=str(e),
         )
 
@@ -181,14 +197,20 @@ def test_batch_tier2(model: str, client: openai.OpenAI) -> TestResult:
         text = _strip_fences(resp.choices[0].message.content)
         parsed = BatchSummaryResponse.model_validate_json(text)
         return TestResult(
-            model=model, test_name="batch_tier2", tier="ollama_format",
-            success=True, elapsed_s=time.time() - start,
+            model=model,
+            test_name="batch_tier2",
+            tier="ollama_format",
+            success=True,
+            elapsed_s=time.time() - start,
             output=[s.model_dump() for s in parsed.summaries],
         )
     except Exception as e:
         return TestResult(
-            model=model, test_name="batch_tier2", tier="ollama_format",
-            success=False, elapsed_s=time.time() - start,
+            model=model,
+            test_name="batch_tier2",
+            tier="ollama_format",
+            success=False,
+            elapsed_s=time.time() - start,
             error=str(e),
         )
 
@@ -208,14 +230,20 @@ def test_batch_tier3(model: str, client: openai.OpenAI) -> TestResult:
         text = _strip_fences(resp.choices[0].message.content)
         parsed = BatchSummaryResponse.model_validate_json(text)
         return TestResult(
-            model=model, test_name="batch_tier3", tier="text_parse",
-            success=True, elapsed_s=time.time() - start,
+            model=model,
+            test_name="batch_tier3",
+            tier="text_parse",
+            success=True,
+            elapsed_s=time.time() - start,
             output=[s.model_dump() for s in parsed.summaries],
         )
     except Exception as e:
         return TestResult(
-            model=model, test_name="batch_tier3", tier="text_parse",
-            success=False, elapsed_s=time.time() - start,
+            model=model,
+            test_name="batch_tier3",
+            tier="text_parse",
+            success=False,
+            elapsed_s=time.time() - start,
             error=str(e),
         )
 
@@ -228,15 +256,16 @@ def run_all():
     all_results: list[TestResult] = []
 
     for model in MODELS:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"  Model: {model}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         # Warmup call
         print(f"  Warming up {model}...")
         try:
             client.chat.completions.create(
-                model=model, max_tokens=10,
+                model=model,
+                max_tokens=10,
                 messages=[{"role": "user", "content": "hi"}],
             )
         except Exception as e:
@@ -256,11 +285,11 @@ def run_all():
                 print(f"    Error: {result.error[:300]}")
 
     # Summary table
-    print(f"\n\n{'='*60}")
+    print(f"\n\n{'=' * 60}")
     print("  SUMMARY")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  {'Model':<15} {'Test':<15} {'Tier':<15} {'Status':<6} {'Time':>6}")
-    print(f"  {'-'*15} {'-'*15} {'-'*15} {'-'*6} {'-'*6}")
+    print(f"  {'-' * 15} {'-' * 15} {'-' * 15} {'-' * 6} {'-' * 6}")
     for r in all_results:
         status = "PASS" if r.success else "FAIL"
         print(f"  {r.model:<15} {r.test_name:<15} {r.tier:<15} {status:<6} {r.elapsed_s:>5.2f}s")
@@ -272,7 +301,9 @@ def run_all():
             turn_ids = {s.get("turn_id") for s in r.output if isinstance(s, dict)}
             expected = {"t1", "t2", "t3"}
             coverage = turn_ids & expected
-            print(f"  {r.model:<15} {r.test_name:<15} -> {coverage} ({'COMPLETE' if coverage == expected else 'MISSING: ' + str(expected - coverage)})")
+            print(
+                f"  {r.model:<15} {r.test_name:<15} -> {coverage} ({'COMPLETE' if coverage == expected else 'MISSING: ' + str(expected - coverage)})"
+            )
 
 
 if __name__ == "__main__":

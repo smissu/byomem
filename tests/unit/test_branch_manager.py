@@ -1,4 +1,5 @@
 """Tests for core.branch_manager — GCC branch lifecycle."""
+
 from datetime import date
 
 from core.branch_manager import (
@@ -173,6 +174,7 @@ def test_list_branches_by_age(tmp_byomem):
     proj.mkdir(parents=True)
     # Recent branch (today)
     from datetime import date
+
     today = date.today().isoformat()
     b1 = proj / f"{today}-abc12345"
     b1.mkdir()

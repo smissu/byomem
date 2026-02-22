@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """byomem CLI — manage memory hooks, search index, and branch data."""
+
 import argparse
 import json
 import os
@@ -38,17 +39,16 @@ def cmd_install():
     stop_list = hooks.setdefault("Stop", [])
 
     # Remove any existing byomem entries (idempotent)
-    stop_list[:] = [
-        entry for entry in stop_list
-        if not _is_byomem_hook_entry(entry)
-    ]
+    stop_list[:] = [entry for entry in stop_list if not _is_byomem_hook_entry(entry)]
 
     # Add Stop hook (nested format per Claude Code spec)
     hook_command = f"{venv_python} {stop_hook}"
-    stop_list.append({
-        "matcher": "",
-        "hooks": [{"type": "command", "command": hook_command}],
-    })
+    stop_list.append(
+        {
+            "matcher": "",
+            "hooks": [{"type": "command", "command": hook_command}],
+        }
+    )
 
     # Add MCP server
     servers = settings.setdefault("mcpServers", {})
@@ -126,8 +126,11 @@ def cmd_projects():
     """List all projects with basic stats."""
     cfg = get_config()
     projects = sorted(
-        d for d in cfg.byomem.iterdir()
-        if d.is_dir() and not d.name.startswith(".") and d.name != "queue"
+        d
+        for d in cfg.byomem.iterdir()
+        if d.is_dir()
+        and not d.name.startswith(".")
+        and d.name != "queue"
         and ((d / "branches").exists() or (d / "main.md").exists())
     )
     if not projects:
@@ -136,7 +139,9 @@ def cmd_projects():
 
     for p in projects:
         branches_dir = p / "branches"
-        branch_count = sum(1 for b in branches_dir.iterdir() if b.is_dir()) if branches_dir.exists() else 0
+        branch_count = (
+            sum(1 for b in branches_dir.iterdir() if b.is_dir()) if branches_dir.exists() else 0
+        )
         has_main = (p / "main.md").exists()
         main_lines = len((p / "main.md").read_text().splitlines()) if has_main else 0
         print(f"  {p.name:<20} {branch_count} branch(es), main.md: {main_lines} lines")
@@ -261,8 +266,10 @@ def cmd_gc(project="", days=90, dry_run=False, reindex=False):
         projects = [project]
     else:
         projects = sorted(
-            d.name for d in cfg.byomem.iterdir()
-            if d.is_dir() and not d.name.startswith(".")
+            d.name
+            for d in cfg.byomem.iterdir()
+            if d.is_dir()
+            and not d.name.startswith(".")
             and ((d / "branches").exists() or (d / "main.md").exists())
         )
 
@@ -278,7 +285,7 @@ def cmd_gc(project="", days=90, dry_run=False, reindex=False):
 
         print(f"\n{proj}:")
         for b in branches:
-            age_str = f"{b['age_days']}d old" if b['age_days'] is not None else "unknown age"
+            age_str = f"{b['age_days']}d old" if b["age_days"] is not None else "unknown age"
             size_str = f"{b['size_bytes'] / 1024:.0f} KB"
 
             if dry_run:
@@ -287,21 +294,23 @@ def cmd_gc(project="", days=90, dry_run=False, reindex=False):
                 # Delete from search index first
                 try:
                     from core.search_index import delete_indexed_prefix
+
                     rel_prefix = f"{proj}/branches/{b['name']}/"
                     delete_indexed_prefix(rel_prefix)
                 except ImportError:
                     pass
 
-                delete_branch(proj, b['name'])
+                delete_branch(proj, b["name"])
                 print(f"  deleted {b['name']} ({age_str}, {size_str})")
 
             total_deleted += 1
-            total_freed += b['size_bytes']
+            total_freed += b["size_bytes"]
 
     if not dry_run and total_deleted > 0:
         # Clean up orphaned entries
         try:
             from core.search_index import cleanup_orphaned_entries
+
             orphaned = cleanup_orphaned_entries()
             if orphaned:
                 print(f"\nCleaned {orphaned} orphaned search index entries.")
@@ -330,9 +339,9 @@ def cmd_backfill_summaries(project="", dry_run=False):
         projects = [project]
     else:
         projects = sorted(
-            d.name for d in cfg.byomem.iterdir()
-            if d.is_dir() and not d.name.startswith(".")
-            and (d / "branches").is_dir()
+            d.name
+            for d in cfg.byomem.iterdir()
+            if d.is_dir() and not d.name.startswith(".") and (d / "branches").is_dir()
         )
 
     updated = 0
@@ -362,9 +371,7 @@ def cmd_backfill_summaries(project="", dry_run=False):
             summary_text = None
             commit_path = branch_dir / "commit.md"
             if commit_path.exists():
-                titles = re.findall(
-                    r"\*\*\[(\w+)\]\s*(.+?)\*\*", commit_path.read_text()
-                )
+                titles = re.findall(r"\*\*\[(\w+)\]\s*(.+?)\*\*", commit_path.read_text())
                 if titles:
                     cls, title = titles[-1]
                     summary_text = f"[{cls}] {title.strip()}"
@@ -373,9 +380,7 @@ def cmd_backfill_summaries(project="", dry_run=False):
             if not summary_text:
                 log_path = branch_dir / "log.md"
                 if log_path.exists():
-                    user_match = re.search(
-                        r"> \*\*User\*\*:\s*(.+)", log_path.read_text()
-                    )
+                    user_match = re.search(r"> \*\*User\*\*:\s*(.+)", log_path.read_text())
                     if user_match:
                         summary_text = user_match.group(1)[:80].strip()
 
@@ -405,11 +410,14 @@ def cmd_stats(project="", fmt="text"):
         stats = compute_project_stats(project)
         if fmt == "json":
             import json as json_mod
+
             print(json_mod.dumps(stats, indent=2, default=str))
             return 0
 
         print(f"\n  {project}")
-        print(f"  Branches: {stats['branches_total']} ({stats['branches_active']} active, {stats['branches_merged']} merged)")
+        print(
+            f"  Branches: {stats['branches_total']} ({stats['branches_active']} active, {stats['branches_merged']} merged)"
+        )
         if stats["type_distribution"]:
             types = ", ".join(f"{k}: {v}" for k, v in stats["type_distribution"].items())
             print(f"  Types: {types}")
@@ -422,6 +430,7 @@ def cmd_stats(project="", fmt="text"):
         gstats = compute_global_stats()
         if fmt == "json":
             import json as json_mod
+
             print(json_mod.dumps(gstats, indent=2, default=str))
             return 0
 
@@ -429,14 +438,18 @@ def cmd_stats(project="", fmt="text"):
         print(f"  Total branches: {gstats['total_branches']}")
         print(f"  Total disk: {gstats['total_disk_bytes'] / 1024:.0f} KB")
         idx = gstats["search_index"]
-        print(f"  Search index: {idx['files_count']} files, {idx['chunks_count']} chunks, {idx['db_size_bytes'] / 1024:.0f} KB")
+        print(
+            f"  Search index: {idx['files_count']} files, {idx['chunks_count']} chunks, {idx['db_size_bytes'] / 1024:.0f} KB"
+        )
 
         if gstats["projects"]:
             idx_by_project = idx.get("per_project", {})
             print("\n  Per project:")
             for ps in gstats["projects"]:
                 chunks = idx_by_project.get(ps["project"], 0)
-                print(f"    {ps['project']}: {ps['branches_total']} branches, {ps['disk_usage_bytes'] / 1024:.0f} KB, {chunks} indexed chunks")
+                print(
+                    f"    {ps['project']}: {ps['branches_total']} branches, {ps['disk_usage_bytes'] / 1024:.0f} KB, {chunks} indexed chunks"
+                )
 
     return 0
 
@@ -462,6 +475,7 @@ def cmd_health(repair=False):
     if repair and health["orphaned_files"] > 0:
         try:
             from core.search_index import cleanup_orphaned_entries
+
             removed = cleanup_orphaned_entries()
             print(f"\n  Repaired: removed {removed} orphaned entries.")
         except ImportError:
@@ -537,7 +551,7 @@ def cmd_queue(purge=False, history=0):
         if recent:
             print(f"\n  Recent history ({len(recent)}/{len(lines)}):")
             print(f"  {'Timestamp':<20} {'Session':<10} {'Model':<24} {'Duration':>8}  {'Status'}")
-            print(f"  {'-'*19}  {'-'*9} {'-'*23} {'-'*8}  {'-'*6}")
+            print(f"  {'-' * 19}  {'-' * 9} {'-' * 23} {'-' * 8}  {'-' * 6}")
             for line in recent:
                 try:
                     entry = json.loads(line)
@@ -578,15 +592,22 @@ def cmd_wipe(confirm=False, project=""):
         print()
         # List available projects
         projects = sorted(
-            d for d in cfg.byomem.iterdir()
-            if d.is_dir() and not d.name.startswith(".") and d.name != "queue"
+            d
+            for d in cfg.byomem.iterdir()
+            if d.is_dir()
+            and not d.name.startswith(".")
+            and d.name != "queue"
             and ((d / "branches").exists() or (d / "main.md").exists())
         )
         if projects:
             print("Projects:")
             for p in projects:
                 branches_dir = p / "branches"
-                branch_count = sum(1 for b in branches_dir.iterdir() if b.is_dir()) if branches_dir.exists() else 0
+                branch_count = (
+                    sum(1 for b in branches_dir.iterdir() if b.is_dir())
+                    if branches_dir.exists()
+                    else 0
+                )
                 print(f"  {p.name:<20} {branch_count} branch(es)")
             print()
         print("Run with --confirm to proceed.")
@@ -604,6 +625,7 @@ def cmd_wipe(confirm=False, project=""):
         # Remove project entries from search index
         try:
             from core.search_index import delete_indexed_prefix
+
             count = delete_indexed_prefix(f"{project}/")
             if count:
                 removed.append(f"search index: {count} file(s) for {project}")
@@ -630,7 +652,11 @@ def cmd_wipe(confirm=False, project=""):
 
         # 2. All projects
         for project_dir in cfg.byomem.iterdir():
-            if not project_dir.is_dir() or project_dir.name.startswith(".") or project_dir.name == "queue":
+            if (
+                not project_dir.is_dir()
+                or project_dir.name.startswith(".")
+                or project_dir.name == "queue"
+            ):
                 continue
 
             main_md = project_dir / "main.md"
@@ -712,7 +738,9 @@ def cmd_merge_project(source, target, confirm=False):
     src_main = src_dir / "main.md"
     main_entries = 0
     if src_main.exists():
-        main_entries = sum(1 for line in src_main.read_text().splitlines() if line.startswith("- ["))
+        main_entries = sum(
+            1 for line in src_main.read_text().splitlines() if line.startswith("- [")
+        )
 
     print(f"Merge '{source}' -> '{target}':")
     print(f"  {len(src_branches)} branch(es) to move")
@@ -783,7 +811,18 @@ def cmd_merge_project(source, target, confirm=False):
     return 0
 
 
-def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None, prompt_file="", test_set="", ollama_opts=None, backend="ollama", concurrency=1):
+def cmd_compare_models(
+    model,
+    limit=0,
+    output="",
+    max_tokens=0,
+    temperature=None,
+    prompt_file="",
+    test_set="",
+    ollama_opts=None,
+    backend="ollama",
+    concurrency=1,
+):
     """Replay summarizer debug entries against a model via Ollama or Gemini CLI."""
     import hashlib
     import time
@@ -874,11 +913,16 @@ def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None
     ollama_options.update(extra_opts)
 
     # Generate short run ID from settings hash
-    run_key = json.dumps({
-        "model": model, "test_set": test_set_path.name,
-        "options": ollama_options, "prompt_file": prompt_file,
-        "ts": datetime.now(UTC).isoformat(),
-    }, sort_keys=True)
+    run_key = json.dumps(
+        {
+            "model": model,
+            "test_set": test_set_path.name,
+            "options": ollama_options,
+            "prompt_file": prompt_file,
+            "ts": datetime.now(UTC).isoformat(),
+        },
+        sort_keys=True,
+    )
     run_id = hashlib.sha1(run_key.encode()).hexdigest()[:8]
 
     n_workers = concurrency if backend in ("gemini", "opencode", "lmstudio") else 1
@@ -909,8 +953,11 @@ def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None
             return idx, {"status": "error: empty input", "mode": mode, "duration_s": 0}
 
         sys_prompt = sys_batch if mode == "batch" else sys_single
-        schema = (BatchSummaryResponse.model_json_schema() if mode == "batch"
-                  else TurnSummary.model_json_schema())
+        schema = (
+            BatchSummaryResponse.model_json_schema()
+            if mode == "batch"
+            else TurnSummary.model_json_schema()
+        )
 
         t_entry = time.monotonic()
         eval_stats = {}
@@ -927,6 +974,7 @@ def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None
                 compare_output = json.loads(text)
             elif backend == "lmstudio":
                 import openai as openai_mod
+
                 lmstudio_url = cfg.summarizer_lmstudio_url or "http://localhost:1234/v1"
                 client = openai_mod.OpenAI(base_url=lmstudio_url, api_key="lm-studio")
                 resp = client.chat.completions.create(
@@ -1026,9 +1074,13 @@ def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None
                 else:
                     failed += 1
                 durations.append(result["duration_s"])
-                tok_info = f" {result['tokens_per_sec']} tok/s" if result.get("tokens_per_sec") else ""
+                tok_info = (
+                    f" {result['tokens_per_sec']} tok/s" if result.get("tokens_per_sec") else ""
+                )
                 elapsed = time.monotonic() - t_start
-                print(f"  [{len(results_by_idx)}/{len(entries)}] {result['mode']:<6} {result['duration_s']:>5.1f}s {result['status']:<30}{tok_info} ({elapsed:.0f}s)")
+                print(
+                    f"  [{len(results_by_idx)}/{len(entries)}] {result['mode']:<6} {result['duration_s']:>5.1f}s {result['status']:<30}{tok_info} ({elapsed:.0f}s)"
+                )
     else:
         for ie in indexed_entries:
             idx, result = _process_entry(ie)
@@ -1039,7 +1091,9 @@ def cmd_compare_models(model, limit=0, output="", max_tokens=0, temperature=None
                 failed += 1
             durations.append(result["duration_s"])
             tok_info = f" {result['tokens_per_sec']} tok/s" if result.get("tokens_per_sec") else ""
-            print(f"  [{len(results_by_idx)}/{len(entries)}] {result['mode']:<6} {result['duration_s']:>5.1f}s {result['status']:<30}{tok_info}")
+            print(
+                f"  [{len(results_by_idx)}/{len(entries)}] {result['mode']:<6} {result['duration_s']:>5.1f}s {result['status']:<30}{tok_info}"
+            )
 
     # Write results in original order
     with open(output_path, "w") as out_f:
@@ -1153,9 +1207,27 @@ def _run_opencode(model, prompt):
     return response_text, eval_stats
 
 
-def _append_leaderboard(path, *, run_id, model, model_size, temperature, max_tokens,
-                         prompt_file, n, ok, fail, avg_s, min_s, max_s,
-                         total_s, avg_tok, test_set_name, quality=None, ts_override=None):
+def _append_leaderboard(
+    path,
+    *,
+    run_id,
+    model,
+    model_size,
+    temperature,
+    max_tokens,
+    prompt_file,
+    n,
+    ok,
+    fail,
+    avg_s,
+    min_s,
+    max_s,
+    total_s,
+    avg_tok,
+    test_set_name,
+    quality=None,
+    ts_override=None,
+):
     """Append a row to the leaderboard markdown file, creating it if needed."""
     header = (
         f"# Summarizer Model Comparison Leaderboard\n\n"
@@ -1200,7 +1272,10 @@ def cmd_rate_model(run_id, quality):
     valid_ratings = ("excellent", "good", "fair", "weak")
     quality = quality.lower()
     if quality not in valid_ratings:
-        print(f"Invalid quality '{quality}'. Must be one of: {', '.join(valid_ratings)}", file=sys.stderr)
+        print(
+            f"Invalid quality '{quality}'. Must be one of: {', '.join(valid_ratings)}",
+            file=sys.stderr,
+        )
         return 1
 
     cfg = get_config()
@@ -1284,6 +1359,140 @@ def _rebuild_leaderboards(cfg, runs):
         print(f"Rebuilt {leaderboard_path}")
 
 
+_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        "__pycache__",
+        "node_modules",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+        "dist",
+        "build",
+        ".eggs",
+    }
+)
+
+_SKIP_EXTS = frozenset(
+    {
+        ".pyc",
+        ".pyd",
+        ".pyo",
+        ".so",
+        ".dylib",
+        ".dll",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".bmp",
+        ".ico",
+        ".pdf",
+        ".db",
+        ".sqlite",
+        ".bin",
+        ".exe",
+        ".zip",
+        ".tar",
+        ".gz",
+        ".bz2",
+        ".whl",
+    }
+)
+
+_MAX_FILE_BYTES = 500 * 1024
+
+
+def _walk_source_files(source_root: Path):
+    """Yield qualifying Path objects under source_root, applying skip rules.
+
+    Uses os.walk with topdown pruning so _SKIP_DIRS and git submodules are
+    cut at the directory level (no wasted rglob traversal into large subtrees).
+    """
+    for root_str, dirs, files in os.walk(source_root, topdown=True):
+        root_path = Path(root_str)
+        # Prune directories in-place: skip build dirs and git submodules
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not (root_path / d / ".git").exists()]
+        for fname in files:
+            path = root_path / fname
+            if path.is_symlink():
+                continue
+            if path.suffix in _SKIP_EXTS:
+                continue
+            try:
+                if path.stat().st_size > _MAX_FILE_BYTES:
+                    continue
+            except OSError:
+                continue
+            yield path
+
+
+def cmd_index_code(args):
+    """Index source files for a project into the code search DB."""
+    import core.code_index as code_index
+
+    cfg = get_config()
+
+    source_root = None
+    if args.root:
+        source_root = Path(args.root)
+    else:
+        proj_cfg = (cfg.projects or {}).get(args.project)
+        if proj_cfg and proj_cfg.source_root is not None:
+            source_root = proj_cfg.source_root
+
+    if source_root is None:
+        print(
+            f"Error: no source root for project '{args.project}'. "
+            "Provide --root or set source_root in config.",
+            file=sys.stderr,
+        )
+        return 1
+
+    count = 0
+    for path in _walk_source_files(source_root):
+        code_index.index_source_file(path, args.project, cfg.code_db_path, source_root=source_root)
+        count += 1
+
+    print(f"Indexed {count} files for project {args.project}", file=sys.stderr)
+    return 0
+
+
+def cmd_reindex_code(args):
+    """Clear and rebuild the code index for a project."""
+    import core.code_index as code_index
+
+    cfg = get_config()
+
+    source_root = None
+    if args.root:
+        source_root = Path(args.root)
+    else:
+        proj_cfg = (cfg.projects or {}).get(args.project)
+        if proj_cfg and proj_cfg.source_root is not None:
+            source_root = proj_cfg.source_root
+
+    if source_root is None:
+        print(
+            f"Error: no source root for project '{args.project}'. "
+            "Provide --root or set source_root in config.",
+            file=sys.stderr,
+        )
+        return 1
+
+    code_index.clear_project_index(args.project, cfg.code_db_path)
+
+    count = 0
+    for path in _walk_source_files(source_root):
+        code_index.index_source_file(path, args.project, cfg.code_db_path, source_root=source_root)
+        count += 1
+
+    print(f"Reindexed {count} files for project {args.project}", file=sys.stderr)
+    return 0
+
+
 def cmd_reindex():
     """Rebuild the search index from all commit.md and main.md files."""
     cfg = get_config()
@@ -1311,6 +1520,7 @@ def cmd_reindex():
 
 
 # --- helpers ---
+
 
 def _is_byomem_hook_entry(entry):
     """Return True if a Stop hook entry belongs to byomem."""
@@ -1378,10 +1588,18 @@ def main():
 
     p_queue = sub.add_parser("queue", help="Show queue status")
     p_queue.add_argument("--purge", action="store_true", help="Remove stale processing files")
-    p_queue.add_argument("--history", type=int, default=0, metavar="N", help="Show last N history entries (default: 10)")
+    p_queue.add_argument(
+        "--history",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Show last N history entries (default: 10)",
+    )
 
     p_wipe = sub.add_parser("wipe", help="Wipe all data for a fresh start")
-    p_wipe.add_argument("action", nargs="?", default="", help="'list' to show projects, or omit to wipe")
+    p_wipe.add_argument(
+        "action", nargs="?", default="", help="'list' to show projects, or omit to wipe"
+    )
     p_wipe.add_argument("--confirm", action="store_true", help="Actually wipe (safety check)")
     p_wipe.add_argument("--project", default="", help="Wipe only this project")
 
@@ -1397,33 +1615,92 @@ def main():
     p_merge_proj = sub.add_parser("merge-project", help="Merge one project's data into another")
     p_merge_proj.add_argument("source", help="Source project to merge from")
     p_merge_proj.add_argument("target", help="Target project to merge into")
-    p_merge_proj.add_argument("--confirm", action="store_true", help="Actually merge (safety check)")
+    p_merge_proj.add_argument(
+        "--confirm", action="store_true", help="Actually merge (safety check)"
+    )
 
-    p_backfill = sub.add_parser("backfill-summaries", help="Backfill empty branch summaries from commit/log data")
+    p_backfill = sub.add_parser(
+        "backfill-summaries", help="Backfill empty branch summaries from commit/log data"
+    )
     p_backfill.add_argument("--project", default="", help="Limit to one project")
     p_backfill.add_argument("--dry-run", action="store_true", help="Show what would be updated")
 
-    p_compare = sub.add_parser("compare-models", help="Replay debug entries against a different model")
+    p_compare = sub.add_parser(
+        "compare-models", help="Replay debug entries against a different model"
+    )
     p_compare.add_argument("--model", required=True, help="Ollama model name to test")
-    p_compare.add_argument("--limit", type=int, default=0, help="Process first N entries only (default: all)")
-    p_compare.add_argument("--output", default="", help="Output JSONL path (default: queue/model_comparison.jsonl)")
-    p_compare.add_argument("--max-tokens", type=int, default=0, help="Override num_predict (default: max(config, 1024))")
-    p_compare.add_argument("--temperature", type=float, default=None, help="Sampling temperature (default: model default, try 0 for concise output)")
-    p_compare.add_argument("--prompt-file", default="", help="File with extra instructions appended to system prompt")
-    p_compare.add_argument("--test-set", default="", help="Custom test set JSONL (default: queue/test_set.jsonl)")
-    p_compare.add_argument("--ollama-opts", default="", help="Extra Ollama options as JSON (e.g. '{\"top_p\": 0.9}')")
-    p_compare.add_argument("--backend", default="ollama", choices=["ollama", "gemini", "opencode", "lmstudio"], help="Inference backend (default: ollama)")
-    p_compare.add_argument("--concurrency", type=int, default=1, help="Parallel workers for cloud backends (default: 1)")
+    p_compare.add_argument(
+        "--limit", type=int, default=0, help="Process first N entries only (default: all)"
+    )
+    p_compare.add_argument(
+        "--output", default="", help="Output JSONL path (default: queue/model_comparison.jsonl)"
+    )
+    p_compare.add_argument(
+        "--max-tokens",
+        type=int,
+        default=0,
+        help="Override num_predict (default: max(config, 1024))",
+    )
+    p_compare.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="Sampling temperature (default: model default, try 0 for concise output)",
+    )
+    p_compare.add_argument(
+        "--prompt-file", default="", help="File with extra instructions appended to system prompt"
+    )
+    p_compare.add_argument(
+        "--test-set", default="", help="Custom test set JSONL (default: queue/test_set.jsonl)"
+    )
+    p_compare.add_argument(
+        "--ollama-opts", default="", help="Extra Ollama options as JSON (e.g. '{\"top_p\": 0.9}')"
+    )
+    p_compare.add_argument(
+        "--backend",
+        default="ollama",
+        choices=["ollama", "gemini", "opencode", "lmstudio"],
+        help="Inference backend (default: ollama)",
+    )
+    p_compare.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Parallel workers for cloud backends (default: 1)",
+    )
 
     p_rate = sub.add_parser("rate-model", help="Set quality rating on a compare-models run")
     p_rate.add_argument("run_id", help="Run ID (or prefix) to rate")
-    p_rate.add_argument("quality", choices=["excellent", "good", "fair", "weak"], help="Quality rating")
+    p_rate.add_argument(
+        "quality", choices=["excellent", "good", "fair", "weak"], help="Quality rating"
+    )
 
     p_gc = sub.add_parser("gc", help="Garbage-collect old merged branches")
     p_gc.add_argument("--project", default="", help="Limit to one project")
-    p_gc.add_argument("--days", type=int, default=90, help="Delete merged branches older than N days (default: 90)")
+    p_gc.add_argument(
+        "--days",
+        type=int,
+        default=90,
+        help="Delete merged branches older than N days (default: 90)",
+    )
     p_gc.add_argument("--dry-run", action="store_true", help="Show what would be deleted")
     p_gc.add_argument("--reindex", action="store_true", help="Rebuild search index after cleanup")
+
+    p_index_code = sub.add_parser(
+        "index-code", help="Index source files for a project into the code search DB"
+    )
+    p_index_code.add_argument("project", help="Project name")
+    p_index_code.add_argument(
+        "--root", default="", help="Source root directory (overrides config source_root)"
+    )
+
+    p_reindex_code = sub.add_parser(
+        "reindex-code", help="Clear and rebuild the code index for a project"
+    )
+    p_reindex_code.add_argument("project", help="Project name")
+    p_reindex_code.add_argument(
+        "--root", default="", help="Source root directory (overrides config source_root)"
+    )
 
     args = parser.parse_args()
 
@@ -1461,12 +1738,31 @@ def main():
     elif args.command == "backfill-summaries":
         sys.exit(cmd_backfill_summaries(project=args.project, dry_run=args.dry_run))
     elif args.command == "gc":
-        sys.exit(cmd_gc(project=args.project, days=args.days, dry_run=args.dry_run, reindex=args.reindex))
+        sys.exit(
+            cmd_gc(project=args.project, days=args.days, dry_run=args.dry_run, reindex=args.reindex)
+        )
     elif args.command == "rate-model":
         sys.exit(cmd_rate_model(args.run_id, args.quality))
     elif args.command == "compare-models":
         extra_opts = json.loads(args.ollama_opts) if args.ollama_opts else None
-        sys.exit(cmd_compare_models(model=args.model, limit=args.limit, output=args.output, max_tokens=args.max_tokens, temperature=args.temperature, prompt_file=args.prompt_file, test_set=args.test_set, ollama_opts=extra_opts, backend=args.backend, concurrency=args.concurrency))
+        sys.exit(
+            cmd_compare_models(
+                model=args.model,
+                limit=args.limit,
+                output=args.output,
+                max_tokens=args.max_tokens,
+                temperature=args.temperature,
+                prompt_file=args.prompt_file,
+                test_set=args.test_set,
+                ollama_opts=extra_opts,
+                backend=args.backend,
+                concurrency=args.concurrency,
+            )
+        )
+    elif args.command == "index-code":
+        sys.exit(cmd_index_code(args))
+    elif args.command == "reindex-code":
+        sys.exit(cmd_reindex_code(args))
     else:
         parser.print_help()
 

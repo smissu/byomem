@@ -7,6 +7,7 @@ Layout under cfg.queue_path (~/.byomem/queue/):
     offsets.json  <- last-processed byte offset per session
     worker.pid    <- PID lock file
 """
+
 from __future__ import annotations
 
 import json

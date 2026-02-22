@@ -1,4 +1,5 @@
 """Write summarized session data to main.md and project MEMORY.md."""
+
 from datetime import date
 from pathlib import Path
 
