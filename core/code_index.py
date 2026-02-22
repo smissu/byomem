@@ -7,7 +7,12 @@ import sys
 from pathlib import Path
 
 from core.config import get_config
-from core.indexing_utils import _chunk_text, _get_embedding
+from core.indexing_utils import (
+    _chunk_text,
+    _get_embedding,
+    _get_embeddings_batch,
+    _save_embedding_cache,
+)
 
 
 def get_code_db(db_path):
@@ -67,6 +72,10 @@ def _init_schema(db, embed_dim, vec_available=True):
 def index_source_file(path: Path, project: str, db_path, source_root: Path | None = None):
     """Chunk, embed, and upsert a source file into the code index.
 
+    Two-phase write pattern to minimise SQLite write-lock hold time:
+      Phase 1 (GATHER): read file, check hash, chunk, fetch embeddings — no writes.
+      Phase 2 (WRITE):  DELETE old + INSERT new in a single fast transaction.
+
     Args:
         path: Absolute path to the source file.
         project: Project name used as key prefix.
@@ -84,6 +93,8 @@ def index_source_file(path: Path, project: str, db_path, source_root: Path | Non
         print(f"[code_index] PermissionError reading {path}: {e}", file=sys.stderr)
         return
 
+    # --- Phase 1: GATHER (read-only, no write lock) ---
+
     db = get_code_db(db_path)
     if source_root is not None:
         try:
@@ -100,6 +111,32 @@ def index_source_file(path: Path, project: str, db_path, source_root: Path | Non
         db.close()
         return  # unchanged
 
+    chunks = _chunk_code(content, path.name)
+
+    # Prepare texts and hashes for batch embedding fetch
+    texts = []
+    text_hashes = []
+    for start_line, end_line, text in chunks:
+        text_hash = hashlib.sha256(text.encode()).hexdigest()
+        texts.append(text)
+        text_hashes.append(text_hash)
+
+    # Batch fetch all embeddings (read-only: cache lookups + API calls, no DB writes)
+    embed_results = _get_embeddings_batch(db, texts, text_hashes)
+
+    # Release the read connection before the write phase
+    db.close()
+
+    # Collect gathered data: (start_line, end_line, text, text_hash, embedding, is_new)
+    gathered = []
+    for i, (start_line, end_line, text) in enumerate(chunks):
+        embedding, is_new = embed_results[i]
+        gathered.append((start_line, end_line, text, text_hashes[i], embedding, is_new))
+
+    # --- Phase 2: WRITE (fast transaction, no API calls) ---
+
+    db = get_code_db(db_path)
+
     # FTS5 sync: explicitly delete old entries before removing chunks
     old_chunks = db.execute("SELECT id, text FROM chunks WHERE file_path=?", (file_key,)).fetchall()
     for chunk_id, old_text in old_chunks:
@@ -109,12 +146,7 @@ def index_source_file(path: Path, project: str, db_path, source_root: Path | Non
         )
     db.execute("DELETE FROM chunks WHERE file_path=?", (file_key,))
 
-    chunks = _chunk_code(content, path.name)
-
-    for start_line, end_line, text in chunks:
-        text_hash = hashlib.sha256(text.encode()).hexdigest()
-        embedding = _get_embedding(db, text, text_hash)
-
+    for start_line, end_line, text, text_hash, embedding, is_new in gathered:
         cur = db.execute(
             "INSERT INTO chunks (file_path, start_line, end_line, text) VALUES (?,?,?,?)",
             (file_key, start_line, end_line, text),
@@ -133,6 +165,9 @@ def index_source_file(path: Path, project: str, db_path, source_root: Path | Non
                 )
             except Exception:
                 pass
+        # Persist new embedding cache entries inside the write transaction
+        if is_new and embedding is not None:
+            _save_embedding_cache(db, text_hash, embedding)
 
     db.execute(
         "INSERT OR REPLACE INTO files (path, content_hash, modified_at) VALUES (?,?,?)",
@@ -361,8 +396,22 @@ def get_changed_source_files(root: Path, last_sha):
 
 
 def _walk_all_files(root: Path):
-    """Return all non-symlink files under root as (Path, 'A') tuples."""
-    return [(p, "A") for p in root.rglob("*") if p.is_file() and not p.is_symlink()]
+    """Return all git-tracked files under root as (Path, 'A') tuples.
+
+    Uses ``git ls-files`` so untracked files and .gitignore'd paths are excluded.
+    Falls back to rglob if git is unavailable (non-git repo).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return [(root / line, "A") for line in result.stdout.splitlines() if line]
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return [(p, "A") for p in root.rglob("*") if p.is_file() and not p.is_symlink()]
 
 
 def _parse_git_diff(stdout: str, root: Path):
