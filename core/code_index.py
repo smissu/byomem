@@ -332,13 +332,14 @@ def code_search(query, project="", max_results=None, min_score=None, db_path=Non
 def _chunk_code(content, filename):
     """Chunk source code content. Python files use def/class boundaries; others use generic chunker."""
     cfg = get_config()
+    chunk_tokens = cfg.code_chunk_tokens or cfg.chunk_tokens
 
     if not filename.endswith(".py"):
-        return _chunk_text(content, cfg.chunk_tokens, cfg.chunk_overlap, cfg.approx_chars_per_token)
+        return _chunk_text(content, chunk_tokens, cfg.chunk_overlap, cfg.approx_chars_per_token)
 
     # Python-aware chunking: split on def/class boundaries
     lines = content.splitlines()
-    chunk_chars = cfg.chunk_tokens * cfg.approx_chars_per_token
+    chunk_chars = chunk_tokens * cfg.approx_chars_per_token
 
     # Find all boundary lines with their indices and indentation levels
     boundaries = []
@@ -350,7 +351,7 @@ def _chunk_code(content, filename):
 
     if not boundaries:
         # No def/class found: fall back to generic chunker
-        return _chunk_text(content, cfg.chunk_tokens, cfg.chunk_overlap, cfg.approx_chars_per_token)
+        return _chunk_text(content, chunk_tokens, cfg.chunk_overlap, cfg.approx_chars_per_token)
 
     chunks = []
     for idx, (line_idx, indent, is_class) in enumerate(boundaries):
@@ -381,7 +382,7 @@ def _chunk_code(content, filename):
         # Sub-chunk oversized chunks
         if len(text) > chunk_chars:
             sub_chunks = _chunk_text(
-                text, cfg.chunk_tokens, cfg.chunk_overlap, cfg.approx_chars_per_token
+                text, chunk_tokens, cfg.chunk_overlap, cfg.approx_chars_per_token
             )
             for s_start, s_end, s_text in sub_chunks:
                 # Offset line numbers back to original file positions
