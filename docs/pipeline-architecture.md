@@ -115,16 +115,25 @@ CC Stop Hook Fires
 │  │  (only if source_root configured for project)       │   │
 │  │                                                     │   │
 │  │  get_last_indexed_sha(project)   → code.db meta     │   │
-│  │  git diff --name-status old..HEAD                   │   │
+│  │                                                     │   │
+│  │  IF last_sha exists (incremental):                  │   │
+│  │    git diff --name-status old..HEAD                 │   │
+│  │  ELSE (full walk):                                  │   │
+│  │    git ls-files (tracked files only)                │   │
+│  │                                                     │   │
 │  │  for each changed file:                             │   │
 │  │    A/M → index_source_file()     → code.db          │   │
 │  │    D   → delete_indexed_source() → code.db          │   │
+│  │                                                     │   │
+│  │  IF full walk:                                      │   │
+│  │    reconcile_project_index()                        │   │
+│  │    → remove stale entries not in git ls-files        │   │
+│  │                                                     │   │
 │  │  set_last_indexed_sha(HEAD)      → code.db meta     │   │
-│  │  Falls back to full walk if no prior SHA             │   │
 │  └─────────────────────────────────────────────────────┘   │
 │                                                             │
 │  Release flock                                              │
-│  Return {summarize_s, embed_s, db_write_s}                  │
+│  Return {summarize_s, embed_s, db_write_s, reindex}         │
 └─────────────────────────────────────────────────────────────┘
 ```
 

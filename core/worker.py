@@ -68,11 +68,14 @@ def _resolve_project_name(cwd: str) -> str:
     return path.name
 
 
-def process_job(job: QueueJob, *, model_override: str | None = None):
+def process_job(job: QueueJob, *, model_override: str | None = None) -> dict | None:
     """Process a single queue job — the heavy lifting previously in stop_hook._process.
 
     If model_override is set, uses that model via OpenAI-compat instead of
     the native Ollama path (used by overflow worker for non-thinking models).
+
+    Returns a step_timings dict with summarize_s, embed_s, db_write_s keys
+    (all floats in seconds), or None if no processing occurred.
     """
     import fcntl
 
@@ -91,7 +94,7 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
     transcript = Path(job.transcript_path)
     if not transcript.exists():
         logger.warning("Transcript not found: %s", job.transcript_path)
-        return
+        return None
 
     project = _resolve_project_name(job.cwd)
     branch = get_or_create_branch(project, job.session_id)
@@ -103,7 +106,7 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         lock_file.close()
-        return
+        return None
 
     try:
         new_turns, end_offset = parse_new_turns(
@@ -114,9 +117,11 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
         if not new_turns:
             # No new turns but update offset so we don't re-read this range
             save_session_offset(job.session_id, end_offset)
-            return
+            return None
 
-        # Batch summarize for efficiency
+        # --- Phase 1: Summarize ---
+        t_summarize = time.monotonic()
+
         batch_size = cfg.batch_size
         all_summaries = []
         batches = [new_turns[i : i + batch_size] for i in range(0, len(new_turns), batch_size)]
@@ -136,6 +141,11 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
         else:
             for batch in batches:
                 all_summaries.extend(summarize_batch(batch, model_override=model_override))
+
+        summarize_s = round(time.monotonic() - t_summarize, 2)
+
+        # --- Phase 2: Embed (apply summaries + index files) ---
+        t_embed = time.monotonic()
 
         # Apply summaries to branch
         enrich = cfg.log_search_mode == "enrich"
@@ -163,7 +173,12 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
         update_metadata(branch, new_turns[-1].model_dump(), all_summaries[-1].model_dump())
         save_session_offset(job.session_id, end_offset)
 
-        # Reindex changed source files if project has source_root configured
+        embed_s = round(time.monotonic() - t_embed, 2)
+
+        # --- Phase 3: Code reindex (db_write) ---
+        t_db_write = time.monotonic()
+
+        reindex_stats = {}
         project_cfg = cfg.projects.get(project)
         if project_cfg and project_cfg.source_root:
             try:
@@ -172,23 +187,56 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
                     get_changed_source_files,
                     get_last_indexed_sha,
                     index_source_file,
+                    reconcile_project_index,
                     set_last_indexed_sha,
                 )
 
                 root = project_cfg.source_root
                 last_sha = get_last_indexed_sha(project)
+                is_full_walk = last_sha is None
                 changed = get_changed_source_files(root, last_sha)
+
+                indexed = 0
+                deleted = 0
                 for path, status in changed:
                     if status == "D":
                         delete_indexed_source_file(
                             str(path), project, cfg.code_db_path, source_root=root
                         )
+                        deleted += 1
                     else:
                         index_source_file(path, project, cfg.code_db_path, source_root=root)
+                        indexed += 1
+
+                # On full walk, reconcile stale entries not in git ls-files
+                reconciled = 0
+                if is_full_walk and changed:
+                    tracked_paths = [p for p, _ in changed]
+                    reconciled = reconcile_project_index(
+                        project, tracked_paths, cfg.code_db_path, root
+                    )
 
                 current_sha = _get_current_sha(root)
                 if current_sha:
                     set_last_indexed_sha(project, current_sha)
+
+                reindex_stats = {
+                    "mode": "full" if is_full_walk else "incremental",
+                    "files_changed": len(changed),
+                    "indexed": indexed,
+                    "deleted": deleted,
+                    "reconciled": reconciled,
+                }
+                if changed or reconciled:
+                    logger.info(
+                        "Code reindex [%s] %s: %d changed, %d indexed, %d deleted, %d stale removed",
+                        project,
+                        reindex_stats["mode"],
+                        len(changed),
+                        indexed,
+                        deleted,
+                        reconciled,
+                    )
             except Exception as exc:
                 import json as _json
                 import sys as _sys
@@ -203,12 +251,27 @@ def process_job(job: QueueJob, *, model_override: str | None = None):
                     ),
                     file=_sys.stderr,
                 )
+
+        db_write_s = round(time.monotonic() - t_db_write, 2)
+
+        return {
+            "summarize_s": summarize_s,
+            "embed_s": embed_s,
+            "db_write_s": db_write_s,
+            "reindex": reindex_stats if reindex_stats else None,
+        }
     finally:
         fcntl.flock(lock_file, fcntl.LOCK_UN)
         lock_file.close()
 
 
-def _log_result(session_id: str, model: str, duration_s: float, status: str):
+def _log_result(
+    session_id: str,
+    model: str,
+    duration_s: float,
+    status: str,
+    step_timings: dict | None = None,
+):
     """Append one JSON line to the processing history log."""
     cfg = get_config()
     history_path = cfg.queue_path / "history.jsonl"
@@ -220,6 +283,8 @@ def _log_result(session_id: str, model: str, duration_s: float, status: str):
         "duration_s": round(duration_s, 2),
         "status": status,
     }
+    if step_timings is not None:
+        entry.update(step_timings)
     with _history_lock:
         with open(history_path, "a") as f:
             f.write(json.dumps(entry) + "\n")
@@ -233,12 +298,18 @@ def _process_one(job_file, job, model_label, model_override):
     try:
         logger.info("Processing job: %s (model=%s)", job.session_id, model_label)
         reset_backend_log()
-        process_job(job, model_override=model_override)
+        step_timings = process_job(job, model_override=model_override)
         actual_backend = get_primary_backend()
         complete_job(job_file)
         # Only log if summarizer actually ran (skip no-op jobs)
         if actual_backend:
-            _log_result(job.session_id, actual_backend, time.monotonic() - t0, "ok")
+            _log_result(
+                job.session_id,
+                actual_backend,
+                time.monotonic() - t0,
+                "ok",
+                step_timings=step_timings,
+            )
     except Exception as exc:
         duration = time.monotonic() - t0
         actual_backend = get_primary_backend() or model_label

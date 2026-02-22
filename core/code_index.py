@@ -464,6 +464,48 @@ def _parse_git_diff(stdout: str, root: Path):
     return results
 
 
+def reconcile_project_index(project: str, tracked_paths: list[Path], db_path, source_root: Path):
+    """Remove code.db entries for files no longer in the tracked set.
+
+    Called after a full re-walk to clean up stale entries (e.g. files that
+    were untracked or deleted since the initial index).
+
+    Returns the number of stale entries removed.
+    """
+    tracked_keys = set()
+    for p in tracked_paths:
+        try:
+            rel = p.relative_to(source_root)
+        except ValueError:
+            rel = p
+        tracked_keys.add(f"{project}/{rel}")
+
+    db = get_code_db(db_path)
+    prefix = f"{project}/%"
+    indexed = db.execute("SELECT path FROM files WHERE path LIKE ?", (prefix,)).fetchall()
+
+    removed = 0
+    for (file_key,) in indexed:
+        if file_key not in tracked_keys:
+            # FTS5 sync
+            old_chunks = db.execute(
+                "SELECT id, text FROM chunks WHERE file_path=?", (file_key,)
+            ).fetchall()
+            for chunk_id, old_text in old_chunks:
+                db.execute(
+                    "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
+                    (chunk_id, old_text),
+                )
+            db.execute("DELETE FROM chunks WHERE file_path=?", (file_key,))
+            db.execute("DELETE FROM files WHERE path=?", (file_key,))
+            removed += 1
+
+    if removed:
+        db.commit()
+    db.close()
+    return removed
+
+
 def clear_project_index(project: str, db_path):
     """Delete all index entries for project from code DB (chunks + files tables)."""
     db = get_code_db(db_path)

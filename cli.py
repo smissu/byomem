@@ -542,6 +542,31 @@ def cmd_queue(purge=False, history=0):
             except (json.JSONDecodeError, KeyError):
                 print(f"    {f.name}  (unreadable)")
 
+    # Code index stats
+    code_db = cfg.code_db_path
+    if code_db.exists():
+        import sqlite3
+
+        cdb = sqlite3.connect(str(code_db))
+        projects_indexed = cdb.execute(
+            "SELECT DISTINCT substr(path, 1, instr(path, '/') - 1) FROM files"
+        ).fetchall()
+        total_files = cdb.execute("SELECT count(*) FROM files").fetchone()[0]
+        total_chunks = cdb.execute("SELECT count(*) FROM chunks").fetchone()[0]
+        last_shas = cdb.execute(
+            "SELECT key, value FROM meta WHERE key LIKE 'last_sha:%'"
+        ).fetchall()
+        cdb.close()
+
+        print(f"\n  Code index ({code_db.name}):")
+        print(f"    Files: {total_files}  Chunks: {total_chunks}")
+        for key, sha in last_shas:
+            proj = key.replace("last_sha:", "")
+            print(f"    {proj}: last_sha={sha[:12]}")
+        if not last_shas:
+            for (p,) in projects_indexed:
+                print(f"    {p}: last_sha=None (full walk pending)")
+
     # Show recent processing history
     history_path = cfg.queue_path / "history.jsonl"
     if history_path.exists():
@@ -550,14 +575,17 @@ def cmd_queue(purge=False, history=0):
         recent = lines[-n:]
         if recent:
             print(f"\n  Recent history ({len(recent)}/{len(lines)}):")
-            print(f"  {'Timestamp':<20} {'Session':<10} {'Model':<24} {'Duration':>8}  {'Status'}")
-            print(f"  {'-' * 19}  {'-' * 9} {'-' * 23} {'-' * 8}  {'-' * 6}")
+            print(f"  {'Timestamp':<20} {'Session':<10} {'Model':<24} {'Duration':>8}  {'Summ':>5}  {'Embed':>5} {'Write':>5}  {'Status'}")
+            print(f"  {'-' * 19}  {'-' * 9} {'-' * 23} {'-' * 8}  {'-' * 5}  {'-' * 5} {'-' * 5}  {'-' * 6}")
             for line in recent:
                 try:
                     entry = json.loads(line)
+                    summ = f"{entry['summarize_s']:>5.1f}" if "summarize_s" in entry else "    -"
+                    embed = f"{entry['embed_s']:>5.1f}" if "embed_s" in entry else "    -"
+                    write = f"{entry['db_write_s']:>5.1f}" if "db_write_s" in entry else "    -"
                     print(
                         f"  {entry['ts']:<20} {entry['session']:<10} {entry['model']:<24} "
-                        f"{entry['duration_s']:>7.2f}s  {entry['status']}"
+                        f"{entry['duration_s']:>7.2f}s  {summ}  {embed} {write}  {entry['status']}"
                     )
                 except (json.JSONDecodeError, KeyError):
                     continue
