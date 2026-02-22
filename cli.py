@@ -548,24 +548,51 @@ def cmd_queue(purge=False, history=0):
         import sqlite3
 
         cdb = sqlite3.connect(str(code_db))
-        projects_indexed = cdb.execute(
-            "SELECT DISTINCT substr(path, 1, instr(path, '/') - 1) FROM files"
-        ).fetchall()
         total_files = cdb.execute("SELECT count(*) FROM files").fetchone()[0]
         total_chunks = cdb.execute("SELECT count(*) FROM chunks").fetchone()[0]
-        last_shas = cdb.execute(
-            "SELECT key, value FROM meta WHERE key LIKE 'last_sha:%'"
-        ).fetchall()
+        db_size = code_db.stat().st_size
+
+        # Per-project breakdown
+        per_project_files = dict(
+            cdb.execute(
+                "SELECT substr(path, 1, instr(path, '/') - 1) AS proj, count(*) FROM files GROUP BY proj"
+            ).fetchall()
+        )
+        per_project_chunks = dict(
+            cdb.execute(
+                "SELECT substr(f.path, 1, instr(f.path, '/') - 1) AS proj, count(*) "
+                "FROM chunks c JOIN files f ON c.file_path = f.path GROUP BY proj"
+            ).fetchall()
+        )
+        last_shas = dict(
+            (k.replace("last_sha:", ""), v)
+            for k, v in cdb.execute(
+                "SELECT key, value FROM meta WHERE key LIKE 'last_sha:%'"
+            ).fetchall()
+        )
+        # Latest modified_at per project as proxy for last index time
+        last_indexed = dict(
+            cdb.execute(
+                "SELECT substr(path, 1, instr(path, '/') - 1) AS proj, max(modified_at) FROM files GROUP BY proj"
+            ).fetchall()
+        )
+        # Embedding model from meta (if stored), else from config
+        embed_model = cfg.code_embedding_model or cfg.embedding_model
         cdb.close()
 
-        print(f"\n  Code index ({code_db.name}):")
-        print(f"    Files: {total_files}  Chunks: {total_chunks}")
-        for key, sha in last_shas:
-            proj = key.replace("last_sha:", "")
-            print(f"    {proj}: last_sha={sha[:12]}")
-        if not last_shas:
-            for (p,) in projects_indexed:
-                print(f"    {p}: last_sha=None (full walk pending)")
+        print(f"\n  Code index ({code_db.name}, {db_size / 1024:.0f} KB):")
+        print(f"    Total: {total_files} files, {total_chunks} chunks")
+        print(f"    Embedding model: {embed_model}")
+
+        all_projects = sorted(set(per_project_files) | set(last_shas))
+        for proj in all_projects:
+            files_count = per_project_files.get(proj, 0)
+            chunks_count = per_project_chunks.get(proj, 0)
+            sha = last_shas.get(proj)
+            sha_str = sha[:12] if sha else "none"
+            ts = last_indexed.get(proj)
+            ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "-"
+            print(f"    {proj}: {files_count} files, {chunks_count} chunks, sha={sha_str}, indexed={ts_str}")
 
     # Show recent processing history
     history_path = cfg.queue_path / "history.jsonl"
