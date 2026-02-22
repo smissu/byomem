@@ -213,7 +213,8 @@ def _extract_definition_name(first_line: str) -> str | None:
     """Extract the defined symbol name from the first line of a chunk.
 
     Supports Python (def/class), JS/TS (function/async function/export function),
-    and Go (func). Returns the lowercase name, or None if no definition found.
+    Go (func), and Rust (fn/pub fn/async fn/impl/struct/enum).
+    Returns the lowercase name, or None if no definition found.
     """
     # Python: def foo(...) / class Foo:
     if first_line.startswith(("def ", "class ")):
@@ -242,6 +243,27 @@ def _extract_definition_name(first_line: str) -> str | None:
             if close >= 0:
                 rest = rest[close + 1:].strip()
         name = rest.split("(", 1)[0].strip()
+        return name.lower() if name else None
+
+    # Rust: fn foo / pub fn foo / pub(crate) fn foo / async fn foo / pub async fn foo
+    #       impl Foo / impl Trait for Foo / struct Foo / enum Foo
+    rust_line = first_line
+    for prefix in ("pub(crate) ", "pub(super) ", "pub "):
+        if rust_line.startswith(prefix):
+            rust_line = rust_line[len(prefix):]
+    if rust_line.startswith("async "):
+        rust_line = rust_line[6:]
+    if rust_line.startswith("unsafe "):
+        rust_line = rust_line[7:]
+    if rust_line.startswith("fn "):
+        name = rust_line[3:].split("(", 1)[0].split("<", 1)[0].strip()
+        return name.lower() if name else None
+    if rust_line.startswith(("impl ", "struct ", "enum ")):
+        rest = rust_line.split(None, 1)[1] if " " in rust_line else ""
+        # impl Trait for Type -> extract Type
+        if " for " in rest:
+            rest = rest.split(" for ", 1)[1]
+        name = rest.split("<", 1)[0].split("(", 1)[0].split("{", 1)[0].split(";", 1)[0].strip()
         return name.lower() if name else None
 
     return None
@@ -336,9 +358,9 @@ def code_search(query, project="", max_results=None, min_score=None, db_path=Non
             "kw_score", 0.0
         )
 
-        # Demote test files (Python: test_/tests/, JS/TS: __tests__/.test./.spec.)
+        # Demote test files (Python: test_/tests/, JS/TS: __tests__/.test./.spec., Rust: /tests/)
         path = info["path"]
-        if "/test_" in path or "/tests/" in path or "/__tests__/" in path or ".test." in path or ".spec." in path:
+        if "/test_" in path or "/tests/" in path or "/__tests__/" in path or ".test." in path or ".spec." in path or "_test.rs" in path:
             score *= cfg.code_test_demotion
 
         # Boost chunks that define a queried term (function/class at chunk start)
@@ -370,7 +392,7 @@ def _is_function_boundary(stripped):
     """Check if a stripped line starts a function/class definition.
 
     Supports Python (def/class), JS/TS (function/async function/export function),
-    and Go (func).
+    Go (func), and Rust (fn/pub fn/async fn/impl/struct/enum).
     """
     # Python
     if stripped.startswith(("def ", "class ")):
@@ -387,15 +409,26 @@ def _is_function_boundary(stripped):
     # Go
     if stripped.startswith("func "):
         return True
+    # Rust: strip visibility/async/unsafe prefixes then check for fn/impl/struct/enum
+    rust = stripped
+    for prefix in ("pub(crate) ", "pub(super) ", "pub "):
+        if rust.startswith(prefix):
+            rust = rust[len(prefix):]
+    if rust.startswith("async "):
+        rust = rust[6:]
+    if rust.startswith("unsafe "):
+        rust = rust[7:]
+    if rust.startswith(("fn ", "impl ", "struct ", "enum ")):
+        return True
     return False
 
 
 def _chunk_code(content, filename):
     """Chunk source code content using function/class boundary splitting.
 
-    Splits on def/class (Python), function/async function (JS/TS), and func (Go)
-    boundaries. Falls back to generic line-based chunking for files without
-    recognized boundaries.
+    Splits on def/class (Python), function/async function (JS/TS), func (Go),
+    and fn/impl/struct/enum (Rust) boundaries. Falls back to generic line-based
+    chunking for files without recognized boundaries.
     """
     cfg = get_config()
     chunk_tokens = cfg.code_chunk_tokens or cfg.chunk_tokens
@@ -409,7 +442,8 @@ def _chunk_code(content, filename):
         stripped = line.lstrip()
         if _is_function_boundary(stripped):
             indent = len(line) - len(stripped)
-            boundaries.append((i, indent, stripped.startswith("class ")))
+            is_container = stripped.startswith("class ") or stripped.startswith("impl ")
+            boundaries.append((i, indent, is_container))
 
     if not boundaries:
         # No def/class found: fall back to generic chunker
