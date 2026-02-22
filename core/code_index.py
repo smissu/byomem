@@ -215,10 +215,10 @@ def code_search(query, project="", max_results=None, min_score=None, db_path=Non
     if max_results is None:
         max_results = cfg.max_results
     if min_score is None:
-        min_score = cfg.min_score
+        min_score = cfg.code_min_score
 
     db = get_code_db(db_path)
-    candidates = max_results * cfg.candidate_multiplier
+    candidates = max_results * cfg.code_candidate_multiplier
     path_filter = f"{project}/%" if project else "%"
 
     # Try to get query embedding
@@ -282,25 +282,43 @@ def code_search(query, project="", max_results=None, min_score=None, db_path=Non
         for row in fts_rows
     }
 
-    # Weighted fusion
+    # Build query terms for definition boost matching
+    query_terms = set(query.lower().split())
+
+    # Weighted fusion (code-specific weights)
     all_ids = set(vec_scores) | set(kw_scores)
     results = []
     for chunk_id in all_ids:
         v = vec_scores.get(chunk_id, {})
         k = kw_scores.get(chunk_id, {})
         info = v or k
-        score = cfg.vector_weight * v.get("vec_score", 0.0) + cfg.keyword_weight * k.get(
+        score = cfg.code_vector_weight * v.get("vec_score", 0.0) + cfg.code_keyword_weight * k.get(
             "kw_score", 0.0
         )
+
+        # Demote test files
+        path = info["path"]
+        if "/test_" in path or "/tests/" in path:
+            score *= cfg.code_test_demotion
+
+        # Boost chunks that define a queried term (def/class at chunk start)
+        text = info["text"]
+        first_line = text.split("\n", 1)[0].strip()
+        if first_line.startswith(("def ", "class ")):
+            defined_name = first_line.split("(", 1)[0].split(":", 1)[0]
+            defined_name = defined_name.replace("def ", "").replace("class ", "").strip().lower()
+            if defined_name in query_terms or any(t in defined_name for t in query_terms):
+                score *= cfg.code_definition_boost
+
         if score < min_score:
             continue
         results.append(
             {
                 "score": round(score, 4),
-                "path": info["path"],
+                "path": path,
                 "start_line": info["start_line"],
                 "end_line": info["end_line"],
-                "preview": info["text"][:700],
+                "preview": text[:700],
             }
         )
 

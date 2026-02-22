@@ -16,8 +16,16 @@ import pytest
 
 @pytest.fixture
 def mock_code_embedding(mocker):
-    """Patch core.code_index._get_embedding to return a fixed 1536-dim vector."""
+    """Patch embedding functions to return fixed vectors.
+
+    _get_embedding is still used by code_search() for query embedding.
+    _get_embeddings_batch is used by index_source_file() after two-phase refactor.
+    """
     mocker.patch("core.code_index._get_embedding", return_value=[0.1] * 1536)
+    mocker.patch(
+        "core.code_index._get_embeddings_batch",
+        side_effect=lambda db, texts, hashes, **kw: [([0.1] * 1536, True)] * len(texts),
+    )
 
 
 # ============================================================
@@ -42,9 +50,14 @@ def test_get_code_db_creates_schema(tmp_byomem, tmp_path):
     assert "chunks" in tables
     assert "chunks_fts" in tables
     assert "embedding_cache" in tables
-    # chunks_vec may be a virtual table — check sqlite_master type='table' or type=''
-    all_objects = {r[0] for r in db.execute("SELECT name FROM sqlite_master").fetchall()}
-    assert "chunks_vec" in all_objects
+    # chunks_vec requires sqlite_vec extension — only assert if available
+    try:
+        import sqlite_vec  # noqa: F401
+
+        all_objects = {r[0] for r in db.execute("SELECT name FROM sqlite_master").fetchall()}
+        assert "chunks_vec" in all_objects
+    except ImportError:
+        pass
     db.close()
 
 

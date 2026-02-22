@@ -712,3 +712,154 @@ def test_sha_not_updated_on_reindex_exception(
     process_job(job)
 
     _mock_code_index.set_last_indexed_sha.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Step timing tests (Sprint 07, Task 0.3 — RED state)
+#
+# These test the NEW behavior that will be added to _log_result() and
+# cmd_queue().  Both functions do not yet support step_timings, so all
+# four tests MUST FAIL until the implementation is in place.
+# ---------------------------------------------------------------------------
+
+
+def test_log_result_with_step_timings(tmp_byomem):
+    """AC-1: history.jsonl entry contains summarize_s, embed_s, db_write_s
+    when step_timings is passed to _log_result."""
+    from core.worker import _log_result
+
+    step_timings = {"summarize_s": 42.1, "embed_s": 18.3, "db_write_s": 7.6}
+    _log_result(
+        session_id="sess1234abcd",
+        model="anthropic",
+        duration_s=68.0,
+        status="ok",
+        step_timings=step_timings,
+    )
+
+    history_path = tmp_byomem / "queue" / "history.jsonl"
+    assert history_path.exists()
+    lines = history_path.read_text().strip().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+
+    assert entry["summarize_s"] == 42.1
+    assert entry["embed_s"] == 18.3
+    assert entry["db_write_s"] == 7.6
+    # Core fields must still be present
+    assert entry["session"] == "sess1234"
+    assert entry["model"] == "anthropic"
+    assert entry["status"] == "ok"
+    assert entry["duration_s"] == 68.0
+
+
+def test_log_result_without_step_timings(tmp_byomem):
+    """AC-3 (backward compat): _log_result called without step_timings writes
+    a valid entry that does NOT contain any step timing fields."""
+    from core.worker import _log_result
+
+    _log_result(
+        session_id="sess9999abcd",
+        model="anthropic",
+        duration_s=5.0,
+        status="ok",
+    )
+
+    history_path = tmp_byomem / "queue" / "history.jsonl"
+    assert history_path.exists()
+    lines = history_path.read_text().strip().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+
+    # Step fields must NOT appear in old-style entries
+    assert "summarize_s" not in entry
+    assert "embed_s" not in entry
+    assert "db_write_s" not in entry
+    # Core fields must be present
+    assert entry["session"] == "sess9999"
+    assert entry["model"] == "anthropic"
+    assert entry["status"] == "ok"
+    assert entry["duration_s"] == 5.0
+
+
+def test_cmd_queue_shows_step_timing(tmp_byomem, capsys):
+    """AC-2: cmd_queue() output includes Summ/Embed/Write columns and their
+    numeric values when the history.jsonl entry contains step timing fields."""
+    from cli import cmd_queue
+
+    history_path = tmp_byomem / "queue" / "history.jsonl"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "ts": "2026-02-22T10:00:00",
+        "session": "sess1234",
+        "model": "anthropic",
+        "duration_s": 68.0,
+        "summarize_s": 42.1,
+        "embed_s": 18.3,
+        "db_write_s": 7.6,
+        "status": "ok",
+    }
+    history_path.write_text(json.dumps(entry) + "\n")
+
+    cmd_queue(history=10)
+
+    captured = capsys.readouterr()
+    output = captured.out
+
+    # Column headers must appear
+    assert "Summ" in output
+    assert "Embed" in output
+    assert "Write" in output
+    # Numeric values must appear (formatted as floats or rounded ints)
+    assert "42.1" in output or "42" in output
+    assert "18.3" in output or "18" in output
+    assert "7.6" in output or "7" in output
+
+
+def test_cmd_queue_handles_mixed_entries(tmp_byomem, capsys):
+    """AC-2 + AC-3: cmd_queue() displays dashes for old entries (no step
+    fields) and numeric values for new entries — no exceptions raised."""
+    from cli import cmd_queue
+
+    history_path = tmp_byomem / "queue" / "history.jsonl"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+
+    old_entry = {
+        "ts": "2026-02-22T09:00:00",
+        "session": "oldentry",
+        "model": "anthropic",
+        "duration_s": 5.0,
+        "status": "ok",
+    }
+    new_entry = {
+        "ts": "2026-02-22T10:00:00",
+        "session": "newentry",
+        "model": "anthropic",
+        "duration_s": 68.0,
+        "summarize_s": 42.1,
+        "embed_s": 18.3,
+        "db_write_s": 7.6,
+        "status": "ok",
+    }
+    history_path.write_text(
+        json.dumps(old_entry) + "\n" + json.dumps(new_entry) + "\n"
+    )
+
+    # Must not raise even with mixed entry formats
+    rc = cmd_queue(history=10)
+    assert rc == 0
+
+    captured = capsys.readouterr()
+    output = captured.out
+
+    # Both session IDs must appear in output
+    assert "oldentry" in output
+    assert "newentry" in output
+
+    # Old entry row must show dashes for missing step columns
+    assert "-" in output
+
+    # New entry row must show numeric step values
+    assert "42.1" in output or "42" in output
+    assert "18.3" in output or "18" in output
+    assert "7.6" in output or "7" in output

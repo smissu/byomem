@@ -48,6 +48,12 @@ class Config:
     max_workers: int = 4
     log_search_mode: str = "none"  # none | enrich | index
     log_score_demotion: float = 0.5
+    code_vector_weight: float = 0.3
+    code_keyword_weight: float = 0.7
+    code_test_demotion: float = 0.4
+    code_definition_boost: float = 2.0
+    code_min_score: float = 0.20
+    code_candidate_multiplier: int = 8
     summarizer_debug: bool = False
     code_db_path: Path = field(default_factory=lambda: Path.home() / ".byomem" / "code.db")
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
@@ -120,6 +126,12 @@ def _load_config() -> Config:
         "approx_chars_per_token",
         "log_search_mode",
         "log_score_demotion",
+        "code_vector_weight",
+        "code_keyword_weight",
+        "code_test_demotion",
+        "code_definition_boost",
+        "code_min_score",
+        "code_candidate_multiplier",
     ):
         if key in memory:
             kwargs[key] = memory[key]

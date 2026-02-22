@@ -5,7 +5,12 @@ import sqlite3
 from pathlib import Path
 
 from core.config import get_config
-from core.indexing_utils import _chunk_text, _get_embedding
+from core.indexing_utils import (
+    _chunk_text,
+    _get_embedding,
+    _get_embeddings_batch,
+    _save_embedding_cache,
+)
 
 
 def get_db(db_path=None):
@@ -30,18 +35,85 @@ def get_db(db_path=None):
     return db
 
 
-def index_file(path: Path, project: str):
-    """Chunk, embed, and upsert a file into the search index."""
+def _get_lite_db(db_path=None):
+    """Open a DB connection with sqlite-vec but without schema init.
+
+    Unlike get_db(), this skips _init_schema so the connection never contends
+    with concurrent writers via DDL statements.  The caller must ensure that
+    get_db() has been called at least once beforehand to guarantee the schema
+    exists.
+    """
     cfg = get_config()
-    db = get_db()
+    path = db_path or cfg.db_path
+    db = sqlite3.connect(str(path), timeout=10)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=30000")
+    try:
+        import sqlite_vec
+
+        db.enable_load_extension(True)
+        sqlite_vec.load(db)
+        db.enable_load_extension(False)
+    except Exception:
+        pass
+    return db
+
+
+def index_file(path: Path, project: str):
+    """Chunk, embed, and upsert a file into the search index.
+
+    Two-phase design to minimise SQLite write-lock hold time:
+      Phase 1 (GATHER) — read file, chunk, fetch embeddings (slow API calls).
+      Phase 2 (WRITE)  — DELETE old + INSERT new in a single fast transaction.
+    No embedding API calls occur between DELETE and COMMIT.
+    """
+    cfg = get_config()
     rel_path = str(path.relative_to(cfg.byomem))
     content = path.read_text()
     h = hashlib.sha256(content.encode()).hexdigest()
 
-    row = db.execute("SELECT content_hash FROM files WHERE path=?", (rel_path,)).fetchone()
-    if row and row[0] == h:
-        db.close()
-        return  # unchanged
+    # Ensure schema exists (brief write, released immediately)
+    db_init = get_db()
+    db_init.close()
+
+    # ── Phase 1: GATHER (no write lock) ──────────────────────────
+    # Use a lightweight connection (no _init_schema DDL) for reads during
+    # the potentially slow embedding API calls.
+    db_read = _get_lite_db()
+    try:
+        # Quick read-only check: skip if content unchanged
+        row = db_read.execute(
+            "SELECT content_hash FROM files WHERE path=?", (rel_path,)
+        ).fetchone()
+        if row and row[0] == h:
+            return  # unchanged
+
+        # Chunk the content
+        chunks = _chunk_structured(content, rel_path, cfg)
+
+        # Compute text hashes and collect texts for batch embedding
+        texts = []
+        text_hashes = []
+        for start_line, end_line, text in chunks:
+            text_hash = hashlib.sha256(text.encode()).hexdigest()
+            texts.append(text)
+            text_hashes.append(text_hash)
+
+        # Batch-fetch all embeddings (reads cache, calls API for misses — no DB writes)
+        embed_results = _get_embeddings_batch(db_read, texts, text_hashes)
+    finally:
+        db_read.close()
+
+    # Build gathered tuples: (start_line, end_line, text, text_hash, embedding, is_new)
+    gathered = []
+    for i, (start_line, end_line, text) in enumerate(chunks):
+        embedding, is_new = embed_results[i]
+        gathered.append((start_line, end_line, text, text_hashes[i], embedding, is_new))
+
+    # ── Phase 2: WRITE (fast transaction) ────────────────────────
+    # Use _get_lite_db (no DDL) to avoid _init_schema write contention
+    # between threads that finish Phase 1 at roughly the same time.
+    db = _get_lite_db()
 
     # FTS5 sync: explicitly delete old entries before removing chunks
     old_chunks = db.execute("SELECT id, text FROM chunks WHERE file_path=?", (rel_path,)).fetchall()
@@ -52,12 +124,7 @@ def index_file(path: Path, project: str):
         )
     db.execute("DELETE FROM chunks WHERE file_path=?", (rel_path,))
 
-    chunks = _chunk_structured(content, rel_path, cfg)
-
-    for start_line, end_line, text in chunks:
-        text_hash = hashlib.sha256(text.encode()).hexdigest()
-        embedding = _get_embedding(db, text, text_hash)
-
+    for start_line, end_line, text, text_hash, embedding, is_new in gathered:
         cur = db.execute(
             "INSERT INTO chunks (file_path, start_line, end_line, text) VALUES (?,?,?,?)",
             (rel_path, start_line, end_line, text),
@@ -76,6 +143,9 @@ def index_file(path: Path, project: str):
                 )
             except Exception:
                 pass
+        # Persist newly fetched embeddings into cache
+        if is_new and embedding is not None:
+            _save_embedding_cache(db, text_hash, embedding)
 
     db.execute(
         "INSERT OR REPLACE INTO files (path, content_hash, modified_at) VALUES (?,?,?)",
