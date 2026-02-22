@@ -33,7 +33,8 @@ def get_code_db(db_path):
     except Exception:
         pass
     cfg = get_config()
-    _init_schema(db, cfg.embedding_dimension, vec_available)
+    dim = cfg.code_embedding_dimension or cfg.embedding_dimension
+    _init_schema(db, dim, vec_available)
     return db
 
 
@@ -95,6 +96,7 @@ def index_source_file(path: Path, project: str, db_path, source_root: Path | Non
 
     # --- Phase 1: GATHER (read-only, no write lock) ---
 
+    cfg = get_config()
     db = get_code_db(db_path)
     if source_root is not None:
         try:
@@ -122,7 +124,7 @@ def index_source_file(path: Path, project: str, db_path, source_root: Path | Non
         text_hashes.append(text_hash)
 
     # Batch fetch all embeddings (read-only: cache lookups + API calls, no DB writes)
-    embed_results = _get_embeddings_batch(db, texts, text_hashes)
+    embed_results = _get_embeddings_batch(db, texts, text_hashes, model=cfg.code_embedding_model)
 
     # Release the read connection before the write phase
     db.close()
@@ -223,7 +225,7 @@ def code_search(query, project="", max_results=None, min_score=None, db_path=Non
 
     # Try to get query embedding
     q_hash = hashlib.sha256(query.encode()).hexdigest()
-    q_embedding = _get_embedding(db, query, q_hash)
+    q_embedding = _get_embedding(db, query, q_hash, model=cfg.code_embedding_model)
 
     vec_scores = {}
     if q_embedding is not None:

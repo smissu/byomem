@@ -7,12 +7,15 @@ import openai
 from core.config import get_config
 
 
-def _fetch_embedding(db, text, text_hash):
+def _fetch_embedding(db, text, text_hash, *, model=None):
     """Check cache then API. Returns (embedding, is_new) without writing to DB.
 
     On cache hit:    returns (embedding_list, False)
     On API success:  returns (embedding_list, True)
     On API failure:  returns (None, False)
+
+    Args:
+        model: Override embedding model (default: cfg.embedding_model).
     """
     row = db.execute(
         "SELECT embedding FROM embedding_cache WHERE text_hash=?", (text_hash,)
@@ -27,7 +30,7 @@ def _fetch_embedding(db, text, text_hash):
             client_kwargs["base_url"] = cfg.embedding_base_url
             client_kwargs["api_key"] = "ollama"
         resp = openai.OpenAI(**client_kwargs).embeddings.create(
-            model=cfg.embedding_model, input=text
+            model=model or cfg.embedding_model, input=text
         )
         embedding = resp.data[0].embedding
         return embedding, True
@@ -44,26 +47,25 @@ def _save_embedding_cache(db, text_hash, embedding):
     )
 
 
-def _get_embedding(db, text, text_hash):
+def _get_embedding(db, text, text_hash, *, model=None):
     """Return cached embedding or generate via OpenAI. Returns None on failure.
 
     Backward-compat wrapper around _fetch_embedding + _save_embedding_cache.
     """
-    embedding, is_new = _fetch_embedding(db, text, text_hash)
+    embedding, is_new = _fetch_embedding(db, text, text_hash, model=model)
     if is_new and embedding is not None:
         _save_embedding_cache(db, text_hash, embedding)
     return embedding
 
 
-def _get_embeddings_batch(db, texts, text_hashes, batch_size=20):
+def _get_embeddings_batch(db, texts, text_hashes, batch_size=20, *, model=None):
     """Batch-fetch embeddings with cache lookup and batched API calls.
 
     Returns a list of (embedding, is_new) tuples in the same order as inputs.
     Does NOT write to the DB — cache writes are deferred to Phase 2 transaction.
 
-    On cache hit:    (embedding_list, False)
-    On API success:  (embedding_list, True)
-    On API failure:  (None, False)
+    Args:
+        model: Override embedding model (default: cfg.embedding_model).
     """
     if not texts:
         return []
@@ -102,13 +104,14 @@ def _get_embeddings_batch(db, texts, text_hashes, batch_size=20):
                 results[i] = (None, False)
             return results
 
+        embed_model = model or cfg.embedding_model
         for batch_start in range(0, len(uncached_texts), batch_size):
             batch_end = batch_start + batch_size
             batch_texts = uncached_texts[batch_start:batch_end]
             batch_indices = uncached_indices[batch_start:batch_end]
             try:
                 resp = client.embeddings.create(
-                    model=cfg.embedding_model, input=batch_texts
+                    model=embed_model, input=batch_texts
                 )
                 for j, idx in enumerate(batch_indices):
                     results[idx] = (resp.data[j].embedding, True)
