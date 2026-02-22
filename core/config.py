@@ -51,7 +51,7 @@ class Config:
     code_vector_weight: float = 0.3
     code_keyword_weight: float = 0.7
     code_test_demotion: float = 0.4
-    code_definition_boost: float = 2.0
+    code_definition_boost: float = 3.0
     code_min_score: float = 0.20
     code_candidate_multiplier: int = 8
     summarizer_debug: bool = False
