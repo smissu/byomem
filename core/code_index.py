@@ -209,6 +209,44 @@ def delete_indexed_source_file(
     db.close()
 
 
+def _extract_definition_name(first_line: str) -> str | None:
+    """Extract the defined symbol name from the first line of a chunk.
+
+    Supports Python (def/class), JS/TS (function/async function/export function),
+    and Go (func). Returns the lowercase name, or None if no definition found.
+    """
+    # Python: def foo(...) / class Foo:
+    if first_line.startswith(("def ", "class ")):
+        name = first_line.split("(", 1)[0].split(":", 1)[0]
+        name = name.replace("def ", "").replace("class ", "").strip()
+        return name.lower() if name else None
+
+    # JS/TS: function foo / async function foo / export function foo / export async function foo
+    # Also: export default function foo
+    line = first_line
+    for prefix in ("export default ", "export "):
+        if line.startswith(prefix):
+            line = line[len(prefix):]
+    if line.startswith("async "):
+        line = line[6:]
+    if line.startswith("function "):
+        name = line[9:].split("(", 1)[0].split("<", 1)[0].strip()
+        return name.lower() if name else None
+
+    # Go: func foo / func (r *Receiver) foo
+    if first_line.startswith("func "):
+        rest = first_line[5:]
+        if rest.startswith("("):
+            # Method: func (r *Type) Name(...)
+            close = rest.find(")")
+            if close >= 0:
+                rest = rest[close + 1:].strip()
+        name = rest.split("(", 1)[0].strip()
+        return name.lower() if name else None
+
+    return None
+
+
 def code_search(query, project="", max_results=None, min_score=None, db_path=None):
     """Run weighted fusion of FTS5 keyword + sqlite-vec cosine search over code index."""
     cfg = get_config()
@@ -298,17 +336,16 @@ def code_search(query, project="", max_results=None, min_score=None, db_path=Non
             "kw_score", 0.0
         )
 
-        # Demote test files
+        # Demote test files (Python: test_/tests/, JS/TS: __tests__/.test./.spec.)
         path = info["path"]
-        if "/test_" in path or "/tests/" in path:
+        if "/test_" in path or "/tests/" in path or "/__tests__/" in path or ".test." in path or ".spec." in path:
             score *= cfg.code_test_demotion
 
-        # Boost chunks that define a queried term (def/class at chunk start)
+        # Boost chunks that define a queried term (function/class at chunk start)
         text = info["text"]
         first_line = text.split("\n", 1)[0].strip()
-        if first_line.startswith(("def ", "class ")):
-            defined_name = first_line.split("(", 1)[0].split(":", 1)[0]
-            defined_name = defined_name.replace("def ", "").replace("class ", "").strip().lower()
+        defined_name = _extract_definition_name(first_line)
+        if defined_name is not None:
             if defined_name in query_terms or any(t in defined_name for t in query_terms):
                 score *= cfg.code_definition_boost
 
@@ -329,15 +366,40 @@ def code_search(query, project="", max_results=None, min_score=None, db_path=Non
     return results[:max_results]
 
 
+def _is_function_boundary(stripped):
+    """Check if a stripped line starts a function/class definition.
+
+    Supports Python (def/class), JS/TS (function/async function/export function),
+    and Go (func).
+    """
+    # Python
+    if stripped.startswith(("def ", "class ")):
+        return True
+    # JS/TS: strip export/async prefixes then check for function
+    line = stripped
+    for prefix in ("export default ", "export "):
+        if line.startswith(prefix):
+            line = line[len(prefix):]
+    if line.startswith("async "):
+        line = line[6:]
+    if line.startswith("function "):
+        return True
+    # Go
+    if stripped.startswith("func "):
+        return True
+    return False
+
+
 def _chunk_code(content, filename):
-    """Chunk source code content. Python files use def/class boundaries; others use generic chunker."""
+    """Chunk source code content using function/class boundary splitting.
+
+    Splits on def/class (Python), function/async function (JS/TS), and func (Go)
+    boundaries. Falls back to generic line-based chunking for files without
+    recognized boundaries.
+    """
     cfg = get_config()
     chunk_tokens = cfg.code_chunk_tokens or cfg.chunk_tokens
 
-    if not filename.endswith(".py"):
-        return _chunk_text(content, chunk_tokens, cfg.chunk_overlap, cfg.approx_chars_per_token)
-
-    # Python-aware chunking: split on def/class boundaries
     lines = content.splitlines()
     chunk_chars = chunk_tokens * cfg.approx_chars_per_token
 
@@ -345,7 +407,7 @@ def _chunk_code(content, filename):
     boundaries = []
     for i, line in enumerate(lines):
         stripped = line.lstrip()
-        if stripped.startswith("def ") or stripped.startswith("class "):
+        if _is_function_boundary(stripped):
             indent = len(line) - len(stripped)
             boundaries.append((i, indent, stripped.startswith("class ")))
 
