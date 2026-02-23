@@ -348,6 +348,78 @@ def _batch_opencode(cfg, user_content: str) -> BatchSummaryResponse:
 
 
 # ---------------------------------------------------------------------------
+# Z.ai backend (OpenAI-compatible cloud, GLM models)
+# ---------------------------------------------------------------------------
+
+
+def _zai_available(cfg) -> bool:
+    """Check if Z.ai is configured (URL and API key must be set)."""
+    import os
+
+    _load_zai_env()
+    return bool(cfg.descripterizer_zai_url and os.environ.get("ZAI_API_KEY"))
+
+
+def _load_zai_env():
+    """Load .env file for ZAI_API_KEY if not already set."""
+    import os
+    from pathlib import Path
+
+    if os.environ.get("ZAI_API_KEY"):
+        return
+    for env_path in [Path.home() / ".byomem" / ".env", Path(__file__).resolve().parent.parent / ".env"]:
+        if env_path.exists():
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and "=" in line and not line.startswith("#"):
+                        k, v = line.split("=", 1)
+                        os.environ.setdefault(k.strip(), v.strip())
+            break
+
+
+def _call_zai(cfg, system_prompt: str, user_content: str) -> str:
+    """Call Z.ai API and return raw text response."""
+    import os
+
+    api_key = os.environ.get("ZAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("ZAI_API_KEY not set")
+    client = openai.OpenAI(api_key=api_key, base_url=cfg.descripterizer_zai_url)
+    resp = client.chat.completions.create(
+        model=cfg.descripterizer_zai_model,
+        max_tokens=cfg.summarizer_max_tokens,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+    )
+    text = resp.choices[0].message.content or ""
+    # Reasoning models may put content in model_extra
+    if not text.strip() and hasattr(resp.choices[0].message, "model_extra"):
+        extra = resp.choices[0].message.model_extra or {}
+        text = extra.get("reasoning_content", "")
+    text = _strip_fences(text)
+    # GLM models sometimes prefix JSON with narrative text
+    if text and not text.lstrip().startswith("{"):
+        idx = text.find("{")
+        if idx >= 0:
+            text = text[idx:]
+    return text
+
+
+def _summarize_zai(cfg, user_content: str) -> dict:
+    """Summarize a single turn via Z.ai."""
+    return json.loads(_call_zai(cfg, SYSTEM, user_content))
+
+
+def _batch_zai(cfg, user_content: str) -> BatchSummaryResponse:
+    """Batch summarize via Z.ai."""
+    text = _wrap_bare_array(_call_zai(cfg, BATCH_SYSTEM, user_content))
+    return BatchSummaryResponse.model_validate_json(text)
+
+
+# ---------------------------------------------------------------------------
 # LM Studio backend (OpenAI-compatible local server)
 # ---------------------------------------------------------------------------
 
@@ -421,6 +493,14 @@ def summarize_turn(turn, *, model_override: str | None = None) -> dict:
                 return result
             except Exception:
                 logger.debug("OpenCode CLI single-turn failed", exc_info=True)
+        # Z.ai cloud backend (skip for overflow workers)
+        if _zai_available(cfg) and not model_override:
+            try:
+                result = _summarize_zai(cfg, user_content)
+                backend = cfg.descripterizer_zai_model
+                return result
+            except Exception:
+                logger.debug("Z.ai single-turn failed", exc_info=True)
         # LM Studio local backend (skip for overflow workers)
         if _lmstudio_available(cfg) and not model_override:
             try:
@@ -557,6 +637,15 @@ def summarize_batch(turns: list, *, model_override: str | None = None) -> list[T
                 return results
             except Exception:
                 logger.debug("OpenCode CLI batch failed, falling back", exc_info=True)
+        # Z.ai cloud backend (skip for overflow workers)
+        if _zai_available(cfg) and not model_override:
+            try:
+                batch_resp = _batch_zai(cfg, user_content)
+                results = _align_results(coerced, batch_resp)
+                backend = cfg.descripterizer_zai_model
+                return results
+            except Exception:
+                logger.debug("Z.ai batch failed, falling back", exc_info=True)
         # LM Studio local backend (skip for overflow workers)
         if _lmstudio_available(cfg) and not model_override:
             try:

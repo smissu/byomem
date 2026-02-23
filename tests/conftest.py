@@ -1,6 +1,16 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_zai_env(monkeypatch):
+    """Block ZAI_API_KEY from being loaded from real .env during tests.
+
+    Uses setenv("") rather than delenv because _load_zai_env() uses
+    os.environ.setdefault — deleting the key lets it be re-set from file.
+    """
+    monkeypatch.setenv("ZAI_API_KEY", "")
+
+
 @pytest.fixture
 def tmp_byomem(tmp_path, monkeypatch):
     """Redirect ~/.byomem to a temp dir for all tests.
