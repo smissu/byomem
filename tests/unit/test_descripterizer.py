@@ -274,6 +274,6 @@ def test_system_prompt_content():
     """System prompt includes key instructions."""
     from core.descripterizer import DESCRIPTERIZER_SYSTEM
 
-    assert "WHAT the code does" in DESCRIPTERIZER_SYSTEM
+    assert "find this code via search" in DESCRIPTERIZER_SYSTEM
     assert "chunk_id" in DESCRIPTERIZER_SYSTEM
     assert "descriptions" in DESCRIPTERIZER_SYSTEM

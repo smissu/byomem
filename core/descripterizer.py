@@ -33,15 +33,31 @@ def _debug_log(entry: dict):
             f.write(json.dumps(entry) + "\n")
 
 DESCRIPTERIZER_SYSTEM = """\
-You are a code documentation expert. For each code chunk, write a concise \
-1-2 sentence natural language description of what the code does.
+You are a code documentation expert. For each code chunk, write a concise 1-2 sentence \
+natural language description that would help a developer find this code via search.
 
 Rules:
-- Focus on WHAT the code does and WHY, not HOW
-- Use natural language a developer would use when searching for this code
-- Include key function/class/method names
-- 1-2 sentences, 30-60 words each
-- For imports/constants: "Module imports for X" or "Constants for Y"
+- Name the key function, class, or method
+- Mention specific technologies, libraries, or protocols (e.g. SQLite, React, SSE, Vite)
+- Include important parameters, return types, or configuration values when present
+- Use terms a developer would type when searching: "proxy API requests", "database connection pool", "email validation"
+- 2 sentences, 40-80 words total
+- For imports/constants: "Module imports for X" or "Configuration constants for Y"
+
+Examples:
+--- Chunk 99 ---
+def get_user(db, user_id):
+    row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+Good: "Function get_user() retrieves a user record from the SQLite database by ID, returning a dictionary or None if not found. Uses parameterized queries for safe database access."
+
+--- Chunk 100 ---
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", uptime: process.uptime() });
+});
+
+Good: "Express health check endpoint at /api/health that returns JSON with server status and uptime. Useful for monitoring and load balancer health probes."
 
 You will receive multiple chunks, each delimited by --- Chunk {id} ---.
 Return ONLY valid JSON — no commentary, no markdown fences:
