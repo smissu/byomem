@@ -288,6 +288,7 @@ def process_job(job: QueueJob, *, model_override: str | None = None) -> dict | N
         descripterize_s = round(time.monotonic() - t_descripterize, 2)
 
         return {
+            "project": project,
             "summarize_s": summarize_s,
             "embed_s": embed_s,
             "db_write_s": db_write_s,

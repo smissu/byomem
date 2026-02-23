@@ -8,6 +8,8 @@ using description text for better semantic search.
 import hashlib
 import logging
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from core.config import get_config
 from core.models import BatchDescriptionResponse
@@ -47,12 +49,31 @@ def _format_batch(chunks: list[tuple]) -> str:
     return "\n\n".join(parts)
 
 
-def _call_llm(prompt: str) -> str:
-    """Dispatch to the configured LLM backend using the summarizer cascade.
+def _get_available_backends() -> list[str]:
+    """Return list of available backend names for concurrent dispatch."""
+    from core.summarizer import _gemini_available, _lmstudio_available, _opencode_available
 
-    Returns raw response text. Reuses the same backend priority as the summarizer:
-    1. Gemini CLI  2. OpenCode CLI  3. LM Studio  4. Ollama native
-    5. OpenAI-compat  6. Anthropic
+    cfg = get_config()
+    backends = []
+    if _gemini_available(cfg):
+        backends.append("gemini")
+    if _opencode_available(cfg):
+        backends.append("opencode")
+    if _lmstudio_available(cfg):
+        backends.append("lmstudio")
+    if cfg.summarizer_base_url:
+        backends.append("ollama")
+    # Anthropic is always available as last resort but don't auto-include
+    # (it costs money and is slow for bulk work)
+    return backends
+
+
+def _call_llm(prompt: str, *, backend: str | None = None) -> str:
+    """Dispatch to a specific or auto-selected LLM backend.
+
+    If backend is specified, uses only that backend (no cascade).
+    If backend is None, uses the full cascade: Gemini → OpenCode → LM Studio
+    → Ollama → OpenAI-compat → Anthropic.
     """
     from core.summarizer import (
         _gemini_available,
@@ -67,7 +88,58 @@ def _call_llm(prompt: str) -> str:
 
     cfg = get_config()
 
-    # 1. Gemini CLI
+    # --- Targeted backend ---
+    if backend == "gemini" and _gemini_available(cfg):
+        text = _run_gemini(cfg, prompt)
+        return _wrap_bare_array(_strip_fences(text))
+
+    if backend == "opencode" and _opencode_available(cfg):
+        text = _run_opencode(cfg, prompt)
+        return _wrap_bare_array(_strip_fences(text))
+
+    if backend == "lmstudio" and _lmstudio_available(cfg):
+        import openai
+
+        model = cfg.summarizer_lmstudio_model or "default"
+        client = openai.OpenAI(base_url=cfg.summarizer_lmstudio_url, api_key="lm-studio")
+        resp = client.chat.completions.create(
+            model=model,
+            max_tokens=cfg.summarizer_max_tokens,
+            messages=[
+                {"role": "system", "content": DESCRIPTERIZER_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        text = resp.choices[0].message.content or ""
+        return _wrap_bare_array(_strip_fences(text))
+
+    if backend == "ollama" and cfg.summarizer_base_url:
+        import httpx
+
+        resp = httpx.post(
+            _ollama_api_url(cfg),
+            json={
+                "model": cfg.summarizer_model,
+                "stream": False,
+                "think": False,
+                "format": BatchDescriptionResponse.model_json_schema(),
+                "options": {"num_predict": cfg.summarizer_max_tokens},
+                "messages": [
+                    {"role": "system", "content": DESCRIPTERIZER_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+            },
+            timeout=120.0,
+        )
+        resp.raise_for_status()
+        text = resp.json()["message"]["content"]
+        return _wrap_bare_array(_strip_fences(text))
+
+    # If a specific backend was requested but we got here, it wasn't available
+    if backend is not None:
+        raise RuntimeError(f"Backend '{backend}' not available")
+
+    # --- Full cascade (no backend specified) ---
     if _gemini_available(cfg):
         try:
             text = _run_gemini(cfg, prompt)
@@ -75,7 +147,6 @@ def _call_llm(prompt: str) -> str:
         except Exception:
             logger.debug("Gemini CLI descripterizer failed", exc_info=True)
 
-    # 2. OpenCode CLI
     if _opencode_available(cfg):
         try:
             text = _run_opencode(cfg, prompt)
@@ -83,7 +154,6 @@ def _call_llm(prompt: str) -> str:
         except Exception:
             logger.debug("OpenCode CLI descripterizer failed", exc_info=True)
 
-    # 3. LM Studio
     if _lmstudio_available(cfg):
         try:
             import openai
@@ -103,9 +173,7 @@ def _call_llm(prompt: str) -> str:
         except Exception:
             logger.debug("LM Studio descripterizer failed", exc_info=True)
 
-    # 4/5. Ollama native / OpenAI-compat
     if cfg.summarizer_base_url:
-        # Try native Ollama first
         try:
             import httpx
 
@@ -131,7 +199,6 @@ def _call_llm(prompt: str) -> str:
         except Exception:
             logger.debug("Ollama native descripterizer failed", exc_info=True)
 
-        # OpenAI-compat fallback
         try:
             import openai
 
@@ -150,7 +217,6 @@ def _call_llm(prompt: str) -> str:
         except Exception:
             logger.debug("OpenAI-compat descripterizer failed", exc_info=True)
 
-    # 6. Anthropic
     import anthropic
 
     client = anthropic.Anthropic()
@@ -164,12 +230,10 @@ def _call_llm(prompt: str) -> str:
     return _wrap_bare_array(_strip_fences(text))
 
 
-def _describe_batch(chunks: list[tuple]) -> BatchDescriptionResponse:
+def _describe_batch(chunks: list[tuple], *, backend: str | None = None) -> BatchDescriptionResponse:
     """Generate descriptions for a batch of (chunk_id, text) tuples."""
     user_content = _format_batch(chunks)
-    # _call_llm handles system prompt internally for structured backends;
-    # for CLI backends (Gemini, OpenCode), we prepend it to the prompt
-    raw = _call_llm(DESCRIPTERIZER_SYSTEM + "\n\n" + user_content)
+    raw = _call_llm(DESCRIPTERIZER_SYSTEM + "\n\n" + user_content, backend=backend)
     return BatchDescriptionResponse.model_validate_json(raw)
 
 
@@ -199,7 +263,9 @@ def descripterize_project(
     if db_path is None:
         db_path = cfg.code_db_path
 
-    db = get_code_db(db_path)
+    # check_same_thread=False is safe because all DB access is serialized
+    # behind db_lock when concurrency > 1
+    db = get_code_db(db_path, check_same_thread=False)
     path_filter = f"{project}/%"
 
     # Query chunks needing descriptions
@@ -220,86 +286,122 @@ def descripterize_project(
         return {"described": 0, "failed": 0, "skipped": 0, "total": 0}
 
     batch_size = cfg.descripterizer_batch_size
+    concurrency = cfg.descripterizer_concurrency
     described = 0
     failed = 0
+    db_lock = threading.Lock()
 
-    # Process in batches
+    # Detect available backends for multi-backend concurrency
+    if cfg.descripterizer_backends:
+        # Use explicitly configured backends
+        backends = cfg.descripterizer_backends
+    else:
+        backends = _get_available_backends()
+
+    if not backends:
+        backends = [None]  # fall back to cascade
+    else:
+        # Scale concurrency: N workers per backend (default 4 per backend)
+        workers_per_backend = max(concurrency, 4)
+        concurrency = len(backends) * workers_per_backend
+        logger.info(
+            "Descripterizer backends: %s (%d workers each, %d total)",
+            backends, workers_per_backend, concurrency,
+        )
+
+    # Build all batches upfront, round-robin assign backends
+    all_batches = []
     for i in range(0, total, batch_size):
         batch_rows = rows[i : i + batch_size]
         batch_chunks = [(str(row[0]), row[1]) for row in batch_rows]
+        backend = backends[len(all_batches) % len(backends)]
+        all_batches.append((i, batch_chunks, backend))
 
+    def _process_one_batch(batch_idx, batch_chunks, backend=None):
+        """LLM call + embed + DB write for one batch. Thread-safe."""
+        nonlocal described, failed
+
+        # LLM call (the slow part — runs concurrently)
         try:
-            resp = _describe_batch(batch_chunks)
+            resp = _describe_batch(batch_chunks, backend=backend)
         except Exception as exc:
-            logger.warning("Batch %d-%d failed: %s", i, i + len(batch_rows), exc)
-            failed += len(batch_rows)
-            if on_batch:
-                on_batch(0, len(batch_rows), described, failed, total)
-            continue
+            logger.warning("Batch %d failed: %s", batch_idx, exc)
+            with db_lock:
+                failed += len(batch_chunks)
+                if on_batch:
+                    on_batch(0, len(batch_chunks), described, failed, total)
+            return
 
-        # Map descriptions by chunk_id
         desc_map = {d.chunk_id: d.description for d in resp.descriptions}
 
-        # Collect descriptions and their hashes for batch embedding
-        to_embed = []  # (chunk_id, description)
+        to_embed = []
         for chunk_id_str, _ in batch_chunks:
             desc = desc_map.get(chunk_id_str)
             if desc:
                 to_embed.append((int(chunk_id_str), desc))
 
         if not to_embed:
-            failed += len(batch_rows)
-            continue
+            with db_lock:
+                failed += len(batch_chunks)
+            return
 
-        # Batch embed descriptions
+        # Embed descriptions
         desc_texts = [d for _, d in to_embed]
         desc_hashes = [hashlib.sha256(d.encode()).hexdigest() for d in desc_texts]
 
-        embed_results = _get_embeddings_batch(
-            db, desc_texts, desc_hashes, model=cfg.code_embedding_model
-        )
-
-        # Apply: store description + re-embed
-        for j, (chunk_id, desc) in enumerate(to_embed):
-            embedding, is_new = embed_results[j]
-
-            # Store description
-            db.execute(
-                "UPDATE chunks SET description = ? WHERE id = ?",
-                (desc, chunk_id),
+        with db_lock:
+            embed_results = _get_embeddings_batch(
+                db, desc_texts, desc_hashes, model=cfg.code_embedding_model
             )
 
-            # Re-embed with description vector
-            if embedding is not None:
-                try:
-                    import sqlite_vec
+            for j, (chunk_id, desc) in enumerate(to_embed):
+                embedding, is_new = embed_results[j]
 
-                    # Delete old vec entry and insert new one
-                    db.execute("DELETE FROM chunks_vec WHERE rowid = ?", (chunk_id,))
-                    db.execute(
-                        "INSERT INTO chunks_vec (rowid, embedding) VALUES (?, ?)",
-                        (chunk_id, sqlite_vec.serialize_float32(embedding)),
-                    )
-                except Exception:
-                    pass
+                db.execute(
+                    "UPDATE chunks SET description = ? WHERE id = ?",
+                    (desc, chunk_id),
+                )
 
-                # Cache embedding
-                if is_new:
-                    _save_embedding_cache(db, desc_hashes[j], embedding)
+                if embedding is not None:
+                    try:
+                        import sqlite_vec
 
-            described += 1
+                        db.execute("DELETE FROM chunks_vec WHERE rowid = ?", (chunk_id,))
+                        db.execute(
+                            "INSERT INTO chunks_vec (rowid, embedding) VALUES (?, ?)",
+                            (chunk_id, sqlite_vec.serialize_float32(embedding)),
+                        )
+                    except Exception:
+                        pass
 
-        batch_described = len(to_embed)
-        db.commit()
+                    if is_new:
+                        _save_embedding_cache(db, desc_hashes[j], embedding)
 
-        if on_batch:
-            on_batch(batch_described, 0, described, failed, total)
+                described += 1
 
-        print(
-            f"  [{min(i + batch_size, total)}/{total}] "
-            f"{described} described, {failed} failed",
-            file=sys.stderr,
-        )
+            db.commit()
+
+            batch_described = len(to_embed)
+            if on_batch:
+                on_batch(batch_described, 0, described, failed, total)
+
+            print(
+                f"  [{min(described + failed, total)}/{total}] "
+                f"{described} described, {failed} failed",
+                file=sys.stderr,
+            )
+
+    if concurrency <= 1:
+        for batch_idx, batch_chunks, backend in all_batches:
+            _process_one_batch(batch_idx, batch_chunks, backend)
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="desc") as pool:
+            futures = {
+                pool.submit(_process_one_batch, batch_idx, batch_chunks, backend): batch_idx
+                for batch_idx, batch_chunks, backend in all_batches
+            }
+            for future in as_completed(futures):
+                future.result()  # propagate exceptions
 
     db.close()
     return {

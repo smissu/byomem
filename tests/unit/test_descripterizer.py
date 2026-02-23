@@ -45,7 +45,7 @@ def indexed_chunks(tmp_byomem, tmp_path, mocker):
 def mock_descripterizer_llm(mocker):
     """Patch _call_llm to return predictable descriptions."""
 
-    def fake_call_llm(prompt):
+    def fake_call_llm(prompt, *, backend=None):
         # Parse chunk IDs from the prompt
         import re
 

@@ -509,17 +509,102 @@ def cmd_queue(purge=False, history=0):
         except (ValueError, OSError):
             worker_status = "invalid lock file"
 
-    print(f"\n  Worker: {worker_status}")
-    print(f"  Pending: {len(pending)}")
-    print(f"  Processing: {len(processing)}")
-    print(f"  Failed: {len(failed)}")
-    print(f"  Overflow threshold: {cfg.overflow_threshold}")
+    # Build left column: worker status
+    left = []
+    left.append(f"Worker: {worker_status}")
+    left.append(f"Pending: {len(pending)}")
+    left.append(f"Processing: {len(processing)}")
+    left.append(f"Failed: {len(failed)}")
+    left.append(f"Overflow threshold: {cfg.overflow_threshold}")
 
+    # Build right column: code index stats
+    right = []
+    code_db = cfg.code_db_path
+    if code_db.exists():
+        import sqlite3
+
+        cdb = sqlite3.connect(str(code_db))
+        total_files = cdb.execute("SELECT count(*) FROM files").fetchone()[0]
+        total_chunks = cdb.execute("SELECT count(*) FROM chunks").fetchone()[0]
+        db_size = code_db.stat().st_size
+
+        per_project_files = dict(
+            cdb.execute(
+                "SELECT substr(path, 1, instr(path, '/') - 1) AS proj, count(*) FROM files GROUP BY proj"
+            ).fetchall()
+        )
+        per_project_chunks = dict(
+            cdb.execute(
+                "SELECT substr(f.path, 1, instr(f.path, '/') - 1) AS proj, count(*) "
+                "FROM chunks c JOIN files f ON c.file_path = f.path GROUP BY proj"
+            ).fetchall()
+        )
+        last_shas = dict(
+            (k.replace("last_sha:", ""), v)
+            for k, v in cdb.execute(
+                "SELECT key, value FROM meta WHERE key LIKE 'last_sha:%'"
+            ).fetchall()
+        )
+        last_indexed = dict(
+            (k.replace("last_indexed_at:", ""), float(v))
+            for k, v in cdb.execute(
+                "SELECT key, value FROM meta WHERE key LIKE 'last_indexed_at:%'"
+            ).fetchall()
+        )
+        embed_model = cfg.code_embedding_model or cfg.embedding_model
+
+        has_desc_col = any(
+            row[1] == "description"
+            for row in cdb.execute("PRAGMA table_info(chunks)").fetchall()
+        )
+        total_described = 0
+        per_project_described = {}
+        if has_desc_col:
+            total_described = cdb.execute(
+                "SELECT count(*) FROM chunks WHERE description IS NOT NULL"
+            ).fetchone()[0]
+            per_project_described = dict(
+                cdb.execute(
+                    "SELECT substr(f.path, 1, instr(f.path, '/') - 1) AS proj, count(*) "
+                    "FROM chunks c JOIN files f ON c.file_path = f.path "
+                    "WHERE c.description IS NOT NULL GROUP BY proj"
+                ).fetchall()
+            )
+        cdb.close()
+
+        right.append(f"Code index ({code_db.name}, {db_size / 1024:.0f} KB)")
+        right.append(f"  {total_files} files, {total_chunks} chunks")
+        if has_desc_col:
+            pct = (total_described / total_chunks * 100) if total_chunks else 0
+            right.append(f"  Described: {total_described}/{total_chunks} ({pct:.0f}%)")
+        right.append(f"  Embed: {embed_model}")
+
+        all_projects = sorted(set(per_project_files) | set(last_shas))
+        for proj in all_projects:
+            files_count = per_project_files.get(proj, 0)
+            chunks_count = per_project_chunks.get(proj, 0)
+            described_count = per_project_described.get(proj, 0)
+            sha = last_shas.get(proj)
+            sha_str = sha[:12] if sha else "none"
+            ts = last_indexed.get(proj)
+            ts_str = datetime.fromtimestamp(ts).strftime("%m-%d %H:%M") if ts else "-"
+            desc_str = f" desc={described_count}/{chunks_count}" if has_desc_col else ""
+            right.append(f"  {proj}: {files_count}f/{chunks_count}ch{desc_str} sha={sha_str} idx={ts_str}")
+
+    # Print left and right side by side
+    left_width = 32
+    max_rows = max(len(left), len(right))
+    print()
+    for i in range(max_rows):
+        l = f"  {left[i]}" if i < len(left) else ""
+        r = f"  {right[i]}" if i < len(right) else ""
+        print(f"{l:<{left_width}} {r}")
+
+    # Purge / failed details (below the side-by-side section)
     if purge and processing:
         for f in processing:
             f.unlink()
         print(f"\n  Purged {len(processing)} stale processing file(s).")
-        # Clean stale PID lock too
         if pid_file.exists():
             try:
                 pid = int(pid_file.read_text().strip())
@@ -542,124 +627,74 @@ def cmd_queue(purge=False, history=0):
             except (json.JSONDecodeError, KeyError):
                 print(f"    {f.name}  (unreadable)")
 
-    # Code index stats
-    code_db = cfg.code_db_path
-    if code_db.exists():
-        import sqlite3
-
-        cdb = sqlite3.connect(str(code_db))
-        total_files = cdb.execute("SELECT count(*) FROM files").fetchone()[0]
-        total_chunks = cdb.execute("SELECT count(*) FROM chunks").fetchone()[0]
-        db_size = code_db.stat().st_size
-
-        # Per-project breakdown
-        per_project_files = dict(
-            cdb.execute(
-                "SELECT substr(path, 1, instr(path, '/') - 1) AS proj, count(*) FROM files GROUP BY proj"
-            ).fetchall()
-        )
-        per_project_chunks = dict(
-            cdb.execute(
-                "SELECT substr(f.path, 1, instr(f.path, '/') - 1) AS proj, count(*) "
-                "FROM chunks c JOIN files f ON c.file_path = f.path GROUP BY proj"
-            ).fetchall()
-        )
-        last_shas = dict(
-            (k.replace("last_sha:", ""), v)
-            for k, v in cdb.execute(
-                "SELECT key, value FROM meta WHERE key LIKE 'last_sha:%'"
-            ).fetchall()
-        )
-        # Actual indexing timestamps from meta table
-        last_indexed = dict(
-            (k.replace("last_indexed_at:", ""), float(v))
-            for k, v in cdb.execute(
-                "SELECT key, value FROM meta WHERE key LIKE 'last_indexed_at:%'"
-            ).fetchall()
-        )
-        # Embedding model from meta (if stored), else from config
-        embed_model = cfg.code_embedding_model or cfg.embedding_model
-
-        # Description stats (descripterizer coverage)
-        # Check if description column exists before querying
-        has_desc_col = any(
-            row[1] == "description"
-            for row in cdb.execute("PRAGMA table_info(chunks)").fetchall()
-        )
-        total_described = 0
-        per_project_described = {}
-        if has_desc_col:
-            total_described = cdb.execute(
-                "SELECT count(*) FROM chunks WHERE description IS NOT NULL"
-            ).fetchone()[0]
-            per_project_described = dict(
-                cdb.execute(
-                    "SELECT substr(f.path, 1, instr(f.path, '/') - 1) AS proj, count(*) "
-                    "FROM chunks c JOIN files f ON c.file_path = f.path "
-                    "WHERE c.description IS NOT NULL GROUP BY proj"
-                ).fetchall()
-            )
-        cdb.close()
-
-        print(f"\n  Code index ({code_db.name}, {db_size / 1024:.0f} KB):")
-        print(f"    Total: {total_files} files, {total_chunks} chunks")
-        if has_desc_col:
-            pct = (total_described / total_chunks * 100) if total_chunks else 0
-            print(f"    Described: {total_described}/{total_chunks} ({pct:.0f}%)")
-        print(f"    Embedding model: {embed_model}")
-
-        all_projects = sorted(set(per_project_files) | set(last_shas))
-        for proj in all_projects:
-            files_count = per_project_files.get(proj, 0)
-            chunks_count = per_project_chunks.get(proj, 0)
-            described_count = per_project_described.get(proj, 0)
-            sha = last_shas.get(proj)
-            sha_str = sha[:12] if sha else "none"
-            ts = last_indexed.get(proj)
-            ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "-"
-            desc_str = f", described={described_count}/{chunks_count}" if has_desc_col else ""
-            print(f"    {proj}: {files_count} files, {chunks_count} chunks{desc_str}, sha={sha_str}, indexed={ts_str}")
-
-    # Show recent processing history
+    # Show recent processing history — split into two tables by pipeline
     history_path = cfg.queue_path / "history.jsonl"
     if history_path.exists():
         lines = history_path.read_text().splitlines()
         n = history if history > 0 else 10
-        recent = lines[-n:]
-        if recent:
-            print(f"\n  Recent history ({len(recent)}/{len(lines)}):")
-            print(f"  {'Timestamp':<20} {'Session':<10} {'Model':<24} {'Pipe':<9} {'Duration':>8}  {'Summ':>5}  {'Embed':>5} {'Write':>5} {'Desc':>10}  {'Status'}")
-            print(f"  {'-' * 19}  {'-' * 9} {'-' * 23} {'-' * 8} {'-' * 8}  {'-' * 5}  {'-' * 5} {'-' * 5} {'-' * 10}  {'-' * 6}")
-            for line in recent:
+
+        # Classify entries into summary vs describe
+        summary_entries = []
+        describe_entries = []
+        for line in lines:
+            try:
+                entry = json.loads(line)
+                pipe = entry.get("pipeline", "")
+                if not pipe:
+                    if "summarize_s" in entry:
+                        pipe = "summary"
+                    elif entry.get("descripterize"):
+                        pipe = "describe"
+                    else:
+                        pipe = "summary"
+                if pipe == "describe":
+                    describe_entries.append(entry)
+                else:
+                    summary_entries.append(entry)
+            except (json.JSONDecodeError, KeyError):
+                continue
+
+        # Summary pipeline table
+        recent_summ = summary_entries[-n:]
+        if recent_summ:
+            print(f"\n  Summary history ({len(recent_summ)}/{len(summary_entries)}):")
+            print(f"  {'Timestamp':<20} {'Session':<10} {'Project':<14} {'Model':<24} {'Duration':>8}  {'Summ':>5}  {'Embed':>5} {'Write':>5}  {'Status'}")
+            print(f"  {'-' * 19}  {'-' * 9} {'-' * 13} {'-' * 23} {'-' * 8}  {'-' * 5}  {'-' * 5} {'-' * 5}  {'-' * 6}")
+            for entry in recent_summ:
                 try:
-                    entry = json.loads(line)
-                    # Pipeline: explicit field, or infer from entry shape
-                    pipe = entry.get("pipeline", "")
-                    if not pipe:
-                        if "summarize_s" in entry:
-                            pipe = "summary"
-                        elif entry.get("descripterize"):
-                            pipe = "describe"
-                        else:
-                            pipe = "-"
+                    proj = entry.get("project", "-")
                     summ = f"{entry['summarize_s']:>5.1f}" if "summarize_s" in entry else "    -"
                     embed = f"{entry['embed_s']:>5.1f}" if "embed_s" in entry else "    -"
                     write = f"{entry['db_write_s']:>5.1f}" if "db_write_s" in entry else "    -"
-                    # Descripterize: show timing + count when available
-                    d_stats = entry.get("descripterize")
-                    d_time = entry.get("descripterize_s")
-                    if d_stats and d_stats.get("described"):
-                        desc = f"{d_time:.0f}s/{d_stats['described']}ch" if d_time else f"{d_stats['described']}ch"
-                    elif d_time and d_time > 0:
-                        desc = f"{d_time:.1f}s"
-                    else:
-                        desc = "-"
                     print(
-                        f"  {entry['ts']:<20} {entry['session']:<10} {entry['model']:<24} "
-                        f"{pipe:<9}{entry['duration_s']:>7.2f}s  {summ}  {embed} {write} {desc:>10}  {entry['status']}"
+                        f"  {entry['ts']:<20} {entry['session']:<10} {proj:<14} {entry['model']:<24} "
+                        f"{entry['duration_s']:>7.2f}s  {summ}  {embed} {write}  {entry['status']}"
                     )
-                except (json.JSONDecodeError, KeyError):
+                except KeyError:
                     continue
+
+        # Describe pipeline table
+        recent_desc = describe_entries[-n:]
+        if recent_desc:
+            print(f"\n  Describe history ({len(recent_desc)}/{len(describe_entries)}):")
+            print(f"  {'Timestamp':<20} {'Session':<10} {'Project':<14} {'Model':<24} {'Duration':>8}  {'Described':>10}  {'Status'}")
+            print(f"  {'-' * 19}  {'-' * 9} {'-' * 13} {'-' * 23} {'-' * 8}  {'-' * 10}  {'-' * 6}")
+            for entry in recent_desc:
+                try:
+                    proj = entry.get("project", "-")
+                    d_stats = entry.get("descripterize", {})
+                    d_ok = d_stats.get("described", 0)
+                    d_total = d_stats.get("total", 0)
+                    desc_str = f"{d_ok}/{d_total}" if d_total else "-"
+                    print(
+                        f"  {entry['ts']:<20} {entry['session']:<10} {proj:<14} {entry['model']:<24} "
+                        f"{entry['duration_s']:>7.2f}s  {desc_str:>10}  {entry['status']}"
+                    )
+                except KeyError:
+                    continue
+
+        if not recent_summ and not recent_desc:
+            print("\n  No processing history yet.")
     elif history > 0:
         print("\n  No processing history yet.")
 
@@ -1626,6 +1661,7 @@ def cmd_descripterize(args):
         entry = {
             "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
             "session": "desc-cli",
+            "project": project,
             "model": desc_model,
             "pipeline": "describe",
             "duration_s": elapsed,

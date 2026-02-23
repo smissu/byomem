@@ -15,11 +15,11 @@ from core.indexing_utils import (
 )
 
 
-def get_code_db(db_path):
+def get_code_db(db_path, *, check_same_thread=True):
     """Connect to code DB at db_path, load sqlite-vec, and initialise schema."""
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(str(db_path), timeout=10)
+    db = sqlite3.connect(str(db_path), timeout=10, check_same_thread=check_same_thread)
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA busy_timeout=30000")
     vec_available = False
