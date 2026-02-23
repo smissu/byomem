@@ -241,6 +241,7 @@ def _run_gemini(cfg, prompt: str) -> str:
         capture_output=True,
         text=True,
         timeout=90,
+        process_group=0,
     )
     if result.returncode != 0:
         raise RuntimeError(f"Gemini CLI failed (rc={result.returncode}): {result.stderr[:200]}")
@@ -290,6 +291,7 @@ def _run_opencode(cfg, prompt: str) -> str:
         capture_output=True,
         text=True,
         timeout=120,
+        process_group=0,
     )
     if result.returncode != 0:
         raise RuntimeError(f"OpenCode CLI failed (rc={result.returncode}): {result.stderr[:200]}")

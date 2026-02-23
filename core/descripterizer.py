@@ -68,6 +68,46 @@ def _get_available_backends() -> list[str]:
     return backends
 
 
+def get_active_model_label() -> str:
+    """Return a short model label reflecting active descripterizer backends.
+
+    Examples: "flash-lite / gpt-5-mini", "gemini-2.5-flash-lite", "qwen3:8b"
+    """
+    cfg = get_config()
+
+    if cfg.descripterizer_backends:
+        backends = cfg.descripterizer_backends
+    else:
+        backends = _get_available_backends()
+
+    if not backends:
+        return cfg.summarizer_model
+
+    # Map backend name → short model label
+    labels = []
+    for b in backends:
+        if b == "gemini":
+            model = cfg.summarizer_gemini_model or "gemini"
+            # Shorten "gemini-2.5-flash-lite" → "flash-lite"
+            if "flash-lite" in model:
+                model = "flash-lite"
+            elif "flash" in model:
+                model = "flash"
+            labels.append(model)
+        elif b == "opencode":
+            model = cfg.summarizer_opencode_model or "opencode"
+            # Shorten "github-copilot/gpt-5-mini" → "gpt-5-mini"
+            if "/" in model:
+                model = model.rsplit("/", 1)[-1]
+            labels.append(model)
+        elif b == "lmstudio":
+            labels.append(cfg.summarizer_lmstudio_model or "lmstudio")
+        elif b == "ollama":
+            labels.append(cfg.summarizer_model)
+
+    return " / ".join(labels)
+
+
 def _call_llm(prompt: str, *, backend: str | None = None) -> str:
     """Dispatch to a specific or auto-selected LLM backend.
 

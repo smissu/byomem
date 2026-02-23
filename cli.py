@@ -1629,7 +1629,22 @@ def cmd_reindex_code(args):
 
 def cmd_descripterize(args):
     """Generate NL descriptions for code chunks in a project."""
+    import os
+    import signal
     import time
+
+    # Kill entire process group on termination so subprocess children
+    # (opencode, gemini) don't become orphans
+    def _cleanup(signum, frame):
+        os.killpg(os.getpgid(os.getpid()), signal.SIGTERM)
+        sys.exit(1)
+
+    try:
+        os.setpgrp()
+    except OSError:
+        pass
+    signal.signal(signal.SIGTERM, _cleanup)
+    signal.signal(signal.SIGINT, _cleanup)
 
     from core.descripterizer import descripterize_project
 
@@ -1643,28 +1658,24 @@ def cmd_descripterize(args):
     history_path.parent.mkdir(parents=True, exist_ok=True)
     t_start = time.monotonic()
 
-    # Determine the actual model that will be used for descriptions
-    desc_model = "unknown"
-    if cfg.summarizer_gemini_cli:
-        desc_model = cfg.summarizer_gemini_model or "gemini"
-    elif cfg.summarizer_opencode_cli:
-        desc_model = cfg.summarizer_opencode_model or "opencode"
-    elif cfg.summarizer_lmstudio_url:
-        desc_model = cfg.summarizer_lmstudio_model or "lmstudio"
-    elif cfg.summarizer_base_url:
-        desc_model = cfg.summarizer_model
-    else:
-        desc_model = cfg.summarizer_model
+    # Determine the model label reflecting all active backends
+    from core.descripterizer import get_active_model_label
+
+    desc_model = get_active_model_label()
+    last_batch_time = [t_start]  # mutable for closure
 
     def _on_batch(batch_ok, batch_fail, total_ok, total_fail, total):
-        elapsed = round(time.monotonic() - t_start, 2)
+        now = time.monotonic()
+        batch_duration = round(now - last_batch_time[0], 2)
+        last_batch_time[0] = now
+        elapsed = round(now - t_start, 2)
         entry = {
             "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
             "session": "desc-cli",
             "project": project,
             "model": desc_model,
             "pipeline": "describe",
-            "duration_s": elapsed,
+            "duration_s": batch_duration,
             "status": "ok" if batch_fail == 0 else "partial",
             "descripterize_s": elapsed,
             "descripterize": {
