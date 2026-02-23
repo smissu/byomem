@@ -427,6 +427,7 @@ def descripterize_project(
     db_path=None,
     force: bool = False,
     on_batch=None,
+    backend_filter: list[str] | None = None,
 ) -> dict:
     """Generate NL descriptions for undescribed chunks and re-embed them.
 
@@ -436,6 +437,7 @@ def descripterize_project(
         force: If True, re-describe all chunks (not just undescribed ones).
         on_batch: Optional callback(batch_described, batch_failed, total_described,
                   total_failed, total) called after each batch completes.
+        backend_filter: If set, override configured backends with this list.
 
     Returns:
         Stats dict with keys: described, failed, skipped, total.
@@ -495,28 +497,32 @@ def descripterize_project(
     # Cloud backends activated only for large jobs (above threshold)
     # zai is fast enough (~5-10s) to be always-on alongside local models
     cloud_backends = {"gemini", "opencode"}
-    if cfg.descripterizer_backends:
-        all_backends = cfg.descripterizer_backends
-    else:
-        all_backends = _get_available_backends()
 
-    # Tiered: only include cloud backends when chunk count exceeds threshold
-    threshold = cfg.descripterizer_cloud_threshold
-    if total >= threshold:
-        backends = all_backends
-        logger.info(
-            "Large job (%d chunks >= %d threshold) — using all backends: %s",
-            total, threshold, backends,
-        )
-    else:
-        backends = [b for b in all_backends if b not in cloud_backends]
-        if not backends:
-            # All configured backends are cloud — use them anyway
+    if backend_filter is not None:
+        # CLI override — use exactly what was requested, skip tiering
+        backends = backend_filter
+        logger.info("Backend filter active — using: %s", backends)
+    elif cfg.descripterizer_backends:
+        all_backends = cfg.descripterizer_backends
+        # Tiered: only include cloud backends when chunk count exceeds threshold
+        threshold = cfg.descripterizer_cloud_threshold
+        if total >= threshold:
             backends = all_backends
-        logger.info(
-            "Small job (%d chunks < %d threshold) — local backends only: %s",
-            total, threshold, backends,
-        )
+            logger.info(
+                "Large job (%d chunks >= %d threshold) — using all backends: %s",
+                total, threshold, backends,
+            )
+        else:
+            backends = [b for b in all_backends if b not in cloud_backends]
+            if not backends:
+                backends = all_backends
+            logger.info(
+                "Small job (%d chunks < %d threshold) — local backends only: %s",
+                total, threshold, backends,
+            )
+    else:
+        backends = _get_available_backends()
+        logger.info("Auto-detected backends: %s", backends)
 
     if not backends:
         backends = [None]  # fall back to cascade

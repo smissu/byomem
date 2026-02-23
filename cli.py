@@ -1674,9 +1674,26 @@ def cmd_descripterize(args):
 
     cfg = get_config()
     project = args.project
+    # Parse --backends filter
+    backend_override = None
+    if args.backends:
+        barg = args.backends.strip().lower()
+        if barg == "cloud":
+            backend_override = ["zai", "gemini", "opencode"]
+        elif barg == "ollama":
+            # Filter config backends to ollama-only
+            all_b = cfg.descripterizer_backends or []
+            backend_override = [b for b in all_b if b.startswith("ollama")]
+        elif barg == "all":
+            backend_override = None  # use all configured
+        else:
+            backend_override = [b.strip() for b in barg.split(",")]
+
     print(f"Descripterizing project '{project}'...", file=sys.stderr)
     if args.force:
         print("  (force mode: re-describing all chunks)", file=sys.stderr)
+    if backend_override is not None:
+        print(f"  (backends: {', '.join(backend_override)})", file=sys.stderr)
 
     history_path = cfg.queue_path / "history.jsonl"
     history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1717,6 +1734,7 @@ def cmd_descripterize(args):
         db_path=cfg.code_db_path,
         force=args.force,
         on_batch=_on_batch,
+        backend_filter=backend_override,
     )
 
     print(
@@ -1934,6 +1952,11 @@ def main():
     p_descripterize.add_argument("project", help="Project name")
     p_descripterize.add_argument(
         "--force", action="store_true", help="Re-describe all chunks (not just undescribed)"
+    )
+    p_descripterize.add_argument(
+        "--backends",
+        help="Backend filter: 'cloud' (gemini,opencode,zai), 'ollama' (local only), "
+             "'all' (everything), or comma-separated list (e.g. 'zai,gemini')",
     )
 
     p_reindex_code = sub.add_parser(
