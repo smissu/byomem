@@ -628,11 +628,20 @@ def cmd_queue(purge=False, history=0):
         recent = lines[-n:]
         if recent:
             print(f"\n  Recent history ({len(recent)}/{len(lines)}):")
-            print(f"  {'Timestamp':<20} {'Session':<10} {'Model':<24} {'Duration':>8}  {'Summ':>5}  {'Embed':>5} {'Write':>5} {'Desc':>10}  {'Status'}")
-            print(f"  {'-' * 19}  {'-' * 9} {'-' * 23} {'-' * 8}  {'-' * 5}  {'-' * 5} {'-' * 5} {'-' * 10}  {'-' * 6}")
+            print(f"  {'Timestamp':<20} {'Session':<10} {'Model':<24} {'Pipe':<9} {'Duration':>8}  {'Summ':>5}  {'Embed':>5} {'Write':>5} {'Desc':>10}  {'Status'}")
+            print(f"  {'-' * 19}  {'-' * 9} {'-' * 23} {'-' * 8} {'-' * 8}  {'-' * 5}  {'-' * 5} {'-' * 5} {'-' * 10}  {'-' * 6}")
             for line in recent:
                 try:
                     entry = json.loads(line)
+                    # Pipeline: explicit field, or infer from entry shape
+                    pipe = entry.get("pipeline", "")
+                    if not pipe:
+                        if "summarize_s" in entry:
+                            pipe = "summary"
+                        elif entry.get("descripterize"):
+                            pipe = "describe"
+                        else:
+                            pipe = "-"
                     summ = f"{entry['summarize_s']:>5.1f}" if "summarize_s" in entry else "    -"
                     embed = f"{entry['embed_s']:>5.1f}" if "embed_s" in entry else "    -"
                     write = f"{entry['db_write_s']:>5.1f}" if "db_write_s" in entry else "    -"
@@ -647,7 +656,7 @@ def cmd_queue(purge=False, history=0):
                         desc = "-"
                     print(
                         f"  {entry['ts']:<20} {entry['session']:<10} {entry['model']:<24} "
-                        f"{entry['duration_s']:>7.2f}s  {summ}  {embed} {write} {desc:>10}  {entry['status']}"
+                        f"{pipe:<9}{entry['duration_s']:>7.2f}s  {summ}  {embed} {write} {desc:>10}  {entry['status']}"
                     )
                 except (json.JSONDecodeError, KeyError):
                     continue
@@ -1599,12 +1608,26 @@ def cmd_descripterize(args):
     history_path.parent.mkdir(parents=True, exist_ok=True)
     t_start = time.monotonic()
 
+    # Determine the actual model that will be used for descriptions
+    desc_model = "unknown"
+    if cfg.summarizer_gemini_cli:
+        desc_model = cfg.summarizer_gemini_model or "gemini"
+    elif cfg.summarizer_opencode_cli:
+        desc_model = cfg.summarizer_opencode_model or "opencode"
+    elif cfg.summarizer_lmstudio_url:
+        desc_model = cfg.summarizer_lmstudio_model or "lmstudio"
+    elif cfg.summarizer_base_url:
+        desc_model = cfg.summarizer_model
+    else:
+        desc_model = cfg.summarizer_model
+
     def _on_batch(batch_ok, batch_fail, total_ok, total_fail, total):
         elapsed = round(time.monotonic() - t_start, 2)
         entry = {
             "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
             "session": "desc-cli",
-            "model": "descripterize",
+            "model": desc_model,
+            "pipeline": "describe",
             "duration_s": elapsed,
             "status": "ok" if batch_fail == 0 else "partial",
             "descripterize_s": elapsed,
