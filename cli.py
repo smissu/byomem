@@ -579,21 +579,46 @@ def cmd_queue(purge=False, history=0):
         )
         # Embedding model from meta (if stored), else from config
         embed_model = cfg.code_embedding_model or cfg.embedding_model
+
+        # Description stats (descripterizer coverage)
+        # Check if description column exists before querying
+        has_desc_col = any(
+            row[1] == "description"
+            for row in cdb.execute("PRAGMA table_info(chunks)").fetchall()
+        )
+        total_described = 0
+        per_project_described = {}
+        if has_desc_col:
+            total_described = cdb.execute(
+                "SELECT count(*) FROM chunks WHERE description IS NOT NULL"
+            ).fetchone()[0]
+            per_project_described = dict(
+                cdb.execute(
+                    "SELECT substr(f.path, 1, instr(f.path, '/') - 1) AS proj, count(*) "
+                    "FROM chunks c JOIN files f ON c.file_path = f.path "
+                    "WHERE c.description IS NOT NULL GROUP BY proj"
+                ).fetchall()
+            )
         cdb.close()
 
         print(f"\n  Code index ({code_db.name}, {db_size / 1024:.0f} KB):")
         print(f"    Total: {total_files} files, {total_chunks} chunks")
+        if has_desc_col:
+            pct = (total_described / total_chunks * 100) if total_chunks else 0
+            print(f"    Described: {total_described}/{total_chunks} ({pct:.0f}%)")
         print(f"    Embedding model: {embed_model}")
 
         all_projects = sorted(set(per_project_files) | set(last_shas))
         for proj in all_projects:
             files_count = per_project_files.get(proj, 0)
             chunks_count = per_project_chunks.get(proj, 0)
+            described_count = per_project_described.get(proj, 0)
             sha = last_shas.get(proj)
             sha_str = sha[:12] if sha else "none"
             ts = last_indexed.get(proj)
             ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "-"
-            print(f"    {proj}: {files_count} files, {chunks_count} chunks, sha={sha_str}, indexed={ts_str}")
+            desc_str = f", described={described_count}/{chunks_count}" if has_desc_col else ""
+            print(f"    {proj}: {files_count} files, {chunks_count} chunks{desc_str}, sha={sha_str}, indexed={ts_str}")
 
     # Show recent processing history
     history_path = cfg.queue_path / "history.jsonl"
@@ -603,17 +628,26 @@ def cmd_queue(purge=False, history=0):
         recent = lines[-n:]
         if recent:
             print(f"\n  Recent history ({len(recent)}/{len(lines)}):")
-            print(f"  {'Timestamp':<20} {'Session':<10} {'Model':<24} {'Duration':>8}  {'Summ':>5}  {'Embed':>5} {'Write':>5}  {'Status'}")
-            print(f"  {'-' * 19}  {'-' * 9} {'-' * 23} {'-' * 8}  {'-' * 5}  {'-' * 5} {'-' * 5}  {'-' * 6}")
+            print(f"  {'Timestamp':<20} {'Session':<10} {'Model':<24} {'Duration':>8}  {'Summ':>5}  {'Embed':>5} {'Write':>5} {'Desc':>10}  {'Status'}")
+            print(f"  {'-' * 19}  {'-' * 9} {'-' * 23} {'-' * 8}  {'-' * 5}  {'-' * 5} {'-' * 5} {'-' * 10}  {'-' * 6}")
             for line in recent:
                 try:
                     entry = json.loads(line)
                     summ = f"{entry['summarize_s']:>5.1f}" if "summarize_s" in entry else "    -"
                     embed = f"{entry['embed_s']:>5.1f}" if "embed_s" in entry else "    -"
                     write = f"{entry['db_write_s']:>5.1f}" if "db_write_s" in entry else "    -"
+                    # Descripterize: show timing + count when available
+                    d_stats = entry.get("descripterize")
+                    d_time = entry.get("descripterize_s")
+                    if d_stats and d_stats.get("described"):
+                        desc = f"{d_time:.0f}s/{d_stats['described']}ch" if d_time else f"{d_stats['described']}ch"
+                    elif d_time and d_time > 0:
+                        desc = f"{d_time:.1f}s"
+                    else:
+                        desc = "-"
                     print(
                         f"  {entry['ts']:<20} {entry['session']:<10} {entry['model']:<24} "
-                        f"{entry['duration_s']:>7.2f}s  {summ}  {embed} {write}  {entry['status']}"
+                        f"{entry['duration_s']:>7.2f}s  {summ}  {embed} {write} {desc:>10}  {entry['status']}"
                     )
                 except (json.JSONDecodeError, KeyError):
                     continue
@@ -1551,17 +1585,43 @@ def cmd_reindex_code(args):
 
 def cmd_descripterize(args):
     """Generate NL descriptions for code chunks in a project."""
+    import time
+
     from core.descripterizer import descripterize_project
 
     cfg = get_config()
-    print(f"Descripterizing project '{args.project}'...", file=sys.stderr)
+    project = args.project
+    print(f"Descripterizing project '{project}'...", file=sys.stderr)
     if args.force:
         print("  (force mode: re-describing all chunks)", file=sys.stderr)
 
+    history_path = cfg.queue_path / "history.jsonl"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    t_start = time.monotonic()
+
+    def _on_batch(batch_ok, batch_fail, total_ok, total_fail, total):
+        elapsed = round(time.monotonic() - t_start, 2)
+        entry = {
+            "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
+            "session": "desc-cli",
+            "model": "descripterize",
+            "duration_s": elapsed,
+            "status": "ok" if batch_fail == 0 else "partial",
+            "descripterize_s": elapsed,
+            "descripterize": {
+                "described": total_ok,
+                "failed": total_fail,
+                "total": total,
+            },
+        }
+        with open(history_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
     stats = descripterize_project(
-        args.project,
+        project,
         db_path=cfg.code_db_path,
         force=args.force,
+        on_batch=_on_batch,
     )
 
     print(

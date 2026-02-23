@@ -255,6 +255,7 @@ def process_job(job: QueueJob, *, model_override: str | None = None) -> dict | N
         db_write_s = round(time.monotonic() - t_db_write, 2)
 
         # --- Phase 4: Auto-descripterize after code reindex ---
+        t_descripterize = time.monotonic()
         descripterize_stats = {}
         if reindex_stats.get("indexed", 0) > 0:
             try:
@@ -284,10 +285,13 @@ def process_job(job: QueueJob, *, model_override: str | None = None) -> dict | N
                     file=_sys.stderr,
                 )
 
+        descripterize_s = round(time.monotonic() - t_descripterize, 2)
+
         return {
             "summarize_s": summarize_s,
             "embed_s": embed_s,
             "db_write_s": db_write_s,
+            "descripterize_s": descripterize_s,
             "reindex": reindex_stats if reindex_stats else None,
             "descripterize": descripterize_stats if descripterize_stats else None,
         }

@@ -178,6 +178,7 @@ def descripterize_project(
     *,
     db_path=None,
     force: bool = False,
+    on_batch=None,
 ) -> dict:
     """Generate NL descriptions for undescribed chunks and re-embed them.
 
@@ -185,6 +186,8 @@ def descripterize_project(
         project: Project name (chunks are filtered by file_path LIKE '{project}/%').
         db_path: Path to code.db (defaults to config).
         force: If True, re-describe all chunks (not just undescribed ones).
+        on_batch: Optional callback(batch_described, batch_failed, total_described,
+                  total_failed, total) called after each batch completes.
 
     Returns:
         Stats dict with keys: described, failed, skipped, total.
@@ -230,6 +233,8 @@ def descripterize_project(
         except Exception as exc:
             logger.warning("Batch %d-%d failed: %s", i, i + len(batch_rows), exc)
             failed += len(batch_rows)
+            if on_batch:
+                on_batch(0, len(batch_rows), described, failed, total)
             continue
 
         # Map descriptions by chunk_id
@@ -284,7 +289,11 @@ def descripterize_project(
 
             described += 1
 
+        batch_described = len(to_embed)
         db.commit()
+
+        if on_batch:
+            on_batch(batch_described, 0, described, failed, total)
 
         print(
             f"  [{min(i + batch_size, total)}/{total}] "
