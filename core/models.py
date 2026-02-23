@@ -49,3 +49,16 @@ class QueueJob(BaseModel):
     transcript_offset: int = 0
     retry_count: int = 0
     last_error: str = ""
+
+
+class ChunkDescription(BaseModel):
+    """LLM-generated description of a single code chunk."""
+
+    chunk_id: str
+    description: str
+
+
+class BatchDescriptionResponse(BaseModel):
+    """Response wrapper for batch code chunk descriptions."""
+
+    descriptions: list[ChunkDescription]

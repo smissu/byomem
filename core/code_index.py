@@ -67,6 +67,11 @@ def _init_schema(db, embed_dim, vec_available=True):
             )
         except Exception:
             pass
+    # Migration: add description column if missing
+    try:
+        db.execute("ALTER TABLE chunks ADD COLUMN description TEXT")
+    except Exception:
+        pass  # column already exists
     db.commit()
 
 

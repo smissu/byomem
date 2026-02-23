@@ -254,11 +254,42 @@ def process_job(job: QueueJob, *, model_override: str | None = None) -> dict | N
 
         db_write_s = round(time.monotonic() - t_db_write, 2)
 
+        # --- Phase 4: Auto-descripterize after code reindex ---
+        descripterize_stats = {}
+        if reindex_stats.get("indexed", 0) > 0:
+            try:
+                from core.descripterizer import descripterize_project
+
+                d_stats = descripterize_project(project, db_path=cfg.code_db_path)
+                descripterize_stats = d_stats
+                if d_stats.get("described", 0) > 0:
+                    logger.info(
+                        "Descripterized [%s]: %d described, %d failed",
+                        project,
+                        d_stats["described"],
+                        d_stats["failed"],
+                    )
+            except Exception as exc:
+                import json as _json
+                import sys as _sys
+
+                print(
+                    _json.dumps(
+                        {
+                            "event": "descripterize_error",
+                            "project": project,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    ),
+                    file=_sys.stderr,
+                )
+
         return {
             "summarize_s": summarize_s,
             "embed_s": embed_s,
             "db_write_s": db_write_s,
             "reindex": reindex_stats if reindex_stats else None,
+            "descripterize": descripterize_stats if descripterize_stats else None,
         }
     finally:
         fcntl.flock(lock_file, fcntl.LOCK_UN)

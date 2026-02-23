@@ -57,6 +57,7 @@ class Config:
     code_embedding_model: str | None = None
     code_embedding_dimension: int | None = None
     code_chunk_tokens: int | None = None
+    descripterizer_batch_size: int = 8
     summarizer_debug: bool = False
     code_db_path: Path = field(default_factory=lambda: Path.home() / ".byomem" / "code.db")
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
@@ -143,6 +144,8 @@ def _load_config() -> Config:
         kwargs["code_embedding_dimension"] = int(memory["code_embedding_dimension"])
     if "code_chunk_tokens" in memory:
         kwargs["code_chunk_tokens"] = int(memory["code_chunk_tokens"])
+    if "descripterizer_batch_size" in memory:
+        kwargs["descripterizer_batch_size"] = int(memory["descripterizer_batch_size"])
 
     queue = data.get("queue", {})
     if "batch_size" in queue:

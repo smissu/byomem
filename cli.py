@@ -1549,6 +1549,29 @@ def cmd_reindex_code(args):
     return 0
 
 
+def cmd_descripterize(args):
+    """Generate NL descriptions for code chunks in a project."""
+    from core.descripterizer import descripterize_project
+
+    cfg = get_config()
+    print(f"Descripterizing project '{args.project}'...", file=sys.stderr)
+    if args.force:
+        print("  (force mode: re-describing all chunks)", file=sys.stderr)
+
+    stats = descripterize_project(
+        args.project,
+        db_path=cfg.code_db_path,
+        force=args.force,
+    )
+
+    print(
+        f"\nDone: {stats['described']} described, {stats['failed']} failed, "
+        f"{stats['total']} total chunks",
+        file=sys.stderr,
+    )
+    return 0 if stats["failed"] == 0 else 1
+
+
 def cmd_reindex():
     """Rebuild the search index from all commit.md and main.md files."""
     cfg = get_config()
@@ -1750,6 +1773,14 @@ def main():
         "--root", default="", help="Source root directory (overrides config source_root)"
     )
 
+    p_descripterize = sub.add_parser(
+        "descripterize", help="Generate NL descriptions for code chunks"
+    )
+    p_descripterize.add_argument("project", help="Project name")
+    p_descripterize.add_argument(
+        "--force", action="store_true", help="Re-describe all chunks (not just undescribed)"
+    )
+
     p_reindex_code = sub.add_parser(
         "reindex-code", help="Clear and rebuild the code index for a project"
     )
@@ -1815,6 +1846,8 @@ def main():
                 concurrency=args.concurrency,
             )
         )
+    elif args.command == "descripterize":
+        sys.exit(cmd_descripterize(args))
     elif args.command == "index-code":
         sys.exit(cmd_index_code(args))
     elif args.command == "reindex-code":
