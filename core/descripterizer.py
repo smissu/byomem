@@ -28,7 +28,7 @@ def _debug_log(entry: dict):
         return
     debug_path = cfg.queue_path / "descripterizer_debug.jsonl"
     debug_path.parent.mkdir(parents=True, exist_ok=True)
-    entry["ts"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+    entry["ts"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     with _debug_lock:
         with open(debug_path, "a") as f:
             f.write(json.dumps(entry) + "\n")

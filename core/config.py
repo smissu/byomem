@@ -28,6 +28,7 @@ class Config:
     summarizer_opencode_model: str | None = None
     summarizer_lmstudio_url: str | None = None
     summarizer_lmstudio_model: str | None = None
+    summarizer_backends: list[str] | None = None  # e.g. ["gemini", "zai"]
     summarizer_concurrency: int = 1
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1536
@@ -118,6 +119,12 @@ def _load_config() -> Config:
         kwargs["summarizer_lmstudio_url"] = summarizer["lmstudio_url"]
     if "lmstudio_model" in summarizer:
         kwargs["summarizer_lmstudio_model"] = summarizer["lmstudio_model"]
+    if "backends" in summarizer:
+        val = summarizer["backends"]
+        if isinstance(val, list):
+            kwargs["summarizer_backends"] = val
+        elif isinstance(val, str):
+            kwargs["summarizer_backends"] = [b.strip() for b in val.split(",")]
     if "concurrency" in summarizer:
         kwargs["summarizer_concurrency"] = summarizer["concurrency"]
 

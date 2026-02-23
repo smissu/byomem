@@ -119,7 +119,7 @@ def test_run_worker_logs_retry_then_failed(tmp_path, tmp_byomem, monkeypatch):
     transcript = _make_transcript(tmp_path)
     job = _make_job(transcript)
 
-    def fail_process(job, *, model_override=None):
+    def fail_process(job, *, backend=None, model_override=None):
         raise RuntimeError("boom")
 
     monkeypatch.setattr("core.worker.process_job", fail_process)
@@ -285,7 +285,7 @@ def test_overflow_splits_jobs_above_threshold(
     # Mock process_job to just track calls (no real processing)
     overrides_seen = []
 
-    def fake_process(job, *, model_override=None):
+    def fake_process(job, *, backend=None, model_override=None):
         overrides_seen.append(model_override)
 
     monkeypatch.setattr("core.worker.process_job", fake_process)
@@ -318,7 +318,7 @@ def test_no_overflow_below_threshold(
 
     overrides_seen = []
 
-    def fake_process(job, *, model_override=None):
+    def fake_process(job, *, backend=None, model_override=None):
         overrides_seen.append(model_override)
 
     monkeypatch.setattr("core.worker.process_job", fake_process)
@@ -347,7 +347,7 @@ def test_no_overflow_without_fallback_model(
 
     overrides_seen = []
 
-    def fake_process(job, *, model_override=None):
+    def fake_process(job, *, backend=None, model_override=None):
         overrides_seen.append(model_override)
 
     monkeypatch.setattr("core.worker.process_job", fake_process)
@@ -379,7 +379,7 @@ def test_overflow_even_split(
 
     overrides_seen = []
 
-    def fake_process(job, *, model_override=None):
+    def fake_process(job, *, backend=None, model_override=None):
         overrides_seen.append(model_override)
 
     monkeypatch.setattr("core.worker.process_job", fake_process)
@@ -412,7 +412,7 @@ def test_parallel_processing_uses_thread_pool(
     threads_seen = []
     lock = threading.Lock()
 
-    def fake_process(job, *, model_override=None):
+    def fake_process(job, *, backend=None, model_override=None):
         with lock:
             threads_seen.append(threading.current_thread().name)
         time.sleep(0.05)  # simulate I/O
@@ -444,7 +444,7 @@ def test_sequential_fallback_with_one_worker(
 
     threads_seen = []
 
-    def fake_process(job, *, model_override=None):
+    def fake_process(job, *, backend=None, model_override=None):
         threads_seen.append(threading.current_thread().name)
 
     monkeypatch.setattr("core.worker.process_job", fake_process)
@@ -481,7 +481,7 @@ def test_overflow_with_parallel(
     results = []
     lock = threading.Lock()
 
-    def fake_process(job, *, model_override=None):
+    def fake_process(job, *, backend=None, model_override=None):
         with lock:
             results.append(
                 {
@@ -863,3 +863,168 @@ def test_cmd_queue_handles_mixed_entries(tmp_byomem, capsys):
     assert "42.1" in output or "42" in output
     assert "18.3" in output or "18" in output
     assert "7.6" in output or "7" in output
+
+
+# ---------------------------------------------------------------------------
+# Work-stealing mode tests
+# ---------------------------------------------------------------------------
+
+
+def test_work_stealing_distributes_across_backends(
+    tmp_path,
+    tmp_byomem,
+    monkeypatch,
+):
+    """With summarizer_backends configured, jobs are distributed via work-stealing."""
+    from core.config import Config
+
+    test_config = Config(
+        byomem=tmp_byomem,
+        summarizer_backends=["gemini", "zai"],
+        max_workers=4,
+    )
+    monkeypatch.setattr("core.config._config", test_config)
+
+    backends_seen = []
+    lock = threading.Lock()
+
+    def fake_process(job, *, backend=None, model_override=None):
+        with lock:
+            backends_seen.append(backend)
+
+    monkeypatch.setattr("core.worker.process_job", fake_process)
+
+    _enqueue_jobs(tmp_path, 6, tmp_byomem)
+    run_worker()
+
+    # All 6 jobs should have been processed
+    assert len(backends_seen) == 6
+    # Both backends should appear (round-robin assignment)
+    assert "gemini" in backends_seen, f"gemini not in {backends_seen}"
+    assert "zai" in backends_seen, f"zai not in {backends_seen}"
+
+
+def test_work_stealing_no_model_override(
+    tmp_path,
+    tmp_byomem,
+    monkeypatch,
+):
+    """Work-stealing mode passes backend, not model_override."""
+    from core.config import Config
+
+    test_config = Config(
+        byomem=tmp_byomem,
+        summarizer_backends=["gemini"],
+        max_workers=2,
+    )
+    monkeypatch.setattr("core.config._config", test_config)
+
+    overrides_seen = []
+    lock = threading.Lock()
+
+    def fake_process(job, *, backend=None, model_override=None):
+        with lock:
+            overrides_seen.append(model_override)
+
+    monkeypatch.setattr("core.worker.process_job", fake_process)
+
+    _enqueue_jobs(tmp_path, 3, tmp_byomem)
+    run_worker()
+
+    # All model_override should be None (work-stealing uses backend, not model_override)
+    assert all(o is None for o in overrides_seen), f"Unexpected overrides: {overrides_seen}"
+    assert len(overrides_seen) == 3
+
+
+def test_work_stealing_skipped_without_backends(
+    tmp_path,
+    tmp_byomem,
+    monkeypatch,
+):
+    """Without summarizer_backends, work-stealing is not used."""
+    from core.config import Config
+
+    test_config = Config(byomem=tmp_byomem, max_workers=2)
+    monkeypatch.setattr("core.config._config", test_config)
+
+    backends_seen = []
+    lock = threading.Lock()
+
+    def fake_process(job, *, backend=None, model_override=None):
+        with lock:
+            backends_seen.append(backend)
+
+    monkeypatch.setattr("core.worker.process_job", fake_process)
+
+    _enqueue_jobs(tmp_path, 4, tmp_byomem)
+    run_worker()
+
+    # All backend should be None (legacy cascade mode)
+    assert all(b is None for b in backends_seen), f"Unexpected backends: {backends_seen}"
+    assert len(backends_seen) == 4
+
+
+def test_work_stealing_uses_thread_pool(
+    tmp_path,
+    tmp_byomem,
+    monkeypatch,
+):
+    """Work-stealing mode uses ThreadPoolExecutor with byomem-prefixed threads."""
+    from core.config import Config
+
+    test_config = Config(
+        byomem=tmp_byomem,
+        summarizer_backends=["gemini", "zai"],
+        max_workers=4,
+    )
+    monkeypatch.setattr("core.config._config", test_config)
+
+    threads_seen = []
+    lock = threading.Lock()
+
+    def fake_process(job, *, backend=None, model_override=None):
+        with lock:
+            threads_seen.append(threading.current_thread().name)
+        time.sleep(0.02)
+
+    monkeypatch.setattr("core.worker.process_job", fake_process)
+
+    _enqueue_jobs(tmp_path, 6, tmp_byomem)
+    run_worker()
+
+    assert len(threads_seen) == 6
+    pool_threads = [t for t in threads_seen if t.startswith("byomem")]
+    assert len(pool_threads) == 6, f"Expected pool threads, got: {threads_seen}"
+    # Multiple distinct threads should have been used
+    assert len(set(pool_threads)) > 1
+
+
+def test_work_stealing_single_backend(
+    tmp_path,
+    tmp_byomem,
+    monkeypatch,
+):
+    """Work-stealing with a single backend still distributes via queue."""
+    from core.config import Config
+
+    test_config = Config(
+        byomem=tmp_byomem,
+        summarizer_backends=["gemini"],
+        max_workers=2,
+    )
+    monkeypatch.setattr("core.config._config", test_config)
+
+    backends_seen = []
+    lock = threading.Lock()
+
+    def fake_process(job, *, backend=None, model_override=None):
+        with lock:
+            backends_seen.append(backend)
+
+    monkeypatch.setattr("core.worker.process_job", fake_process)
+
+    _enqueue_jobs(tmp_path, 4, tmp_byomem)
+    run_worker()
+
+    assert len(backends_seen) == 4
+    assert all(b == "gemini" for b in backends_seen)

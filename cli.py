@@ -1208,7 +1208,7 @@ def cmd_compare_models(
             "eval_count": eval_stats.get("eval_count"),
             "prompt_eval_count": eval_stats.get("prompt_eval_count"),
             "tokens_per_sec": tok_per_sec,
-            "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
+            "ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         }
 
     success = 0
@@ -1291,7 +1291,7 @@ def cmd_compare_models(
         "total_s": round(total_elapsed, 1),
         "avg_tok_per_sec": round(avg_tok, 1),
         "quality": None,
-        "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
+        "ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
     }
     with open(index_path, "a") as f:
         f.write(json.dumps(run_record) + "\n")
@@ -1410,9 +1410,9 @@ def _append_leaderboard(
             dt = datetime.fromisoformat(ts_override)
             ts = dt.strftime("%m-%d %H:%M")
         except (ValueError, TypeError):
-            ts = datetime.now(UTC).strftime("%m-%d %H:%M")
+            ts = datetime.now().strftime("%m-%d %H:%M")
     else:
-        ts = datetime.now(UTC).strftime("%m-%d %H:%M")
+        ts = datetime.now().strftime("%m-%d %H:%M")
 
     quality_str = quality or "-"
     row = (
@@ -1712,7 +1712,7 @@ def cmd_descripterize(args):
         # Use per-batch backend model if available, fall back to static label
         model = get_backend_model_label(backend) if backend else desc_model
         entry = {
-            "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
+            "ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             "session": "desc-cli",
             "project": project,
             "model": model,

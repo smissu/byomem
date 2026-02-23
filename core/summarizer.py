@@ -153,7 +153,7 @@ def _debug_log(entry: dict):
         return
     debug_path = cfg.queue_path / "summarizer_debug.jsonl"
     debug_path.parent.mkdir(parents=True, exist_ok=True)
-    entry["ts"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+    entry["ts"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     with _debug_lock:
         with open(debug_path, "a") as f:
             f.write(json.dumps(entry) + "\n")
@@ -465,9 +465,10 @@ def _batch_lmstudio(cfg, user_content: str) -> BatchSummaryResponse:
 # ---------------------------------------------------------------------------
 
 
-def summarize_turn(turn, *, model_override: str | None = None) -> dict:
+def summarize_turn(turn, *, backend: str | None = None, model_override: str | None = None) -> dict:
     """Summarize a single turn. Accepts Turn model or dict. Returns dict.
 
+    If backend is set, dispatch via registry (preferred first, fall through).
     If model_override is set, skips Gemini CLI and the native Ollama path,
     going directly to OpenAI-compat (used by overflow worker).
     """
@@ -475,13 +476,30 @@ def summarize_turn(turn, *, model_override: str | None = None) -> dict:
     t = _coerce_turn(turn)
     user_content = _format_single(t, cfg)
     result = None
-    backend = "unknown"
+    backend_used = "unknown"
     try:
+        # Work-stealing dispatch: use registry when backend is specified
+        if backend and not model_override:
+            for name in _backend_order(backend, _SUMMARIZER_BACKENDS):
+                avail_fn, single_fn, _, label_fn = _SUMMARIZER_BACKENDS[name]
+                if not avail_fn(cfg):
+                    continue
+                try:
+                    result = single_fn(cfg, user_content)
+                    backend_used = label_fn(cfg)
+                    return result
+                except Exception:
+                    logger.debug("Backend %s single-turn failed", name, exc_info=True)
+            # All registry backends failed — fall through to fallback
+            result = dict(FALLBACK)
+            backend_used = "fallback"
+            return result
+
         # Gemini CLI is primary when configured (skip for overflow workers)
         if _gemini_available(cfg) and not model_override:
             try:
                 result = _summarize_gemini(cfg, user_content)
-                backend = cfg.summarizer_gemini_model or "gemini"
+                backend_used = cfg.summarizer_gemini_model or "gemini"
                 return result
             except Exception:
                 logger.debug("Gemini CLI single-turn failed", exc_info=True)
@@ -489,7 +507,7 @@ def summarize_turn(turn, *, model_override: str | None = None) -> dict:
         if _opencode_available(cfg) and not model_override:
             try:
                 result = _summarize_opencode(cfg, user_content)
-                backend = cfg.summarizer_opencode_model or "opencode"
+                backend_used = cfg.summarizer_opencode_model or "opencode"
                 return result
             except Exception:
                 logger.debug("OpenCode CLI single-turn failed", exc_info=True)
@@ -497,7 +515,7 @@ def summarize_turn(turn, *, model_override: str | None = None) -> dict:
         if _zai_available(cfg) and not model_override:
             try:
                 result = _summarize_zai(cfg, user_content)
-                backend = cfg.descripterizer_zai_model
+                backend_used = cfg.descripterizer_zai_model
                 return result
             except Exception:
                 logger.debug("Z.ai single-turn failed", exc_info=True)
@@ -505,38 +523,38 @@ def summarize_turn(turn, *, model_override: str | None = None) -> dict:
         if _lmstudio_available(cfg) and not model_override:
             try:
                 result = _summarize_lmstudio(cfg, user_content)
-                backend = cfg.summarizer_lmstudio_model or "lmstudio"
+                backend_used = cfg.summarizer_lmstudio_model or "lmstudio"
                 return result
             except Exception:
                 logger.debug("LM Studio single-turn failed", exc_info=True)
         if cfg.summarizer_base_url:
             if model_override:
                 result = _summarize_openai_compat(cfg, user_content, model=model_override)
-                backend = f"openai-compat/{model_override}"
+                backend_used = f"openai-compat/{model_override}"
                 return result
             try:
                 result = _summarize_ollama_native(cfg, user_content)
-                backend = "ollama-native"
+                backend_used = "ollama-native"
                 return result
             except Exception:
                 logger.debug("Native Ollama single-turn failed", exc_info=True)
             result = _summarize_openai_compat(cfg, user_content)
-            backend = "openai-compat"
+            backend_used = "openai-compat"
             return result
         result = _summarize_anthropic(cfg, user_content)
-        backend = "anthropic"
+        backend_used = "anthropic"
         return result
     except Exception:
         result = dict(FALLBACK)
-        backend = "fallback"
+        backend_used = "fallback"
         return result
     finally:
-        _track_backend(backend)
+        _track_backend(backend_used)
         _debug_log(
             {
                 "mode": "single",
                 "turn_id": t.id,
-                "backend": backend,
+                "backend": backend_used,
                 "input": user_content,
                 "output": result,
             }
@@ -601,12 +619,18 @@ def _summarize_openai_compat(cfg, user_content: str, *, model: str | None = None
 # ---------------------------------------------------------------------------
 
 
-def summarize_batch(turns: list, *, model_override: str | None = None) -> list[TurnSummary]:
+def summarize_batch(
+    turns: list,
+    *,
+    backend: str | None = None,
+    model_override: str | None = None,
+) -> list[TurnSummary]:
     """Summarize multiple turns in a single LLM call.
 
     Returns a list of TurnSummary in the same order as the input turns.
     Falls back to sequential single-turn calls if batch parsing fails.
 
+    If backend is set, dispatch via registry (preferred first, fall through).
     If model_override is set, skips the native Ollama path and goes directly
     to OpenAI-compat with the specified model (used by overflow worker).
     """
@@ -616,15 +640,33 @@ def summarize_batch(turns: list, *, model_override: str | None = None) -> list[T
     coerced = [_coerce_turn(t) for t in turns]
     user_content = _format_batch(coerced, cfg)
     results = None
-    backend = "unknown"
+    backend_used = "unknown"
 
     try:
+        # Work-stealing dispatch: use registry when backend is specified
+        if backend and not model_override:
+            for name in _backend_order(backend, _SUMMARIZER_BACKENDS):
+                avail_fn, _, batch_fn, label_fn = _SUMMARIZER_BACKENDS[name]
+                if not avail_fn(cfg):
+                    continue
+                try:
+                    batch_resp = batch_fn(cfg, user_content)
+                    results = _align_results(coerced, batch_resp)
+                    backend_used = label_fn(cfg)
+                    return results
+                except Exception:
+                    logger.debug("Backend %s batch failed", name, exc_info=True)
+            # All registry backends failed — fall through to sequential
+            results = _sequential_fallback(coerced, backend=backend)
+            backend_used = "sequential-fallback"
+            return results
+
         # Gemini CLI is primary when configured (skip for overflow workers)
         if _gemini_available(cfg) and not model_override:
             try:
                 batch_resp = _batch_gemini(cfg, user_content)
                 results = _align_results(coerced, batch_resp)
-                backend = cfg.summarizer_gemini_model or "gemini"
+                backend_used = cfg.summarizer_gemini_model or "gemini"
                 return results
             except Exception:
                 logger.debug("Gemini CLI batch failed, falling back", exc_info=True)
@@ -633,7 +675,7 @@ def summarize_batch(turns: list, *, model_override: str | None = None) -> list[T
             try:
                 batch_resp = _batch_opencode(cfg, user_content)
                 results = _align_results(coerced, batch_resp)
-                backend = cfg.summarizer_opencode_model or "opencode"
+                backend_used = cfg.summarizer_opencode_model or "opencode"
                 return results
             except Exception:
                 logger.debug("OpenCode CLI batch failed, falling back", exc_info=True)
@@ -642,7 +684,7 @@ def summarize_batch(turns: list, *, model_override: str | None = None) -> list[T
             try:
                 batch_resp = _batch_zai(cfg, user_content)
                 results = _align_results(coerced, batch_resp)
-                backend = cfg.descripterizer_zai_model
+                backend_used = cfg.descripterizer_zai_model
                 return results
             except Exception:
                 logger.debug("Z.ai batch failed, falling back", exc_info=True)
@@ -651,41 +693,41 @@ def summarize_batch(turns: list, *, model_override: str | None = None) -> list[T
             try:
                 batch_resp = _batch_lmstudio(cfg, user_content)
                 results = _align_results(coerced, batch_resp)
-                backend = cfg.summarizer_lmstudio_model or "lmstudio"
+                backend_used = cfg.summarizer_lmstudio_model or "lmstudio"
                 return results
             except Exception:
                 logger.debug("LM Studio batch failed, falling back", exc_info=True)
         if cfg.summarizer_base_url:
             if model_override:
                 batch_resp = _batch_openai_compat(cfg, user_content, model=model_override)
-                backend = f"openai-compat/{model_override}"
+                backend_used = f"openai-compat/{model_override}"
             else:
                 try:
                     batch_resp = _batch_ollama_native(cfg, user_content)
                     results = _align_results(coerced, batch_resp)
-                    backend = "ollama-native"
+                    backend_used = "ollama-native"
                     return results
                 except Exception:
                     logger.debug("Native Ollama batch failed, trying OpenAI-compat", exc_info=True)
                 batch_resp = _batch_openai_compat(cfg, user_content)
-                backend = "openai-compat"
+                backend_used = "openai-compat"
         else:
             batch_resp = _batch_anthropic(cfg, user_content)
-            backend = "anthropic"
+            backend_used = "anthropic"
         results = _align_results(coerced, batch_resp)
         return results
     except Exception:
         logger.debug("Batch parse failed, falling back to sequential", exc_info=True)
         results = _sequential_fallback(coerced, model_override=model_override)
-        backend = "sequential-fallback"
+        backend_used = "sequential-fallback"
         return results
     finally:
-        _track_backend(backend)
+        _track_backend(backend_used)
         _debug_log(
             {
                 "mode": "batch",
                 "turn_ids": [t.id for t in coerced],
-                "backend": backend,
+                "backend": backend_used,
                 "input": user_content,
                 "output": [s.model_dump() for s in results] if results else None,
             }
@@ -784,6 +826,36 @@ def _batch_openai_compat(
     return BatchSummaryResponse.model_validate_json(text)
 
 
+# ---------------------------------------------------------------------------
+# Backend registry + dispatch
+# ---------------------------------------------------------------------------
+
+_SUMMARIZER_BACKENDS = {
+    "gemini": (_gemini_available, _summarize_gemini, _batch_gemini,
+               lambda cfg: cfg.summarizer_gemini_model or "gemini"),
+    "opencode": (_opencode_available, _summarize_opencode, _batch_opencode,
+                 lambda cfg: cfg.summarizer_opencode_model or "opencode"),
+    "zai": (_zai_available, _summarize_zai, _batch_zai,
+            lambda cfg: cfg.descripterizer_zai_model),
+    "lmstudio": (_lmstudio_available, _summarize_lmstudio, _batch_lmstudio,
+                 lambda cfg: cfg.summarizer_lmstudio_model or "lmstudio"),
+    "ollama": (lambda cfg: bool(cfg.summarizer_base_url),
+               _summarize_ollama_native, _batch_ollama_native,
+               lambda cfg: "ollama-native"),
+    "anthropic": (lambda cfg: True, _summarize_anthropic, _batch_anthropic,
+                  lambda cfg: "anthropic"),
+}
+
+
+def _backend_order(preferred: str, all_backends: dict) -> list[str]:
+    """Return backend names with preferred first, then remaining in registry order."""
+    order = [preferred] if preferred in all_backends else []
+    for name in all_backends:
+        if name not in order:
+            order.append(name)
+    return order
+
+
 def _align_results(
     turns: list[Turn],
     batch_resp: BatchSummaryResponse,
@@ -811,11 +883,12 @@ def _align_results(
 def _sequential_fallback(
     turns: list[Turn],
     *,
+    backend: str | None = None,
     model_override: str | None = None,
 ) -> list[TurnSummary]:
     """Fall back to one-at-a-time summarization when batch fails."""
     results: list[TurnSummary] = []
     for t in turns:
-        raw = summarize_turn(t, model_override=model_override)
+        raw = summarize_turn(t, backend=backend, model_override=model_override)
         results.append(TurnSummary(**raw))
     return results

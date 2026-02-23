@@ -1,14 +1,17 @@
 """Background worker that processes queued jobs.
 
-Supports dynamic overflow: when queue depth >= overflow_threshold,
-spawns a second thread using the fallback model (qwen2.5:3b via
-OpenAI-compat) to help drain the queue faster.
+Supports two parallelism modes:
+1. Work-stealing: when summarizer_backends is configured, multiple backends
+   pull jobs from a shared queue (self-balancing by speed).
+2. Overflow: when queue depth >= overflow_threshold, splits work between
+   primary and fallback model threads.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import queue
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -68,9 +71,15 @@ def _resolve_project_name(cwd: str) -> str:
     return path.name
 
 
-def process_job(job: QueueJob, *, model_override: str | None = None) -> dict | None:
+def process_job(
+    job: QueueJob,
+    *,
+    backend: str | None = None,
+    model_override: str | None = None,
+) -> dict | None:
     """Process a single queue job — the heavy lifting previously in stop_hook._process.
 
+    If backend is set, passes through to summarize_batch() for work-stealing dispatch.
     If model_override is set, uses that model via OpenAI-compat instead of
     the native Ollama path (used by overflow worker for non-thinking models).
 
@@ -129,7 +138,10 @@ def process_job(job: QueueJob, *, model_override: str | None = None) -> dict | N
         if cfg.summarizer_concurrency > 1 and len(batches) > 1:
             with ThreadPoolExecutor(max_workers=cfg.summarizer_concurrency) as pool:
                 future_to_idx = {
-                    pool.submit(summarize_batch, batch, model_override=model_override): idx
+                    pool.submit(
+                        summarize_batch, batch,
+                        backend=backend, model_override=model_override,
+                    ): idx
                     for idx, batch in enumerate(batches)
                 }
                 results_by_idx = {}
@@ -140,7 +152,9 @@ def process_job(job: QueueJob, *, model_override: str | None = None) -> dict | N
                     all_summaries.extend(results_by_idx[idx])
         else:
             for batch in batches:
-                all_summaries.extend(summarize_batch(batch, model_override=model_override))
+                all_summaries.extend(
+                    summarize_batch(batch, backend=backend, model_override=model_override)
+                )
 
         summarize_s = round(time.monotonic() - t_summarize, 2)
 
@@ -313,7 +327,7 @@ def _log_result(
     history_path = cfg.queue_path / "history.jsonl"
     history_path.parent.mkdir(parents=True, exist_ok=True)
     entry = {
-        "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
+        "ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "session": session_id[:8],
         "model": model,
         "duration_s": round(duration_s, 2),
@@ -326,7 +340,7 @@ def _log_result(
             f.write(json.dumps(entry) + "\n")
 
 
-def _process_one(job_file, job, model_label, model_override):
+def _process_one(job_file, job, model_label, model_override, *, backend=None):
     """Process a single (job_file, job) tuple. Thread-safe."""
     from core.summarizer import get_primary_backend, reset_backend_log
 
@@ -334,7 +348,7 @@ def _process_one(job_file, job, model_label, model_override):
     try:
         logger.info("Processing job: %s (model=%s)", job.session_id, model_label)
         reset_backend_log()
-        step_timings = process_job(job, model_override=model_override)
+        step_timings = process_job(job, backend=backend, model_override=model_override)
         actual_backend = get_primary_backend()
         complete_job(job_file)
         # Only log if summarizer actually ran (skip no-op jobs)
@@ -396,9 +410,11 @@ def _process_jobs(jobs, *, model_override: str | None = None):
 def run_worker():
     """Main worker loop: acquire lock, process all pending jobs, release lock.
 
-    If pending jobs >= overflow_threshold and a fallback_model is configured,
-    splits the work: primary thread uses the native Ollama path (qwen3:4b),
-    overflow thread uses the fallback model via OpenAI-compat (qwen2.5:3b).
+    Supports two parallelism modes:
+    1. Work-stealing: when summarizer_backends is configured, workers pull
+       jobs from a shared queue with round-robin backend assignment.
+    2. Overflow: when queue depth >= overflow_threshold, splits work between
+       primary and fallback model threads.
     """
     if not acquire_worker_lock():
         logger.info("Another worker is running, exiting")
@@ -412,6 +428,51 @@ def run_worker():
                 return
 
             cfg = get_config()
+
+            # Mode 1: Work-stealing with multiple backends
+            if cfg.summarizer_backends:
+                backends = cfg.summarizer_backends
+                work_q: queue.Queue = queue.Queue()
+                for job_file, job in pending:
+                    work_q.put((job_file, job))
+
+                total_workers = max(len(backends), cfg.max_workers)
+
+                logger.info(
+                    "Work-stealing mode: %d jobs, %d backends (%s), %d workers",
+                    len(pending),
+                    len(backends),
+                    ",".join(backends),
+                    total_workers,
+                )
+
+                def _work_steal(preferred):
+                    from core.summarizer import _SUMMARIZER_BACKENDS
+
+                    label_fn = _SUMMARIZER_BACKENDS.get(preferred, (None, None, None, None))[3]
+                    label = label_fn(cfg) if label_fn else preferred
+                    while True:
+                        try:
+                            job_file, job = work_q.get_nowait()
+                        except queue.Empty:
+                            return
+                        _process_one(
+                            job_file, job, label, None, backend=preferred,
+                        )
+                        work_q.task_done()
+
+                with ThreadPoolExecutor(
+                    max_workers=total_workers, thread_name_prefix="byomem"
+                ) as pool:
+                    for i in range(total_workers):
+                        preferred = backends[i % len(backends)]
+                        pool.submit(_work_steal, preferred)
+
+                # Loop back to check for new pending
+                logger.info("Rechecking for new pending jobs")
+                continue
+
+            # Mode 2: Overflow split (legacy)
             use_overflow = (
                 len(pending) >= cfg.overflow_threshold
                 and cfg.summarizer_fallback_model

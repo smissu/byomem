@@ -1,10 +1,12 @@
 from core.summarizer import (
     BATCH_SYSTEM,
     SYSTEM,
+    _backend_order,
     _gemini_available,
     _lmstudio_available,
     _ollama_api_url,
     _strip_fences,
+    _SUMMARIZER_BACKENDS,
     _wrap_bare_array,
     summarize_batch,
     summarize_turn,
@@ -433,3 +435,72 @@ def test_lmstudio_skipped_for_model_override(
     assert result["title"] == "Overflow result"
     # LM Studio should NOT have been called directly
     mock_lmstudio_single.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Backend registry + dispatch tests
+# ---------------------------------------------------------------------------
+
+
+def test_backend_order_preferred_first():
+    """_backend_order puts preferred backend first, others follow."""
+    order = _backend_order("zai", _SUMMARIZER_BACKENDS)
+    assert order[0] == "zai"
+    assert "gemini" in order
+    assert "anthropic" in order
+    # No duplicates
+    assert len(order) == len(set(order))
+
+
+def test_backend_order_unknown_preferred():
+    """_backend_order with unknown preferred returns all in default order."""
+    order = _backend_order("nonexistent", _SUMMARIZER_BACKENDS)
+    assert "nonexistent" not in order
+    assert order[0] == "gemini"  # first in registry
+
+
+def test_registry_has_all_backends():
+    """Registry contains all expected backend names."""
+    expected = {"gemini", "opencode", "zai", "lmstudio", "ollama", "anthropic"}
+    assert set(_SUMMARIZER_BACKENDS.keys()) == expected
+
+
+def test_single_turn_backend_dispatch(sample_turn, mock_gemini_single, tmp_byomem_gemini):
+    """backend='gemini' dispatches to Gemini via registry."""
+    result = summarize_turn(sample_turn, backend="gemini")
+    assert result["classification"] == "fix"
+    assert result["title"] == "Fix stop price field"
+    mock_gemini_single.assert_called_once()
+
+
+def test_single_turn_backend_fallthrough(
+    sample_turn, mock_gemini_fail, mock_anthropic, tmp_byomem_gemini,
+):
+    """When preferred backend fails, falls through to next available."""
+    result = summarize_turn(sample_turn, backend="gemini")
+    assert isinstance(result, dict)
+    # Gemini failed, should have fallen through to anthropic (or another)
+    assert result["classification"] in ("fix", "general")
+
+
+def test_batch_backend_dispatch(sample_turns, mock_gemini_batch, tmp_byomem_gemini):
+    """backend='gemini' dispatches batch to Gemini via registry."""
+    results = summarize_batch(sample_turns, backend="gemini")
+    assert len(results) == 2
+    assert results[0].title == "Fix stop price field"
+    mock_gemini_batch.assert_called_once()
+
+
+def test_batch_backend_fallthrough(
+    sample_turns, mock_gemini_fail, mock_anthropic_batch, tmp_byomem_gemini,
+):
+    """When preferred backend fails in batch, falls through to next."""
+    results = summarize_batch(sample_turns, backend="gemini")
+    assert len(results) == 2
+
+
+def test_backend_none_uses_cascade(sample_turn, mock_anthropic, tmp_byomem):
+    """backend=None uses existing cascade (backward compat)."""
+    result = summarize_turn(sample_turn, backend=None)
+    assert isinstance(result, dict)
+    assert result["classification"] == "fix"
