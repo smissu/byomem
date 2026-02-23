@@ -108,6 +108,26 @@ def get_active_model_label() -> str:
     return " / ".join(labels)
 
 
+def get_backend_model_label(backend: str | None) -> str:
+    """Return a short model label for a specific backend name."""
+    cfg = get_config()
+    if backend == "gemini":
+        model = cfg.summarizer_gemini_model or "gemini"
+        if "flash-lite" in model:
+            return "flash-lite"
+        if "flash" in model:
+            return "flash"
+        return model
+    if backend == "opencode":
+        model = cfg.summarizer_opencode_model or "opencode"
+        return model.rsplit("/", 1)[-1] if "/" in model else model
+    if backend == "lmstudio":
+        return cfg.summarizer_lmstudio_model or "lmstudio"
+    if backend == "ollama":
+        return cfg.summarizer_model
+    return backend or "unknown"
+
+
 def _call_llm(prompt: str, *, backend: str | None = None) -> str:
     """Dispatch to a specific or auto-selected LLM backend.
 
@@ -369,7 +389,7 @@ def descripterize_project(
             with db_lock:
                 failed += len(batch_chunks)
                 if on_batch:
-                    on_batch(0, len(batch_chunks), described, failed, total)
+                    on_batch(0, len(batch_chunks), described, failed, total, backend=backend)
             return
 
         desc_map = {d.chunk_id: d.description for d in resp.descriptions}
@@ -423,7 +443,7 @@ def descripterize_project(
 
             batch_described = len(to_embed)
             if on_batch:
-                on_batch(batch_described, 0, described, failed, total)
+                on_batch(batch_described, 0, described, failed, total, backend=backend)
 
             print(
                 f"  [{min(described + failed, total)}/{total}] "

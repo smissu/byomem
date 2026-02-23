@@ -657,9 +657,17 @@ def cmd_queue(purge=False, history=0):
         # Summary pipeline table
         recent_summ = summary_entries[-n:]
         if recent_summ:
+            # Compute dynamic model column width
+            s_mw = max(5, max((len(e.get("model", "")) for e in recent_summ), default=5))
             print(f"\n  Summary history ({len(recent_summ)}/{len(summary_entries)}):")
-            print(f"  {'Timestamp':<20} {'Session':<10} {'Project':<14} {'Model':<24} {'Duration':>8}  {'Summ':>5}  {'Embed':>5} {'Write':>5}  {'Status'}")
-            print(f"  {'-' * 19}  {'-' * 9} {'-' * 13} {'-' * 23} {'-' * 8}  {'-' * 5}  {'-' * 5} {'-' * 5}  {'-' * 6}")
+            print(
+                f"  {'Timestamp':<19}  {'Session':<8}  {'Project':<12}  {'Model':<{s_mw}}"
+                f"  {'Duration':>8}  {'Summ':>5}  {'Embed':>5}  {'Write':>5}  {'Status'}"
+            )
+            print(
+                f"  {'-'*19}  {'-'*8}  {'-'*12}  {'-'*s_mw}"
+                f"  {'-'*8}  {'-'*5}  {'-'*5}  {'-'*5}  {'-'*6}"
+            )
             for entry in recent_summ:
                 try:
                     proj = entry.get("project", "-")
@@ -667,8 +675,8 @@ def cmd_queue(purge=False, history=0):
                     embed = f"{entry['embed_s']:>5.1f}" if "embed_s" in entry else "    -"
                     write = f"{entry['db_write_s']:>5.1f}" if "db_write_s" in entry else "    -"
                     print(
-                        f"  {entry['ts']:<20} {entry['session']:<10} {proj:<14} {entry['model']:<24} "
-                        f"{entry['duration_s']:>7.2f}s  {summ}  {embed} {write}  {entry['status']}"
+                        f"  {entry['ts']:<19}  {entry['session']:<8}  {proj:<12}  {entry['model']:<{s_mw}}"
+                        f"  {entry['duration_s']:>7.2f}s  {summ}  {embed}  {write}  {entry['status']}"
                     )
                 except KeyError:
                     continue
@@ -676,9 +684,16 @@ def cmd_queue(purge=False, history=0):
         # Describe pipeline table
         recent_desc = describe_entries[-n:]
         if recent_desc:
+            d_mw = max(5, max((len(e.get("model", "")) for e in recent_desc), default=5))
             print(f"\n  Describe history ({len(recent_desc)}/{len(describe_entries)}):")
-            print(f"  {'Timestamp':<20} {'Session':<10} {'Project':<14} {'Model':<24} {'Duration':>8}  {'Described':>10}  {'Status'}")
-            print(f"  {'-' * 19}  {'-' * 9} {'-' * 13} {'-' * 23} {'-' * 8}  {'-' * 10}  {'-' * 6}")
+            print(
+                f"  {'Timestamp':<19}  {'Session':<8}  {'Project':<12}  {'Model':<{d_mw}}"
+                f"  {'Duration':>8}  {'Described':>10}  {'Status'}"
+            )
+            print(
+                f"  {'-'*19}  {'-'*8}  {'-'*12}  {'-'*d_mw}"
+                f"  {'-'*8}  {'-'*10}  {'-'*6}"
+            )
             for entry in recent_desc:
                 try:
                     proj = entry.get("project", "-")
@@ -687,8 +702,8 @@ def cmd_queue(purge=False, history=0):
                     d_total = d_stats.get("total", 0)
                     desc_str = f"{d_ok}/{d_total}" if d_total else "-"
                     print(
-                        f"  {entry['ts']:<20} {entry['session']:<10} {proj:<14} {entry['model']:<24} "
-                        f"{entry['duration_s']:>7.2f}s  {desc_str:>10}  {entry['status']}"
+                        f"  {entry['ts']:<19}  {entry['session']:<8}  {proj:<12}  {entry['model']:<{d_mw}}"
+                        f"  {entry['duration_s']:>7.2f}s  {desc_str:>10}  {entry['status']}"
                     )
                 except KeyError:
                     continue
@@ -1658,22 +1673,23 @@ def cmd_descripterize(args):
     history_path.parent.mkdir(parents=True, exist_ok=True)
     t_start = time.monotonic()
 
-    # Determine the model label reflecting all active backends
-    from core.descripterizer import get_active_model_label
+    from core.descripterizer import get_active_model_label, get_backend_model_label
 
     desc_model = get_active_model_label()
     last_batch_time = [t_start]  # mutable for closure
 
-    def _on_batch(batch_ok, batch_fail, total_ok, total_fail, total):
+    def _on_batch(batch_ok, batch_fail, total_ok, total_fail, total, *, backend=None):
         now = time.monotonic()
         batch_duration = round(now - last_batch_time[0], 2)
         last_batch_time[0] = now
         elapsed = round(now - t_start, 2)
+        # Use per-batch backend model if available, fall back to static label
+        model = get_backend_model_label(backend) if backend else desc_model
         entry = {
             "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
             "session": "desc-cli",
             "project": project,
-            "model": desc_model,
+            "model": model,
             "pipeline": "describe",
             "duration_s": batch_duration,
             "status": "ok" if batch_fail == 0 else "partial",

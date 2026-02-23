@@ -23,6 +23,7 @@ class Config:
     summarizer_fallback_model: str | None = None
     summarizer_gemini_cli: str | None = None
     summarizer_gemini_model: str | None = None
+    summarizer_gemini_fallback_model: str | None = None
     summarizer_opencode_cli: str | None = None
     summarizer_opencode_model: str | None = None
     summarizer_lmstudio_url: str | None = None
@@ -101,6 +102,8 @@ def _load_config() -> Config:
         kwargs["summarizer_gemini_cli"] = summarizer["gemini_cli"]
     if "gemini_model" in summarizer:
         kwargs["summarizer_gemini_model"] = summarizer["gemini_model"]
+    if "gemini_fallback_model" in summarizer:
+        kwargs["summarizer_gemini_fallback_model"] = summarizer["gemini_fallback_model"]
     if "opencode_cli" in summarizer:
         kwargs["summarizer_opencode_cli"] = summarizer["opencode_cli"]
     if "opencode_model" in summarizer:

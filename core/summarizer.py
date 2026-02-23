@@ -230,26 +230,46 @@ def _gemini_available(cfg) -> bool:
     return bool(cfg.summarizer_gemini_cli and shutil.which(cfg.summarizer_gemini_cli))
 
 
-def _run_gemini(cfg, prompt: str) -> str:
-    """Run Gemini CLI and return the response text from the JSON envelope."""
-    cmd = [cfg.summarizer_gemini_cli, "-p", prompt, "-o", "json"]
-    if cfg.summarizer_gemini_model:
-        cmd.extend(["-m", cfg.summarizer_gemini_model])
-    result = subprocess.run(
-        cmd,
-        input="",
-        capture_output=True,
-        text=True,
-        timeout=90,
-        process_group=0,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Gemini CLI failed (rc={result.returncode}): {result.stderr[:200]}")
-    wrapper = json.loads(result.stdout)
-    response_text = wrapper.get("response", "")
-    if not response_text or not response_text.strip():
-        raise ValueError("Empty response from Gemini CLI")
-    return response_text
+def _run_gemini(cfg, prompt: str, *, model: str | None = None) -> str:
+    """Run Gemini CLI and return the response text from the JSON envelope.
+
+    If model is None, uses cfg.summarizer_gemini_model. On failure, retries
+    with cfg.summarizer_gemini_fallback_model if configured.
+    """
+    primary = model or cfg.summarizer_gemini_model
+    models_to_try = [primary]
+    fallback = cfg.summarizer_gemini_fallback_model
+    if fallback and fallback != primary:
+        models_to_try.append(fallback)
+
+    last_err = None
+    for m in models_to_try:
+        cmd = [cfg.summarizer_gemini_cli, "-p", prompt, "-o", "json"]
+        if m:
+            cmd.extend(["-m", m])
+        result = subprocess.run(
+            cmd,
+            input="",
+            capture_output=True,
+            text=True,
+            timeout=90,
+            process_group=0,
+        )
+        if result.returncode != 0:
+            last_err = RuntimeError(f"Gemini CLI failed (rc={result.returncode}): {result.stderr[:200]}")
+            if len(models_to_try) > 1:
+                logger.info("Gemini model %s failed, trying fallback %s", m, models_to_try[-1])
+            continue
+        wrapper = json.loads(result.stdout)
+        response_text = wrapper.get("response", "")
+        if not response_text or not response_text.strip():
+            last_err = ValueError("Empty response from Gemini CLI")
+            continue
+        if m and m != primary:
+            _track_backend(m)  # record fallback model used
+        return response_text
+
+    raise last_err
 
 
 def _summarize_gemini(cfg, user_content: str) -> dict:
