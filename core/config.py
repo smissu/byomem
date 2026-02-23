@@ -59,8 +59,11 @@ class Config:
     code_embedding_dimension: int | None = None
     code_chunk_tokens: int | None = None
     descripterizer_batch_size: int = 8
+    descripterizer_max_tokens: int = 1024
     descripterizer_concurrency: int = 4
     descripterizer_backends: list[str] | None = None  # e.g. ["gemini", "opencode"]
+    descripterizer_max_failures: int = 5  # disable backend after N consecutive failures
+    descripterizer_debug: bool = False
     summarizer_debug: bool = False
     code_db_path: Path = field(default_factory=lambda: Path.home() / ".byomem" / "code.db")
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
@@ -151,6 +154,8 @@ def _load_config() -> Config:
         kwargs["code_chunk_tokens"] = int(memory["code_chunk_tokens"])
     if "descripterizer_batch_size" in memory:
         kwargs["descripterizer_batch_size"] = int(memory["descripterizer_batch_size"])
+    if "descripterizer_max_tokens" in memory:
+        kwargs["descripterizer_max_tokens"] = int(memory["descripterizer_max_tokens"])
     if "descripterizer_concurrency" in memory:
         kwargs["descripterizer_concurrency"] = int(memory["descripterizer_concurrency"])
     if "descripterizer_backends" in memory:
@@ -159,6 +164,10 @@ def _load_config() -> Config:
             kwargs["descripterizer_backends"] = val
         elif isinstance(val, str):
             kwargs["descripterizer_backends"] = [b.strip() for b in val.split(",")]
+    if "descripterizer_max_failures" in memory:
+        kwargs["descripterizer_max_failures"] = int(memory["descripterizer_max_failures"])
+    if "descripterizer_debug" in memory:
+        kwargs["descripterizer_debug"] = bool(memory["descripterizer_debug"])
 
     queue = data.get("queue", {})
     if "batch_size" in queue:

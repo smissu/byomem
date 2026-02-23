@@ -6,15 +6,31 @@ using description text for better semantic search.
 """
 
 import hashlib
+import json
 import logging
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime
 
 from core.config import get_config
 from core.models import BatchDescriptionResponse
 
 logger = logging.getLogger(__name__)
+_debug_lock = threading.Lock()
+
+
+def _debug_log(entry: dict):
+    """Append a debug entry to queue/descripterizer_debug.jsonl if debug mode is on."""
+    cfg = get_config()
+    if not cfg.descripterizer_debug:
+        return
+    debug_path = cfg.queue_path / "descripterizer_debug.jsonl"
+    debug_path.parent.mkdir(parents=True, exist_ok=True)
+    entry["ts"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+    with _debug_lock:
+        with open(debug_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
 
 DESCRIPTERIZER_SYSTEM = """\
 You are a code documentation expert. For each code chunk, write a concise \
@@ -147,6 +163,7 @@ def _call_llm(prompt: str, *, backend: str | None = None) -> str:
     )
 
     cfg = get_config()
+    max_tokens = cfg.descripterizer_max_tokens
 
     # --- Targeted backend ---
     if backend == "gemini" and _gemini_available(cfg):
@@ -164,7 +181,7 @@ def _call_llm(prompt: str, *, backend: str | None = None) -> str:
         client = openai.OpenAI(base_url=cfg.summarizer_lmstudio_url, api_key="lm-studio")
         resp = client.chat.completions.create(
             model=model,
-            max_tokens=cfg.summarizer_max_tokens,
+            max_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": DESCRIPTERIZER_SYSTEM},
                 {"role": "user", "content": prompt},
@@ -183,7 +200,7 @@ def _call_llm(prompt: str, *, backend: str | None = None) -> str:
                 "stream": False,
                 "think": False,
                 "format": BatchDescriptionResponse.model_json_schema(),
-                "options": {"num_predict": cfg.summarizer_max_tokens},
+                "options": {"num_predict": max_tokens},
                 "messages": [
                     {"role": "system", "content": DESCRIPTERIZER_SYSTEM},
                     {"role": "user", "content": prompt},
@@ -222,7 +239,7 @@ def _call_llm(prompt: str, *, backend: str | None = None) -> str:
             client = openai.OpenAI(base_url=cfg.summarizer_lmstudio_url, api_key="lm-studio")
             resp = client.chat.completions.create(
                 model=model,
-                max_tokens=cfg.summarizer_max_tokens,
+                max_tokens=max_tokens,
                 messages=[
                     {"role": "system", "content": DESCRIPTERIZER_SYSTEM},
                     {"role": "user", "content": prompt},
@@ -244,7 +261,7 @@ def _call_llm(prompt: str, *, backend: str | None = None) -> str:
                     "stream": False,
                     "think": False,
                     "format": BatchDescriptionResponse.model_json_schema(),
-                    "options": {"num_predict": cfg.summarizer_max_tokens},
+                    "options": {"num_predict": max_tokens},
                     "messages": [
                         {"role": "system", "content": DESCRIPTERIZER_SYSTEM},
                         {"role": "user", "content": prompt},
@@ -266,7 +283,7 @@ def _call_llm(prompt: str, *, backend: str | None = None) -> str:
             client = openai.OpenAI(base_url=cfg.summarizer_base_url, api_key="ollama")
             resp = client.chat.completions.create(
                 model=model,
-                max_tokens=cfg.summarizer_max_tokens,
+                max_tokens=max_tokens,
                 messages=[
                     {"role": "system", "content": DESCRIPTERIZER_SYSTEM},
                     {"role": "user", "content": prompt},
@@ -282,7 +299,7 @@ def _call_llm(prompt: str, *, backend: str | None = None) -> str:
     client = anthropic.Anthropic()
     resp = client.messages.create(
         model=cfg.summarizer_model,
-        max_tokens=cfg.summarizer_max_tokens,
+        max_tokens=max_tokens,
         system=DESCRIPTERIZER_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -293,8 +310,41 @@ def _call_llm(prompt: str, *, backend: str | None = None) -> str:
 def _describe_batch(chunks: list[tuple], *, backend: str | None = None) -> BatchDescriptionResponse:
     """Generate descriptions for a batch of (chunk_id, text) tuples."""
     user_content = _format_batch(chunks)
-    raw = _call_llm(DESCRIPTERIZER_SYSTEM + "\n\n" + user_content, backend=backend)
-    return BatchDescriptionResponse.model_validate_json(raw)
+    chunk_ids = [c[0] for c in chunks]
+    try:
+        raw = _call_llm(DESCRIPTERIZER_SYSTEM + "\n\n" + user_content, backend=backend)
+        resp = BatchDescriptionResponse.model_validate_json(raw)
+        # Build before/after pairs for quality comparison
+        code_map = {cid: text for cid, text in chunks}
+        pairs = []
+        for d in resp.descriptions:
+            pairs.append({
+                "chunk_id": d.chunk_id,
+                "code": code_map.get(d.chunk_id, "")[:500],
+                "description": d.description,
+            })
+        _debug_log({
+            "event": "batch_ok",
+            "backend": backend,
+            "chunk_ids": chunk_ids,
+            "descriptions": pairs,
+            "raw_response": raw[:2000],
+        })
+        return resp
+    except Exception as exc:
+        # Log the input chunks so we can see what failed
+        input_preview = [{
+            "chunk_id": cid,
+            "code": text[:300],
+        } for cid, text in chunks]
+        _debug_log({
+            "event": "batch_fail",
+            "backend": backend,
+            "chunk_ids": chunk_ids,
+            "input_preview": input_preview,
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+        raise
 
 
 def descripterize_project(
@@ -369,6 +419,17 @@ def descripterize_project(
             backends, workers_per_backend, concurrency,
         )
 
+    # Per-backend failure tracking: 5 fails → 5min cooldown, 3 cooldowns → disabled
+    import time as _time
+
+    max_failures = cfg.descripterizer_max_failures  # consecutive fails before cooldown
+    max_cooldowns = 3  # cooldowns before permanent disable
+    backoff_seconds = 300  # 5 minutes
+    backend_failures: dict[str, int] = {b: 0 for b in backends if b}
+    backend_cooldowns: dict[str, int] = {b: 0 for b in backends if b}  # cooldown count
+    backend_cooldown_until: dict[str, float] = {}  # backend → resume time
+    disabled_backends: set[str] = set()
+
     # Build all batches upfront, round-robin assign backends
     all_batches = []
     for i in range(0, total, batch_size):
@@ -381,16 +442,81 @@ def descripterize_project(
         """LLM call + embed + DB write for one batch. Thread-safe."""
         nonlocal described, failed
 
-        # LLM call (the slow part — runs concurrently)
-        try:
-            resp = _describe_batch(batch_chunks, backend=backend)
-        except Exception as exc:
-            logger.warning("Batch %d failed: %s", batch_idx, exc)
+        # Skip permanently disabled backends
+        if backend and backend in disabled_backends:
             with db_lock:
                 failed += len(batch_chunks)
                 if on_batch:
                     on_batch(0, len(batch_chunks), described, failed, total, backend=backend)
             return
+
+        # Wait if this backend is in cooldown
+        if backend and backend in backend_cooldown_until:
+            remaining = backend_cooldown_until[backend] - _time.monotonic()
+            if remaining > 0:
+                _time.sleep(remaining)
+            # Cooldown expired — re-enable
+            del backend_cooldown_until[backend]
+            backend_failures[backend] = 0
+            print(
+                f"  >>> Backend '{backend}' re-enabled after cooldown "
+                f"({backend_cooldowns.get(backend, 0)}/{max_cooldowns})",
+                file=sys.stderr,
+            )
+
+        # LLM call (the slow part — runs concurrently)
+        try:
+            resp = _describe_batch(batch_chunks, backend=backend)
+        except Exception as exc:
+            logger.warning("Batch %d failed (%s): %s", batch_idx, backend, exc)
+            with db_lock:
+                failed += len(batch_chunks)
+                # Track consecutive failures per backend
+                if backend and backend in backend_failures:
+                    backend_failures[backend] += 1
+                    if backend_failures[backend] >= max_failures and backend not in backend_cooldown_until:
+                        backend_cooldowns[backend] = backend_cooldowns.get(backend, 0) + 1
+                        if backend_cooldowns[backend] >= max_cooldowns:
+                            # Tier 2: permanently disable after too many cooldowns
+                            disabled_backends.add(backend)
+                            active = [b for b in backends if b not in disabled_backends and b not in backend_cooldown_until]
+                            print(
+                                f"  *** Backend '{backend}' DISABLED after "
+                                f"{max_cooldowns} cooldowns. "
+                                f"Active: {active or ['none']}",
+                                file=sys.stderr,
+                            )
+                            _debug_log({
+                                "event": "backend_disabled",
+                                "backend": backend,
+                                "cooldowns": backend_cooldowns[backend],
+                                "remaining": active,
+                            })
+                        else:
+                            # Tier 1: cooldown for backoff_seconds
+                            backend_cooldown_until[backend] = _time.monotonic() + backoff_seconds
+                            active = [b for b in backends if b not in disabled_backends and b not in backend_cooldown_until]
+                            print(
+                                f"  *** Backend '{backend}' paused {backoff_seconds}s "
+                                f"(cooldown {backend_cooldowns[backend]}/{max_cooldowns}). "
+                                f"Active: {active or ['none']}",
+                                file=sys.stderr,
+                            )
+                            _debug_log({
+                                "event": "backend_cooldown",
+                                "backend": backend,
+                                "failures": backend_failures[backend],
+                                "cooldown_num": backend_cooldowns[backend],
+                                "cooldown_s": backoff_seconds,
+                                "remaining": active,
+                            })
+                if on_batch:
+                    on_batch(0, len(batch_chunks), described, failed, total, backend=backend)
+            return
+
+        # Reset failure count on success
+        if backend and backend in backend_failures:
+            backend_failures[backend] = 0
 
         desc_map = {d.chunk_id: d.description for d in resp.descriptions}
 
@@ -462,6 +588,12 @@ def descripterize_project(
             }
             for future in as_completed(futures):
                 future.result()  # propagate exceptions
+
+    # Report backend health at end of run
+    for b in backends:
+        if b and (b in disabled_backends or backend_cooldowns.get(b, 0) > 0):
+            status = "DISABLED" if b in disabled_backends else f"{backend_cooldowns[b]}/{max_cooldowns} cooldowns"
+            print(f"  Backend '{b}': {status}", file=sys.stderr)
 
     db.close()
     return {

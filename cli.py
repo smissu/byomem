@@ -1692,7 +1692,7 @@ def cmd_descripterize(args):
             "model": model,
             "pipeline": "describe",
             "duration_s": batch_duration,
-            "status": "ok" if batch_fail == 0 else "partial",
+            "status": "ok" if batch_fail == 0 else ("failed" if batch_ok == 0 else "partial"),
             "descripterize_s": elapsed,
             "descripterize": {
                 "described": total_ok,
