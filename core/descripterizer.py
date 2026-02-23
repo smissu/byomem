@@ -65,6 +65,20 @@ def _format_batch(chunks: list[tuple]) -> str:
     return "\n\n".join(parts)
 
 
+def _parse_ollama_backend(backend: str) -> tuple[bool, str | None]:
+    """Parse 'ollama' or 'ollama:<model>' → (is_ollama, model_override).
+
+    Returns (True, None) for plain 'ollama' (uses cfg.summarizer_model).
+    Returns (True, "ministral-3:8b") for 'ollama:ministral-3:8b'.
+    Returns (False, None) for non-ollama backends.
+    """
+    if backend == "ollama":
+        return True, None
+    if backend.startswith("ollama:"):
+        return True, backend[len("ollama:"):]
+    return False, None
+
+
 def _get_available_backends() -> list[str]:
     """Return list of available backend names for concurrent dispatch."""
     from core.summarizer import _gemini_available, _lmstudio_available, _opencode_available
@@ -118,8 +132,12 @@ def get_active_model_label() -> str:
             labels.append(model)
         elif b == "lmstudio":
             labels.append(cfg.summarizer_lmstudio_model or "lmstudio")
-        elif b == "ollama":
-            labels.append(cfg.summarizer_model)
+        else:
+            is_ollama, model_override = _parse_ollama_backend(b)
+            if is_ollama:
+                labels.append(model_override or cfg.summarizer_model)
+            else:
+                labels.append(b)
 
     return " / ".join(labels)
 
@@ -139,8 +157,10 @@ def get_backend_model_label(backend: str | None) -> str:
         return model.rsplit("/", 1)[-1] if "/" in model else model
     if backend == "lmstudio":
         return cfg.summarizer_lmstudio_model or "lmstudio"
-    if backend == "ollama":
-        return cfg.summarizer_model
+    if backend:
+        is_ollama, model_override = _parse_ollama_backend(backend)
+        if is_ollama:
+            return model_override or cfg.summarizer_model
     return backend or "unknown"
 
 
@@ -190,30 +210,32 @@ def _call_llm(prompt: str, *, backend: str | None = None) -> str:
         text = resp.choices[0].message.content or ""
         return _wrap_bare_array(_strip_fences(text))
 
-    if backend == "ollama" and cfg.summarizer_base_url:
-        import httpx
-
-        resp = httpx.post(
-            _ollama_api_url(cfg),
-            json={
-                "model": cfg.summarizer_model,
-                "stream": False,
-                "think": False,
-                "format": BatchDescriptionResponse.model_json_schema(),
-                "options": {"num_predict": max_tokens},
-                "messages": [
-                    {"role": "system", "content": DESCRIPTERIZER_SYSTEM},
-                    {"role": "user", "content": prompt},
-                ],
-            },
-            timeout=120.0,
-        )
-        resp.raise_for_status()
-        text = resp.json()["message"]["content"]
-        return _wrap_bare_array(_strip_fences(text))
-
-    # If a specific backend was requested but we got here, it wasn't available
     if backend is not None:
+        is_ollama, model_override = _parse_ollama_backend(backend)
+        if is_ollama and cfg.summarizer_base_url:
+            import httpx
+
+            ollama_model = model_override or cfg.summarizer_model
+            resp = httpx.post(
+                _ollama_api_url(cfg),
+                json={
+                    "model": ollama_model,
+                    "stream": False,
+                    "think": False,
+                    "format": BatchDescriptionResponse.model_json_schema(),
+                    "options": {"num_predict": max_tokens},
+                    "messages": [
+                        {"role": "system", "content": DESCRIPTERIZER_SYSTEM},
+                        {"role": "user", "content": prompt},
+                    ],
+                },
+                timeout=120.0,
+            )
+            resp.raise_for_status()
+            text = resp.json()["message"]["content"]
+            return _wrap_bare_array(_strip_fences(text))
+
+        # Requested backend not available
         raise RuntimeError(f"Backend '{backend}' not available")
 
     # --- Full cascade (no backend specified) ---
