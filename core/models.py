@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class Turn(BaseModel):
@@ -56,6 +56,11 @@ class ChunkDescription(BaseModel):
 
     chunk_id: str
     description: str
+
+    @field_validator("chunk_id", mode="before")
+    @classmethod
+    def _coerce_chunk_id(cls, v):
+        return str(v) if not isinstance(v, str) else v
 
 
 class BatchDescriptionResponse(BaseModel):

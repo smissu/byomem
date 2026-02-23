@@ -8,6 +8,7 @@ using description text for better semantic search.
 import hashlib
 import json
 import logging
+import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -148,6 +149,8 @@ def get_active_model_label() -> str:
             labels.append(model)
         elif b == "lmstudio":
             labels.append(cfg.summarizer_lmstudio_model or "lmstudio")
+        elif b == "zai":
+            labels.append(cfg.descripterizer_zai_model)
         else:
             is_ollama, model_override = _parse_ollama_backend(b)
             if is_ollama:
@@ -173,6 +176,8 @@ def get_backend_model_label(backend: str | None) -> str:
         return model.rsplit("/", 1)[-1] if "/" in model else model
     if backend == "lmstudio":
         return cfg.summarizer_lmstudio_model or "lmstudio"
+    if backend == "zai":
+        return cfg.descripterizer_zai_model
     if backend:
         is_ollama, model_override = _parse_ollama_backend(backend)
         if is_ollama:
@@ -250,6 +255,37 @@ def _call_llm(prompt: str, *, backend: str | None = None) -> str:
             resp.raise_for_status()
             text = resp.json()["message"]["content"]
             return _wrap_bare_array(_strip_fences(text))
+
+        if backend == "zai":
+            import openai
+
+            api_key = os.environ.get("ZAI_API_KEY", "")
+            if not api_key:
+                raise RuntimeError("ZAI_API_KEY not set")
+            client = openai.OpenAI(
+                api_key=api_key,
+                base_url=cfg.descripterizer_zai_url,
+            )
+            resp = client.chat.completions.create(
+                model=cfg.descripterizer_zai_model,
+                max_tokens=max_tokens,
+                messages=[
+                    {"role": "system", "content": DESCRIPTERIZER_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            text = resp.choices[0].message.content or ""
+            # Reasoning models may put content in model_extra
+            if not text.strip() and hasattr(resp.choices[0].message, "model_extra"):
+                extra = resp.choices[0].message.model_extra or {}
+                text = extra.get("reasoning_content", "")
+            text = _strip_fences(text)
+            # GLM models sometimes prefix JSON with narrative text — extract the JSON
+            if text and not text.lstrip().startswith("{"):
+                idx = text.find("{")
+                if idx >= 0:
+                    text = text[idx:]
+            return _wrap_bare_array(text)
 
         # Requested backend not available
         raise RuntimeError(f"Backend '{backend}' not available")
@@ -439,12 +475,48 @@ def descripterize_project(
     failed = 0
     db_lock = threading.Lock()
 
+    # Load .env for API keys (ZAI_API_KEY etc.)
+    env_path = cfg.byomem / ".env" if (cfg.byomem / ".env").exists() else None
+    if not env_path:
+        # Also check source repo .env
+        import pathlib
+        src_env = pathlib.Path(__file__).resolve().parent.parent / ".env"
+        if src_env.exists():
+            env_path = src_env
+    if env_path:
+        with open(env_path) as _ef:
+            for _line in _ef:
+                _line = _line.strip()
+                if _line and "=" in _line and not _line.startswith("#"):
+                    _k, _v = _line.split("=", 1)
+                    os.environ.setdefault(_k.strip(), _v.strip())
+
     # Detect available backends for multi-backend concurrency
+    # Cloud backends activated only for large jobs (above threshold)
+    # zai is fast enough (~5-10s) to be always-on alongside local models
+    cloud_backends = {"gemini", "opencode"}
     if cfg.descripterizer_backends:
-        # Use explicitly configured backends
-        backends = cfg.descripterizer_backends
+        all_backends = cfg.descripterizer_backends
     else:
-        backends = _get_available_backends()
+        all_backends = _get_available_backends()
+
+    # Tiered: only include cloud backends when chunk count exceeds threshold
+    threshold = cfg.descripterizer_cloud_threshold
+    if total >= threshold:
+        backends = all_backends
+        logger.info(
+            "Large job (%d chunks >= %d threshold) — using all backends: %s",
+            total, threshold, backends,
+        )
+    else:
+        backends = [b for b in all_backends if b not in cloud_backends]
+        if not backends:
+            # All configured backends are cloud — use them anyway
+            backends = all_backends
+        logger.info(
+            "Small job (%d chunks < %d threshold) — local backends only: %s",
+            total, threshold, backends,
+        )
 
     if not backends:
         backends = [None]  # fall back to cascade

@@ -63,6 +63,9 @@ class Config:
     descripterizer_concurrency: int = 4
     descripterizer_backends: list[str] | None = None  # e.g. ["gemini", "opencode"]
     descripterizer_max_failures: int = 5  # disable backend after N consecutive failures
+    descripterizer_cloud_threshold: int = 100  # only use cloud backends above this many chunks
+    descripterizer_zai_url: str = "https://api.z.ai/api/coding/paas/v4/"
+    descripterizer_zai_model: str = "glm-4.6"
     descripterizer_debug: bool = False
     summarizer_debug: bool = False
     code_db_path: Path = field(default_factory=lambda: Path.home() / ".byomem" / "code.db")
@@ -166,6 +169,12 @@ def _load_config() -> Config:
             kwargs["descripterizer_backends"] = [b.strip() for b in val.split(",")]
     if "descripterizer_max_failures" in memory:
         kwargs["descripterizer_max_failures"] = int(memory["descripterizer_max_failures"])
+    if "descripterizer_cloud_threshold" in memory:
+        kwargs["descripterizer_cloud_threshold"] = int(memory["descripterizer_cloud_threshold"])
+    if "descripterizer_zai_url" in memory:
+        kwargs["descripterizer_zai_url"] = memory["descripterizer_zai_url"]
+    if "descripterizer_zai_model" in memory:
+        kwargs["descripterizer_zai_model"] = memory["descripterizer_zai_model"]
     if "descripterizer_debug" in memory:
         kwargs["descripterizer_debug"] = bool(memory["descripterizer_debug"])
 
