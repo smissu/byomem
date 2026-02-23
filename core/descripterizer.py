@@ -11,7 +11,7 @@ import logging
 import os
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 from core.config import get_config
@@ -530,104 +530,108 @@ def descripterize_project(
         )
 
     # Per-backend failure tracking: 5 fails → 5min cooldown, 3 cooldowns → disabled
+    import queue as _queue
     import time as _time
 
     max_failures = cfg.descripterizer_max_failures  # consecutive fails before cooldown
     max_cooldowns = 3  # cooldowns before permanent disable
     backoff_seconds = 300  # 5 minutes
     backend_failures: dict[str, int] = {b: 0 for b in backends if b}
-    backend_cooldowns: dict[str, int] = {b: 0 for b in backends if b}  # cooldown count
-    backend_cooldown_until: dict[str, float] = {}  # backend → resume time
+    backend_cooldowns: dict[str, int] = {b: 0 for b in backends if b}
+    backend_cooldown_until: dict[str, float] = {}
     disabled_backends: set[str] = set()
+    health_lock = threading.Lock()  # protects failure/cooldown/disabled state
 
-    # Build all batches upfront, round-robin assign backends
-    all_batches = []
+    def _is_backend_available(backend: str | None) -> bool:
+        """Check if a backend is available (not disabled or in cooldown)."""
+        if backend is None:
+            return True  # cascade mode — always available
+        if backend in disabled_backends:
+            return False
+        if backend in backend_cooldown_until:
+            if _time.monotonic() < backend_cooldown_until[backend]:
+                return False
+            # Cooldown expired — re-enable
+            with health_lock:
+                if backend in backend_cooldown_until:
+                    del backend_cooldown_until[backend]
+                    backend_failures[backend] = 0
+                    print(
+                        f"  >>> Backend '{backend}' re-enabled after cooldown "
+                        f"({backend_cooldowns.get(backend, 0)}/{max_cooldowns})",
+                        file=sys.stderr,
+                    )
+        return True
+
+    def _record_failure(backend: str | None):
+        """Track a backend failure; apply cooldown/disable as needed."""
+        if backend is None:
+            return
+        with health_lock:
+            if backend not in backend_failures:
+                return
+            backend_failures[backend] += 1
+            if backend_failures[backend] >= max_failures and backend not in backend_cooldown_until:
+                backend_cooldowns[backend] = backend_cooldowns.get(backend, 0) + 1
+                if backend_cooldowns[backend] >= max_cooldowns:
+                    disabled_backends.add(backend)
+                    active = [b for b in backends if b not in disabled_backends]
+                    print(
+                        f"  *** Backend '{backend}' DISABLED after "
+                        f"{max_cooldowns} cooldowns. Active: {active or ['none']}",
+                        file=sys.stderr,
+                    )
+                    _debug_log({
+                        "event": "backend_disabled",
+                        "backend": backend,
+                        "cooldowns": backend_cooldowns[backend],
+                        "remaining": active,
+                    })
+                else:
+                    backend_cooldown_until[backend] = _time.monotonic() + backoff_seconds
+                    active = [b for b in backends if b not in disabled_backends and b not in backend_cooldown_until]
+                    print(
+                        f"  *** Backend '{backend}' paused {backoff_seconds}s "
+                        f"(cooldown {backend_cooldowns[backend]}/{max_cooldowns}). "
+                        f"Active: {active or ['none']}",
+                        file=sys.stderr,
+                    )
+                    _debug_log({
+                        "event": "backend_cooldown",
+                        "backend": backend,
+                        "failures": backend_failures[backend],
+                        "cooldown_num": backend_cooldowns[backend],
+                        "cooldown_s": backoff_seconds,
+                        "remaining": active,
+                    })
+
+    def _record_success(backend: str | None):
+        """Reset consecutive failure count on success."""
+        if backend is None:
+            return
+        with health_lock:
+            if backend in backend_failures:
+                backend_failures[backend] = 0
+
+    def _backend_order(preferred: str | None) -> list[str | None]:
+        """Return backends to try: preferred first, then all others as fallback."""
+        order: list[str | None] = [preferred]
+        for b in backends:
+            if b != preferred and b not in order:
+                order.append(b)
+        return order
+
+    # Build work queue — batches are NOT pre-assigned to backends
+    work_q: _queue.Queue = _queue.Queue()
+    batch_idx = 0
     for i in range(0, total, batch_size):
         batch_rows = rows[i : i + batch_size]
         batch_chunks = [(str(row[0]), row[1]) for row in batch_rows]
-        backend = backends[len(all_batches) % len(backends)]
-        all_batches.append((i, batch_chunks, backend))
+        work_q.put((batch_idx, batch_chunks))
+        batch_idx += 1
 
-    def _process_one_batch(batch_idx, batch_chunks, backend=None):
-        """LLM call + embed + DB write for one batch. Thread-safe."""
-        nonlocal described, failed
-
-        # Skip permanently disabled backends
-        if backend and backend in disabled_backends:
-            with db_lock:
-                failed += len(batch_chunks)
-                if on_batch:
-                    on_batch(0, len(batch_chunks), described, failed, total, backend=backend)
-            return
-
-        # Wait if this backend is in cooldown
-        if backend and backend in backend_cooldown_until:
-            remaining = backend_cooldown_until[backend] - _time.monotonic()
-            if remaining > 0:
-                _time.sleep(remaining)
-            # Cooldown expired — re-enable
-            del backend_cooldown_until[backend]
-            backend_failures[backend] = 0
-            print(
-                f"  >>> Backend '{backend}' re-enabled after cooldown "
-                f"({backend_cooldowns.get(backend, 0)}/{max_cooldowns})",
-                file=sys.stderr,
-            )
-
-        # LLM call (the slow part — runs concurrently)
-        try:
-            resp = _describe_batch(batch_chunks, backend=backend)
-        except Exception as exc:
-            logger.warning("Batch %d failed (%s): %s", batch_idx, backend, exc)
-            with db_lock:
-                failed += len(batch_chunks)
-                # Track consecutive failures per backend
-                if backend and backend in backend_failures:
-                    backend_failures[backend] += 1
-                    if backend_failures[backend] >= max_failures and backend not in backend_cooldown_until:
-                        backend_cooldowns[backend] = backend_cooldowns.get(backend, 0) + 1
-                        if backend_cooldowns[backend] >= max_cooldowns:
-                            # Tier 2: permanently disable after too many cooldowns
-                            disabled_backends.add(backend)
-                            active = [b for b in backends if b not in disabled_backends and b not in backend_cooldown_until]
-                            print(
-                                f"  *** Backend '{backend}' DISABLED after "
-                                f"{max_cooldowns} cooldowns. "
-                                f"Active: {active or ['none']}",
-                                file=sys.stderr,
-                            )
-                            _debug_log({
-                                "event": "backend_disabled",
-                                "backend": backend,
-                                "cooldowns": backend_cooldowns[backend],
-                                "remaining": active,
-                            })
-                        else:
-                            # Tier 1: cooldown for backoff_seconds
-                            backend_cooldown_until[backend] = _time.monotonic() + backoff_seconds
-                            active = [b for b in backends if b not in disabled_backends and b not in backend_cooldown_until]
-                            print(
-                                f"  *** Backend '{backend}' paused {backoff_seconds}s "
-                                f"(cooldown {backend_cooldowns[backend]}/{max_cooldowns}). "
-                                f"Active: {active or ['none']}",
-                                file=sys.stderr,
-                            )
-                            _debug_log({
-                                "event": "backend_cooldown",
-                                "backend": backend,
-                                "failures": backend_failures[backend],
-                                "cooldown_num": backend_cooldowns[backend],
-                                "cooldown_s": backoff_seconds,
-                                "remaining": active,
-                            })
-                if on_batch:
-                    on_batch(0, len(batch_chunks), described, failed, total, backend=backend)
-            return
-
-        # Reset failure count on success
-        if backend and backend in backend_failures:
-            backend_failures[backend] = 0
-
+    def _store_results(batch_chunks, resp, backend=None):
+        """Write descriptions + embeddings to DB. Returns count described."""
         desc_map = {d.chunk_id: d.description for d in resp.descriptions}
 
         to_embed = []
@@ -637,11 +641,8 @@ def descripterize_project(
                 to_embed.append((int(chunk_id_str), desc))
 
         if not to_embed:
-            with db_lock:
-                failed += len(batch_chunks)
-            return
+            return 0
 
-        # Embed descriptions
         desc_texts = [d for _, d in to_embed]
         desc_hashes = [hashlib.sha256(d.encode()).hexdigest() for d in desc_texts]
 
@@ -652,12 +653,10 @@ def descripterize_project(
 
             for j, (chunk_id, desc) in enumerate(to_embed):
                 embedding, is_new = embed_results[j]
-
                 db.execute(
                     "UPDATE chunks SET description = ? WHERE id = ?",
                     (desc, chunk_id),
                 )
-
                 if embedding is not None:
                     try:
                         import sqlite_vec
@@ -669,35 +668,94 @@ def descripterize_project(
                         )
                     except Exception:
                         pass
-
                     if is_new:
                         _save_embedding_cache(db, desc_hashes[j], embedding)
 
-                described += 1
-
             db.commit()
 
-            batch_described = len(to_embed)
-            if on_batch:
-                on_batch(batch_described, 0, described, failed, total, backend=backend)
+        return len(to_embed)
 
-            print(
-                f"  [{min(described + failed, total)}/{total}] "
-                f"{described} described, {failed} failed",
-                file=sys.stderr,
-            )
+    def _worker(preferred_backend: str | None):
+        """Pull batches from queue, try preferred backend then fallback to others."""
+        nonlocal described, failed
 
-    if concurrency <= 1:
-        for batch_idx, batch_chunks, backend in all_batches:
-            _process_one_batch(batch_idx, batch_chunks, backend)
+        while True:
+            try:
+                bid, batch_chunks = work_q.get_nowait()
+            except _queue.Empty:
+                return
+
+            # Try backends in order: preferred first, then others
+            order = _backend_order(preferred_backend)
+            success = False
+            attempts = []
+
+            for backend in order:
+                if not _is_backend_available(backend):
+                    continue
+
+                try:
+                    resp = _describe_batch(batch_chunks, backend=backend)
+                except Exception as exc:
+                    attempts.append((backend, str(exc)[:80]))
+                    logger.warning("Batch %d failed (%s): %s", bid, backend, exc)
+                    _record_failure(backend)
+                    continue
+
+                # Success — store results
+                _record_success(backend)
+                n = _store_results(batch_chunks, resp, backend)
+
+                with db_lock:
+                    if n > 0:
+                        described += n
+                    else:
+                        failed += len(batch_chunks)
+                    if on_batch:
+                        on_batch(n, 0 if n else len(batch_chunks), described, failed, total, backend=backend)
+                    print(
+                        f"  [{min(described + failed, total)}/{total}] "
+                        f"{described} described, {failed} failed",
+                        file=sys.stderr,
+                    )
+
+                success = True
+                break
+
+            if not success:
+                # All backends failed for this batch
+                with db_lock:
+                    failed += len(batch_chunks)
+                    if on_batch:
+                        on_batch(0, len(batch_chunks), described, failed, total, backend=None)
+                    backends_tried = ", ".join(str(b) for b, _ in attempts) or "none"
+                    print(
+                        f"  [{min(described + failed, total)}/{total}] "
+                        f"{described} described, {failed} failed "
+                        f"(batch {bid} exhausted all backends: {backends_tried})",
+                        file=sys.stderr,
+                    )
+                _debug_log({
+                    "event": "batch_exhausted",
+                    "batch_idx": bid,
+                    "chunk_ids": [c[0] for c in batch_chunks],
+                    "attempts": [{"backend": b, "error": e} for b, e in attempts],
+                })
+
+            work_q.task_done()
+
+    if concurrency <= 1 or not backends or backends == [None]:
+        # Single-threaded fallback — worker pulls from queue itself
+        _worker(backends[0] if backends else None)
     else:
+        # Spawn workers: distribute across backends, each pulls from shared queue
         with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="desc") as pool:
-            futures = {
-                pool.submit(_process_one_batch, batch_idx, batch_chunks, backend): batch_idx
-                for batch_idx, batch_chunks, backend in all_batches
-            }
-            for future in as_completed(futures):
-                future.result()  # propagate exceptions
+            futures = []
+            for i in range(concurrency):
+                preferred = backends[i % len(backends)]
+                futures.append(pool.submit(_worker, preferred))
+            for f in futures:
+                f.result()
 
     # Report backend health at end of run
     for b in backends:

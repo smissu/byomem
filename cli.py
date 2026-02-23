@@ -517,8 +517,9 @@ def cmd_queue(purge=False, history=0):
     left.append(f"Failed: {len(failed)}")
     left.append(f"Overflow threshold: {cfg.overflow_threshold}")
 
-    # Build right column: code index stats
+    # Build right column: code index stats; col3: per-project details
     right = []
+    col3 = []
     code_db = cfg.code_db_path
     if code_db.exists():
         import sqlite3
@@ -584,21 +585,29 @@ def cmd_queue(purge=False, history=0):
             files_count = per_project_files.get(proj, 0)
             chunks_count = per_project_chunks.get(proj, 0)
             described_count = per_project_described.get(proj, 0)
-            sha = last_shas.get(proj)
-            sha_str = sha[:12] if sha else "none"
             ts = last_indexed.get(proj)
-            ts_str = datetime.fromtimestamp(ts).strftime("%m-%d %H:%M") if ts else "-"
-            desc_str = f" desc={described_count}/{chunks_count}" if has_desc_col else ""
-            right.append(f"  {proj}: {files_count}f/{chunks_count}ch{desc_str} sha={sha_str} idx={ts_str}")
+            ts_str = datetime.fromtimestamp(ts).strftime("%m-%d %H:%M") if ts else ""
+            if has_desc_col:
+                desc_part = f"{described_count}/{chunks_count}d"
+            else:
+                desc_part = ""
+            parts = [f"{proj}: {files_count}f {chunks_count}ch"]
+            if desc_part:
+                parts.append(desc_part)
+            if ts_str:
+                parts.append(ts_str)
+            col3.append(" ".join(parts))
 
-    # Print left and right side by side
-    left_width = 32
-    max_rows = max(len(left), len(right))
+    # Print three columns side by side
+    left_width = 26
+    mid_width = 34
+    max_rows = max(len(left), len(right), len(col3))
     print()
     for i in range(max_rows):
         l = f"  {left[i]}" if i < len(left) else ""
         r = f"  {right[i]}" if i < len(right) else ""
-        print(f"{l:<{left_width}} {r}")
+        c = f"  {col3[i]}" if i < len(col3) else ""
+        print(f"{l:<{left_width}}{r:<{mid_width}}{c}")
 
     # Purge / failed details (below the side-by-side section)
     if purge and processing:
