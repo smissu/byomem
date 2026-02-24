@@ -461,7 +461,8 @@ def test_backend_order_unknown_preferred():
 
 def test_registry_has_all_backends():
     """Registry contains all expected backend names."""
-    expected = {"gemini", "opencode", "zai", "lmstudio", "ollama", "anthropic"}
+    # opencode disabled — removed from registry
+    expected = {"gemini", "zai", "lmstudio", "ollama", "anthropic"}
     assert set(_SUMMARIZER_BACKENDS.keys()) == expected
 
 

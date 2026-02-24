@@ -503,14 +503,14 @@ def summarize_turn(turn, *, backend: str | None = None, model_override: str | No
                 return result
             except Exception:
                 logger.debug("Gemini CLI single-turn failed", exc_info=True)
-        # OpenCode CLI is secondary cloud backend (skip for overflow workers)
-        if _opencode_available(cfg) and not model_override:
-            try:
-                result = _summarize_opencode(cfg, user_content)
-                backend_used = cfg.summarizer_opencode_model or "opencode"
-                return result
-            except Exception:
-                logger.debug("OpenCode CLI single-turn failed", exc_info=True)
+        # opencode disabled — too slow / times out
+        # if _opencode_available(cfg) and not model_override:
+        #     try:
+        #         result = _summarize_opencode(cfg, user_content)
+        #         backend_used = cfg.summarizer_opencode_model or "opencode"
+        #         return result
+        #     except Exception:
+        #         logger.debug("OpenCode CLI single-turn failed", exc_info=True)
         # Z.ai cloud backend (skip for overflow workers)
         if _zai_available(cfg) and not model_override:
             try:
@@ -670,15 +670,15 @@ def summarize_batch(
                 return results
             except Exception:
                 logger.debug("Gemini CLI batch failed, falling back", exc_info=True)
-        # OpenCode CLI is secondary cloud backend (skip for overflow workers)
-        if _opencode_available(cfg) and not model_override:
-            try:
-                batch_resp = _batch_opencode(cfg, user_content)
-                results = _align_results(coerced, batch_resp)
-                backend_used = cfg.summarizer_opencode_model or "opencode"
-                return results
-            except Exception:
-                logger.debug("OpenCode CLI batch failed, falling back", exc_info=True)
+        # opencode disabled — too slow / times out
+        # if _opencode_available(cfg) and not model_override:
+        #     try:
+        #         batch_resp = _batch_opencode(cfg, user_content)
+        #         results = _align_results(coerced, batch_resp)
+        #         backend_used = cfg.summarizer_opencode_model or "opencode"
+        #         return results
+        #     except Exception:
+        #         logger.debug("OpenCode CLI batch failed, falling back", exc_info=True)
         # Z.ai cloud backend (skip for overflow workers)
         if _zai_available(cfg) and not model_override:
             try:
@@ -833,8 +833,9 @@ def _batch_openai_compat(
 _SUMMARIZER_BACKENDS = {
     "gemini": (_gemini_available, _summarize_gemini, _batch_gemini,
                lambda cfg: cfg.summarizer_gemini_model or "gemini"),
-    "opencode": (_opencode_available, _summarize_opencode, _batch_opencode,
-                 lambda cfg: cfg.summarizer_opencode_model or "opencode"),
+    # opencode disabled — too slow / times out
+    # "opencode": (_opencode_available, _summarize_opencode, _batch_opencode,
+    #              lambda cfg: cfg.summarizer_opencode_model or "opencode"),
     "zai": (_zai_available, _summarize_zai, _batch_zai,
             lambda cfg: cfg.descripterizer_zai_model),
     "lmstudio": (_lmstudio_available, _summarize_lmstudio, _batch_lmstudio,

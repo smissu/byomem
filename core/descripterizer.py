@@ -98,14 +98,15 @@ def _parse_ollama_backend(backend: str) -> tuple[bool, str | None]:
 
 def _get_available_backends() -> list[str]:
     """Return list of available backend names for concurrent dispatch."""
-    from core.summarizer import _gemini_available, _lmstudio_available, _opencode_available
+    from core.summarizer import _gemini_available, _lmstudio_available
 
     cfg = get_config()
     backends = []
     if _gemini_available(cfg):
         backends.append("gemini")
-    if _opencode_available(cfg):
-        backends.append("opencode")
+    # opencode disabled — too slow / times out for bulk descripterize
+    # if _opencode_available(cfg):
+    #     backends.append("opencode")
     if _lmstudio_available(cfg):
         backends.append("lmstudio")
     if cfg.summarizer_base_url:
@@ -298,12 +299,13 @@ def _call_llm(prompt: str, *, backend: str | None = None) -> str:
         except Exception:
             logger.debug("Gemini CLI descripterizer failed", exc_info=True)
 
-    if _opencode_available(cfg):
-        try:
-            text = _run_opencode(cfg, prompt)
-            return _wrap_bare_array(_strip_fences(text))
-        except Exception:
-            logger.debug("OpenCode CLI descripterizer failed", exc_info=True)
+    # opencode disabled — too slow / times out for bulk descripterize
+    # if _opencode_available(cfg):
+    #     try:
+    #         text = _run_opencode(cfg, prompt)
+    #         return _wrap_bare_array(_strip_fences(text))
+    #     except Exception:
+    #         logger.debug("OpenCode CLI descripterizer failed", exc_info=True)
 
     if _lmstudio_available(cfg):
         try:
@@ -498,7 +500,7 @@ def descripterize_project(
     # Detect available backends for multi-backend concurrency
     # Cloud backends activated only for large jobs (above threshold)
     # zai is fast enough (~5-10s) to be always-on alongside local models
-    cloud_backends = {"gemini", "opencode"}
+    cloud_backends = {"gemini"}  # opencode disabled
 
     if backend_filter is not None:
         # CLI override — use exactly what was requested, skip tiering
