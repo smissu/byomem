@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from core.config import get_config
+from core.db_writer import get_writer
 from core.indexing_utils import (
     _chunk_text,
     _get_embedding,
@@ -13,8 +14,57 @@ from core.indexing_utils import (
 )
 
 
+def _search_schema_init(conn: sqlite3.Connection) -> None:
+    """Schema init for search.db (differs from code.db — no meta/description)."""
+    cfg = get_config()
+    dim = cfg.embedding_dimension
+    vec_available = False
+    try:
+        import sqlite_vec  # noqa: F401
+
+        vec_available = True
+    except Exception:
+        pass
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS files (
+            path TEXT PRIMARY KEY, content_hash TEXT, modified_at REAL
+        );
+        CREATE TABLE IF NOT EXISTS chunks (
+            id INTEGER PRIMARY KEY, file_path TEXT,
+            start_line INTEGER, end_line INTEGER, text TEXT
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
+            USING fts5(text, content=chunks, content_rowid=id);
+        CREATE TABLE IF NOT EXISTS embedding_cache (
+            text_hash TEXT PRIMARY KEY, embedding BLOB
+        );
+    """
+    )
+    if vec_available:
+        try:
+            conn.execute(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec "
+                f"USING vec0(embedding FLOAT[{dim}])"
+            )
+        except Exception:
+            pass
+    conn.commit()
+
+
+def _get_search_writer(db_path=None):
+    """Get the singleton writer for search.db."""
+    cfg = get_config()
+    path = db_path or cfg.db_path
+    return get_writer(path, schema_init=_search_schema_init)
+
+
 def get_db(db_path=None):
-    """Connect to search DB, load sqlite-vec, and initialise schema."""
+    """Connect to search DB, load sqlite-vec, and initialise schema.
+
+    Kept for backward compatibility. New code should use _get_search_writer().
+    """
     cfg = get_config()
     path = db_path or cfg.db_path
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,36 +85,13 @@ def get_db(db_path=None):
     return db
 
 
-def _get_lite_db(db_path=None):
-    """Open a DB connection with sqlite-vec but without schema init.
-
-    Unlike get_db(), this skips _init_schema so the connection never contends
-    with concurrent writers via DDL statements.  The caller must ensure that
-    get_db() has been called at least once beforehand to guarantee the schema
-    exists.
-    """
-    cfg = get_config()
-    path = db_path or cfg.db_path
-    db = sqlite3.connect(str(path), timeout=10)
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA busy_timeout=30000")
-    try:
-        import sqlite_vec
-
-        db.enable_load_extension(True)
-        sqlite_vec.load(db)
-        db.enable_load_extension(False)
-    except Exception:
-        pass
-    return db
-
-
 def index_file(path: Path, project: str):
     """Chunk, embed, and upsert a file into the search index.
 
     Two-phase design to minimise SQLite write-lock hold time:
-      Phase 1 (GATHER) — read file, chunk, fetch embeddings (slow API calls).
-      Phase 2 (WRITE)  — DELETE old + INSERT new in a single fast transaction.
+      Phase 1 (GATHER) — read file, chunk, fetch embeddings (slow API calls)
+                         using a read-only connection.
+      Phase 2 (WRITE)  — DELETE old + INSERT new via the single writer thread.
     No embedding API calls occur between DELETE and COMMIT.
     """
     cfg = get_config()
@@ -72,17 +99,13 @@ def index_file(path: Path, project: str):
     content = path.read_text()
     h = hashlib.sha256(content.encode()).hexdigest()
 
-    # Ensure schema exists (brief write, released immediately)
-    db_init = get_db()
-    db_init.close()
+    writer = _get_search_writer()
 
-    # ── Phase 1: GATHER (no write lock) ──────────────────────────
-    # Use a lightweight connection (no _init_schema DDL) for reads during
-    # the potentially slow embedding API calls.
-    db_read = _get_lite_db()
+    # ── Phase 1: GATHER (read-only) ──────────────────────────
+    reader = writer.get_reader()
     try:
         # Quick read-only check: skip if content unchanged
-        row = db_read.execute(
+        row = reader.execute(
             "SELECT content_hash FROM files WHERE path=?", (rel_path,)
         ).fetchone()
         if row and row[0] == h:
@@ -100,9 +123,9 @@ def index_file(path: Path, project: str):
             text_hashes.append(text_hash)
 
         # Batch-fetch all embeddings (reads cache, calls API for misses — no DB writes)
-        embed_results = _get_embeddings_batch(db_read, texts, text_hashes)
+        embed_results = _get_embeddings_batch(reader, texts, text_hashes)
     finally:
-        db_read.close()
+        reader.close()
 
     # Build gathered tuples: (start_line, end_line, text, text_hash, embedding, is_new)
     gathered = []
@@ -110,49 +133,51 @@ def index_file(path: Path, project: str):
         embedding, is_new = embed_results[i]
         gathered.append((start_line, end_line, text, text_hashes[i], embedding, is_new))
 
-    # ── Phase 2: WRITE (fast transaction) ────────────────────────
-    # Use _get_lite_db (no DDL) to avoid _init_schema write contention
-    # between threads that finish Phase 1 at roughly the same time.
-    db = _get_lite_db()
+    # ── Phase 2: WRITE (via single writer thread) ─────────────
+    def _write_phase(conn):
+        # FTS5 sync: explicitly delete old entries before removing chunks
+        old_chunks = conn.execute(
+            "SELECT id, text FROM chunks WHERE file_path=?", (rel_path,)
+        ).fetchall()
+        for chunk_id, old_text in old_chunks:
+            conn.execute(
+                "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
+                (chunk_id, old_text),
+            )
+        conn.execute("DELETE FROM chunks WHERE file_path=?", (rel_path,))
 
-    # FTS5 sync: explicitly delete old entries before removing chunks
-    old_chunks = db.execute("SELECT id, text FROM chunks WHERE file_path=?", (rel_path,)).fetchall()
-    for chunk_id, old_text in old_chunks:
-        db.execute(
-            "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
-            (chunk_id, old_text),
+        for start_line, end_line, text, text_hash, embedding, is_new in gathered:
+            cur = conn.execute(
+                "INSERT INTO chunks (file_path, start_line, end_line, text) VALUES (?,?,?,?)",
+                (rel_path, start_line, end_line, text),
+            )
+            chunk_id = cur.lastrowid
+            # Sync to FTS5
+            conn.execute(
+                "INSERT INTO chunks_fts(rowid, text) VALUES(?, ?)", (chunk_id, text)
+            )
+            # Vec insert only if embedding available
+            if embedding is not None:
+                try:
+                    import sqlite_vec
+
+                    conn.execute(
+                        "INSERT INTO chunks_vec (rowid, embedding) VALUES (?, ?)",
+                        (chunk_id, sqlite_vec.serialize_float32(embedding)),
+                    )
+                except Exception:
+                    pass
+            # Persist newly fetched embeddings into cache
+            if is_new and embedding is not None:
+                _save_embedding_cache(conn, text_hash, embedding)
+
+        conn.execute(
+            "INSERT OR REPLACE INTO files (path, content_hash, modified_at) VALUES (?,?,?)",
+            (rel_path, h, path.stat().st_mtime),
         )
-    db.execute("DELETE FROM chunks WHERE file_path=?", (rel_path,))
+        conn.commit()
 
-    for start_line, end_line, text, text_hash, embedding, is_new in gathered:
-        cur = db.execute(
-            "INSERT INTO chunks (file_path, start_line, end_line, text) VALUES (?,?,?,?)",
-            (rel_path, start_line, end_line, text),
-        )
-        chunk_id = cur.lastrowid
-        # Sync to FTS5
-        db.execute("INSERT INTO chunks_fts(rowid, text) VALUES(?, ?)", (chunk_id, text))
-        # Vec insert only if embedding available
-        if embedding is not None:
-            try:
-                import sqlite_vec
-
-                db.execute(
-                    "INSERT INTO chunks_vec (rowid, embedding) VALUES (?, ?)",
-                    (chunk_id, sqlite_vec.serialize_float32(embedding)),
-                )
-            except Exception:
-                pass
-        # Persist newly fetched embeddings into cache
-        if is_new and embedding is not None:
-            _save_embedding_cache(db, text_hash, embedding)
-
-    db.execute(
-        "INSERT OR REPLACE INTO files (path, content_hash, modified_at) VALUES (?,?,?)",
-        (rel_path, h, path.stat().st_mtime),
-    )
-    db.commit()
-    db.close()
+    writer.submit(_write_phase)
 
 
 def hybrid_search(query, project="", max_results=None, min_score=None):
@@ -162,70 +187,75 @@ def hybrid_search(query, project="", max_results=None, min_score=None):
         max_results = cfg.max_results
     if min_score is None:
         min_score = cfg.min_score
-    db = get_db()
-    candidates = max_results * cfg.candidate_multiplier
-    path_filter = f"{project}/%" if project else "%"
 
-    # Try to get query embedding
-    q_hash = hashlib.sha256(query.encode()).hexdigest()
-    q_embedding = _get_embedding(db, query, q_hash)
+    writer = _get_search_writer()
+    db = writer.get_reader()
+    try:
+        candidates = max_results * cfg.candidate_multiplier
+        path_filter = f"{project}/%" if project else "%"
 
-    vec_scores = {}
-    if q_embedding is not None:
-        try:
-            import sqlite_vec
+        # Try to get query embedding (cache read via reader, cache write via writer)
+        q_hash = hashlib.sha256(query.encode()).hexdigest()
+        q_embedding = _get_embedding(db, query, q_hash, writer=writer)
 
-            vec_rows = db.execute(
-                """
-                SELECT c.id, c.file_path, c.start_line, c.end_line, c.text,
-                       vec_distance_cosine(cv.embedding, ?) AS distance
-                FROM chunks_vec cv
-                JOIN chunks c ON c.id = cv.rowid
-                WHERE c.file_path LIKE ?
-                ORDER BY distance ASC
-                LIMIT ?
-                """,
-                (
-                    sqlite_vec.serialize_float32(q_embedding),
-                    path_filter,
-                    candidates,
-                ),
-            ).fetchall()
-            vec_scores = {
-                row[0]: {
-                    "path": row[1],
-                    "start_line": row[2],
-                    "end_line": row[3],
-                    "text": row[4],
-                    "vec_score": 1.0 - row[5],
+        vec_scores = {}
+        if q_embedding is not None:
+            try:
+                import sqlite_vec
+
+                vec_rows = db.execute(
+                    """
+                    SELECT c.id, c.file_path, c.start_line, c.end_line, c.text,
+                           vec_distance_cosine(cv.embedding, ?) AS distance
+                    FROM chunks_vec cv
+                    JOIN chunks c ON c.id = cv.rowid
+                    WHERE c.file_path LIKE ?
+                    ORDER BY distance ASC
+                    LIMIT ?
+                    """,
+                    (
+                        sqlite_vec.serialize_float32(q_embedding),
+                        path_filter,
+                        candidates,
+                    ),
+                ).fetchall()
+                vec_scores = {
+                    row[0]: {
+                        "path": row[1],
+                        "start_line": row[2],
+                        "end_line": row[3],
+                        "text": row[4],
+                        "vec_score": 1.0 - row[5],
+                    }
+                    for row in vec_rows
                 }
-                for row in vec_rows
-            }
-        except Exception:
-            pass
+            except Exception:
+                pass
 
-    # Keyword search (always available)
-    fts_rows = db.execute(
-        """
-        SELECT c.id, c.file_path, c.start_line, c.end_line, c.text, rank
-        FROM chunks_fts
-        JOIN chunks c ON c.id = chunks_fts.rowid
-        WHERE chunks_fts MATCH ? AND c.file_path LIKE ?
-        ORDER BY rank
-        LIMIT ?
-        """,
-        (query, path_filter, candidates),
-    ).fetchall()
-    kw_scores = {
-        row[0]: {
-            "path": row[1],
-            "start_line": row[2],
-            "end_line": row[3],
-            "text": row[4],
-            "kw_score": 1.0 / (1.0 + abs(row[5])),
+        # Keyword search (always available)
+        fts_rows = db.execute(
+            """
+            SELECT c.id, c.file_path, c.start_line, c.end_line, c.text, rank
+            FROM chunks_fts
+            JOIN chunks c ON c.id = chunks_fts.rowid
+            WHERE chunks_fts MATCH ? AND c.file_path LIKE ?
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (query, path_filter, candidates),
+        ).fetchall()
+        kw_scores = {
+            row[0]: {
+                "path": row[1],
+                "start_line": row[2],
+                "end_line": row[3],
+                "text": row[4],
+                "kw_score": 1.0 / (1.0 + abs(row[5])),
+            }
+            for row in fts_rows
         }
-        for row in fts_rows
-    }
+    finally:
+        db.close()
 
     # Weighted fusion
     all_ids = set(vec_scores) | set(kw_scores)
@@ -253,62 +283,84 @@ def hybrid_search(query, project="", max_results=None, min_score=None):
         )
 
     results.sort(key=lambda r: r["score"], reverse=True)
-    db.close()
     return results[:max_results]
 
 
 def delete_indexed_prefix(prefix: str):
     """Delete all indexed data for files matching a path prefix."""
-    db = get_db()
-    # Find all matching files
-    rows = db.execute("SELECT path FROM files WHERE path LIKE ?", (prefix + "%",)).fetchall()
+    writer = _get_search_writer()
 
-    for (file_path,) in rows:
-        # FTS5 sync: delete old entries
-        chunks = db.execute(
-            "SELECT id, text FROM chunks WHERE file_path=?", (file_path,)
+    # Read phase: find matching files
+    reader = writer.get_reader()
+    try:
+        rows = reader.execute(
+            "SELECT path FROM files WHERE path LIKE ?", (prefix + "%",)
         ).fetchall()
-        for chunk_id, text in chunks:
-            db.execute(
-                "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
-                (chunk_id, text),
-            )
-        # Delete chunks and vec entries
-        db.execute("DELETE FROM chunks WHERE file_path=?", (file_path,))
-        # Delete from files table
-        db.execute("DELETE FROM files WHERE path=?", (file_path,))
+    finally:
+        reader.close()
 
-    db.commit()
-    db.close()
+    if not rows:
+        return 0
+
+    # Write phase: delete via writer
+    def _delete_write(conn):
+        for (file_path,) in rows:
+            # FTS5 sync: delete old entries
+            chunks = conn.execute(
+                "SELECT id, text FROM chunks WHERE file_path=?", (file_path,)
+            ).fetchall()
+            for chunk_id, text in chunks:
+                conn.execute(
+                    "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
+                    (chunk_id, text),
+                )
+            conn.execute("DELETE FROM chunks WHERE file_path=?", (file_path,))
+            conn.execute("DELETE FROM files WHERE path=?", (file_path,))
+        conn.commit()
+
+    writer.submit(_delete_write)
     return len(rows)
 
 
 def cleanup_orphaned_entries():
     """Find and remove search index entries for files that no longer exist on disk."""
     cfg = get_config()
-    db = get_db()
-    rows = db.execute("SELECT path FROM files").fetchall()
+    writer = _get_search_writer()
 
-    removed = 0
+    # Read phase
+    reader = writer.get_reader()
+    try:
+        rows = reader.execute("SELECT path FROM files").fetchall()
+    finally:
+        reader.close()
+
+    # Identify orphans
+    orphaned = []
     for (file_path,) in rows:
         full_path = cfg.byomem / file_path
         if not full_path.exists():
-            # FTS5 sync
-            chunks = db.execute(
+            orphaned.append(file_path)
+
+    if not orphaned:
+        return 0
+
+    # Write phase
+    def _cleanup_write(conn):
+        for file_path in orphaned:
+            chunks = conn.execute(
                 "SELECT id, text FROM chunks WHERE file_path=?", (file_path,)
             ).fetchall()
             for chunk_id, text in chunks:
-                db.execute(
+                conn.execute(
                     "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
                     (chunk_id, text),
                 )
-            db.execute("DELETE FROM chunks WHERE file_path=?", (file_path,))
-            db.execute("DELETE FROM files WHERE path=?", (file_path,))
-            removed += 1
+            conn.execute("DELETE FROM chunks WHERE file_path=?", (file_path,))
+            conn.execute("DELETE FROM files WHERE path=?", (file_path,))
+        conn.commit()
 
-    db.commit()
-    db.close()
-    return removed
+    writer.submit(_cleanup_write)
+    return len(orphaned)
 
 
 def _chunk_structured(content, rel_path, cfg):
