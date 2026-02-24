@@ -47,14 +47,21 @@ def _save_embedding_cache(db, text_hash, embedding):
     )
 
 
-def _get_embedding(db, text, text_hash, *, model=None):
+def _get_embedding(db, text, text_hash, *, model=None, writer=None):
     """Return cached embedding or generate via OpenAI. Returns None on failure.
 
     Backward-compat wrapper around _fetch_embedding + _save_embedding_cache.
+
+    If writer is provided, cache writes go through it (for thread-safe writes
+    when db is a read-only connection).  If writer is None, falls back to
+    writing on db directly (legacy behavior).
     """
     embedding, is_new = _fetch_embedding(db, text, text_hash, model=model)
     if is_new and embedding is not None:
-        _save_embedding_cache(db, text_hash, embedding)
+        if writer is not None:
+            writer.submit(lambda conn: (_save_embedding_cache(conn, text_hash, embedding), conn.commit()))
+        else:
+            _save_embedding_cache(db, text_hash, embedding)
     return embedding
 
 

@@ -442,40 +442,42 @@ def descripterize_project(
     Returns:
         Stats dict with keys: described, failed, skipped, total.
     """
-    from core.code_index import get_code_db
+    from core.db_writer import get_writer
     from core.indexing_utils import _get_embeddings_batch, _save_embedding_cache
 
     cfg = get_config()
     if db_path is None:
         db_path = cfg.code_db_path
 
-    # check_same_thread=False is safe because all DB access is serialized
-    # behind db_lock when concurrency > 1
-    db = get_code_db(db_path, check_same_thread=False)
+    # All DB writes go through the single-writer queue; reads use WAL readers
+    writer = get_writer(db_path)
     path_filter = f"{project}/%"
 
-    # Query chunks needing descriptions
-    if force:
-        rows = db.execute(
-            "SELECT id, text FROM chunks WHERE file_path LIKE ?",
-            (path_filter,),
-        ).fetchall()
-    else:
-        rows = db.execute(
-            "SELECT id, text FROM chunks WHERE file_path LIKE ? AND description IS NULL",
-            (path_filter,),
-        ).fetchall()
+    # Query chunks needing descriptions via a read-only connection
+    reader = writer.get_reader()
+    try:
+        if force:
+            rows = reader.execute(
+                "SELECT id, text FROM chunks WHERE file_path LIKE ?",
+                (path_filter,),
+            ).fetchall()
+        else:
+            rows = reader.execute(
+                "SELECT id, text FROM chunks WHERE file_path LIKE ? AND description IS NULL",
+                (path_filter,),
+            ).fetchall()
+    finally:
+        reader.close()
 
     total = len(rows)
     if total == 0:
-        db.close()
         return {"described": 0, "failed": 0, "skipped": 0, "total": 0}
 
     batch_size = cfg.descripterizer_batch_size
     concurrency = cfg.descripterizer_concurrency
     described = 0
     failed = 0
-    db_lock = threading.Lock()
+    _counter_lock = threading.Lock()
 
     # Load .env for API keys (ZAI_API_KEY etc.)
     env_path = cfg.byomem / ".env" if (cfg.byomem / ".env").exists() else None
@@ -652,14 +654,20 @@ def descripterize_project(
         desc_texts = [d for _, d in to_embed]
         desc_hashes = [hashlib.sha256(d.encode()).hexdigest() for d in desc_texts]
 
-        with db_lock:
+        # Embedding cache lookups are read-only — use a WAL reader
+        rd = writer.get_reader()
+        try:
             embed_results = _get_embeddings_batch(
-                db, desc_texts, desc_hashes, model=cfg.code_embedding_model
+                rd, desc_texts, desc_hashes, model=cfg.code_embedding_model
             )
+        finally:
+            rd.close()
 
+        # Write all results atomically through the single-writer queue
+        def _write_fn(conn):
             for j, (chunk_id, desc) in enumerate(to_embed):
                 embedding, is_new = embed_results[j]
-                db.execute(
+                conn.execute(
                     "UPDATE chunks SET description = ? WHERE id = ?",
                     (desc, chunk_id),
                 )
@@ -667,19 +675,19 @@ def descripterize_project(
                     try:
                         import sqlite_vec
 
-                        db.execute("DELETE FROM chunks_vec WHERE rowid = ?", (chunk_id,))
-                        db.execute(
+                        conn.execute("DELETE FROM chunks_vec WHERE rowid = ?", (chunk_id,))
+                        conn.execute(
                             "INSERT INTO chunks_vec (rowid, embedding) VALUES (?, ?)",
                             (chunk_id, sqlite_vec.serialize_float32(embedding)),
                         )
                     except Exception:
                         pass
                     if is_new:
-                        _save_embedding_cache(db, desc_hashes[j], embedding)
+                        _save_embedding_cache(conn, desc_hashes[j], embedding)
+            conn.commit()
+            return len(to_embed)
 
-            db.commit()
-
-        return len(to_embed)
+        return writer.submit(_write_fn)
 
     def _worker(preferred_backend: str | None):
         """Pull batches from queue, try preferred backend then fallback to others."""
@@ -712,7 +720,7 @@ def descripterize_project(
                 _record_success(backend)
                 n = _store_results(batch_chunks, resp, backend)
 
-                with db_lock:
+                with _counter_lock:
                     if n > 0:
                         described += n
                     else:
@@ -730,7 +738,7 @@ def descripterize_project(
 
             if not success:
                 # All backends failed for this batch
-                with db_lock:
+                with _counter_lock:
                     failed += len(batch_chunks)
                     if on_batch:
                         on_batch(0, len(batch_chunks), described, failed, total, backend=None)
@@ -769,7 +777,6 @@ def descripterize_project(
             status = "DISABLED" if b in disabled_backends else f"{backend_cooldowns[b]}/{max_cooldowns} cooldowns"
             print(f"  Backend '{b}': {status}", file=sys.stderr)
 
-    db.close()
     return {
         "described": described,
         "failed": failed,

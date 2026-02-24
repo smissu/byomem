@@ -7,16 +7,25 @@ import sys
 from pathlib import Path
 
 from core.config import get_config
+from core.db_writer import get_writer
 from core.indexing_utils import (
     _chunk_text,
-    _get_embedding,
+    _fetch_embedding,
+    _get_embedding,  # noqa: F401 — kept for backward-compat test mocking
     _get_embeddings_batch,
     _save_embedding_cache,
 )
 
 
-def get_code_db(db_path, *, check_same_thread=True):
-    """Connect to code DB at db_path, load sqlite-vec, and initialise schema."""
+def get_code_db(db_path, *, check_same_thread=True, readonly=False):
+    """Connect to code DB at db_path, load sqlite-vec, and optionally initialise schema.
+
+    When *readonly* is True the connection is opened in WAL mode with
+    sqlite-vec loaded but schema initialisation is skipped (the writer
+    handles that).  Backward-compatible: the default behaviour
+    (readonly=False) still initialises the schema for callers that have
+    not migrated to the CodeDBWriter yet.
+    """
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(str(db_path), timeout=10, check_same_thread=check_same_thread)
@@ -32,9 +41,12 @@ def get_code_db(db_path, *, check_same_thread=True):
         vec_available = True
     except Exception:
         pass
-    cfg = get_config()
-    dim = cfg.code_embedding_dimension or cfg.embedding_dimension
-    _init_schema(db, dim, vec_available)
+
+    if not readonly:
+        cfg = get_config()
+        dim = cfg.code_embedding_dimension or cfg.embedding_dimension
+        _init_schema(db, dim, vec_available)
+
     return db
 
 
@@ -75,18 +87,19 @@ def _init_schema(db, embed_dim, vec_available=True):
     db.commit()
 
 
-def index_source_file(path: Path, project: str, db_path, source_root: Path | None = None):
+def index_source_file(path: Path, project: str, db_path, source_root: Path | None = None, *, writer=None):
     """Chunk, embed, and upsert a source file into the code index.
 
     Two-phase write pattern to minimise SQLite write-lock hold time:
-      Phase 1 (GATHER): read file, check hash, chunk, fetch embeddings — no writes.
-      Phase 2 (WRITE):  DELETE old + INSERT new in a single fast transaction.
+      Phase 1 (GATHER): read file, check hash, chunk, fetch embeddings — read-only.
+      Phase 2 (WRITE):  DELETE old + INSERT new via the CodeDBWriter.
 
     Args:
         path: Absolute path to the source file.
         project: Project name used as key prefix.
         db_path: Path to the code.db file.
         source_root: If given, store path relative to source_root (cleaner keys).
+        writer: Optional CodeDBWriter; obtained from get_writer(db_path) when None.
     """
     if path.is_symlink():
         return
@@ -101,38 +114,40 @@ def index_source_file(path: Path, project: str, db_path, source_root: Path | Non
 
     # --- Phase 1: GATHER (read-only, no write lock) ---
 
+    if writer is None:
+        writer = get_writer(db_path)
+
     cfg = get_config()
-    db = get_code_db(db_path)
-    if source_root is not None:
-        try:
-            rel = path.relative_to(source_root)
-        except ValueError:
+    reader = writer.get_reader()
+    try:
+        if source_root is not None:
+            try:
+                rel = path.relative_to(source_root)
+            except ValueError:
+                rel = path
+        else:
             rel = path
-    else:
-        rel = path
-    file_key = f"{project}/{rel}"
-    h = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        file_key = f"{project}/{rel}"
+        h = hashlib.sha256(content.encode("utf-8")).hexdigest()
 
-    row = db.execute("SELECT content_hash FROM files WHERE path=?", (file_key,)).fetchone()
-    if row and row[0] == h:
-        db.close()
-        return  # unchanged
+        row = reader.execute("SELECT content_hash FROM files WHERE path=?", (file_key,)).fetchone()
+        if row and row[0] == h:
+            return  # unchanged
 
-    chunks = _chunk_code(content, path.name)
+        chunks = _chunk_code(content, path.name)
 
-    # Prepare texts and hashes for batch embedding fetch
-    texts = []
-    text_hashes = []
-    for start_line, end_line, text in chunks:
-        text_hash = hashlib.sha256(text.encode()).hexdigest()
-        texts.append(text)
-        text_hashes.append(text_hash)
+        # Prepare texts and hashes for batch embedding fetch
+        texts = []
+        text_hashes = []
+        for start_line, end_line, text in chunks:
+            text_hash = hashlib.sha256(text.encode()).hexdigest()
+            texts.append(text)
+            text_hashes.append(text_hash)
 
-    # Batch fetch all embeddings (read-only: cache lookups + API calls, no DB writes)
-    embed_results = _get_embeddings_batch(db, texts, text_hashes, model=cfg.code_embedding_model)
-
-    # Release the read connection before the write phase
-    db.close()
+        # Batch fetch all embeddings (read-only: cache lookups + API calls, no DB writes)
+        embed_results = _get_embeddings_batch(reader, texts, text_hashes, model=cfg.code_embedding_model)
+    finally:
+        reader.close()
 
     # Collect gathered data: (start_line, end_line, text, text_hash, embedding, is_new)
     gathered = []
@@ -140,58 +155,59 @@ def index_source_file(path: Path, project: str, db_path, source_root: Path | Non
         embedding, is_new = embed_results[i]
         gathered.append((start_line, end_line, text, text_hashes[i], embedding, is_new))
 
-    # --- Phase 2: WRITE (fast transaction, no API calls) ---
+    # --- Phase 2: WRITE (fast transaction via writer, no API calls) ---
 
-    db = get_code_db(db_path)
+    def _write_phase(conn):
+        # FTS5 sync: explicitly delete old entries before removing chunks
+        old_chunks = conn.execute("SELECT id, text FROM chunks WHERE file_path=?", (file_key,)).fetchall()
+        for chunk_id, old_text in old_chunks:
+            conn.execute(
+                "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
+                (chunk_id, old_text),
+            )
+        conn.execute("DELETE FROM chunks WHERE file_path=?", (file_key,))
 
-    # FTS5 sync: explicitly delete old entries before removing chunks
-    old_chunks = db.execute("SELECT id, text FROM chunks WHERE file_path=?", (file_key,)).fetchall()
-    for chunk_id, old_text in old_chunks:
-        db.execute(
-            "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
-            (chunk_id, old_text),
+        for start_line, end_line, text, text_hash, embedding, is_new in gathered:
+            cur = conn.execute(
+                "INSERT INTO chunks (file_path, start_line, end_line, text) VALUES (?,?,?,?)",
+                (file_key, start_line, end_line, text),
+            )
+            chunk_id = cur.lastrowid
+            # Sync to FTS5
+            conn.execute("INSERT INTO chunks_fts(rowid, text) VALUES(?, ?)", (chunk_id, text))
+            # Vec insert only if embedding available
+            if embedding is not None:
+                try:
+                    import sqlite_vec
+
+                    conn.execute(
+                        "INSERT INTO chunks_vec (rowid, embedding) VALUES (?, ?)",
+                        (chunk_id, sqlite_vec.serialize_float32(embedding)),
+                    )
+                except Exception:
+                    pass
+            # Persist new embedding cache entries inside the write transaction
+            if is_new and embedding is not None:
+                _save_embedding_cache(conn, text_hash, embedding)
+
+        conn.execute(
+            "INSERT OR REPLACE INTO files (path, content_hash, modified_at) VALUES (?,?,?)",
+            (file_key, h, path.stat().st_mtime),
         )
-    db.execute("DELETE FROM chunks WHERE file_path=?", (file_key,))
+        conn.commit()
 
-    for start_line, end_line, text, text_hash, embedding, is_new in gathered:
-        cur = db.execute(
-            "INSERT INTO chunks (file_path, start_line, end_line, text) VALUES (?,?,?,?)",
-            (file_key, start_line, end_line, text),
-        )
-        chunk_id = cur.lastrowid
-        # Sync to FTS5
-        db.execute("INSERT INTO chunks_fts(rowid, text) VALUES(?, ?)", (chunk_id, text))
-        # Vec insert only if embedding available
-        if embedding is not None:
-            try:
-                import sqlite_vec
-
-                db.execute(
-                    "INSERT INTO chunks_vec (rowid, embedding) VALUES (?, ?)",
-                    (chunk_id, sqlite_vec.serialize_float32(embedding)),
-                )
-            except Exception:
-                pass
-        # Persist new embedding cache entries inside the write transaction
-        if is_new and embedding is not None:
-            _save_embedding_cache(db, text_hash, embedding)
-
-    db.execute(
-        "INSERT OR REPLACE INTO files (path, content_hash, modified_at) VALUES (?,?,?)",
-        (file_key, h, path.stat().st_mtime),
-    )
-    db.commit()
-    db.close()
+    writer.submit(_write_phase)
 
 
 def delete_indexed_source_file(
-    path_str: str, project: str, db_path, source_root: Path | None = None
+    path_str: str, project: str, db_path, source_root: Path | None = None, *, writer=None
 ):
     """Remove all chunks and index entries for a source file path.
 
     Args:
         path_str: Absolute (or relative) path string for the file.
         source_root: If given, make path_str relative to source_root before keying.
+        writer: Optional CodeDBWriter; obtained from get_writer(db_path) when None.
     """
     if source_root is not None:
         try:
@@ -200,18 +216,22 @@ def delete_indexed_source_file(
         except ValueError:
             pass
     file_key = f"{project}/{path_str}"
-    db = get_code_db(db_path)
 
-    old_chunks = db.execute("SELECT id, text FROM chunks WHERE file_path=?", (file_key,)).fetchall()
-    for chunk_id, old_text in old_chunks:
-        db.execute(
-            "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
-            (chunk_id, old_text),
-        )
-    db.execute("DELETE FROM chunks WHERE file_path=?", (file_key,))
-    db.execute("DELETE FROM files WHERE path=?", (file_key,))
-    db.commit()
-    db.close()
+    if writer is None:
+        writer = get_writer(db_path)
+
+    def _delete_phase(conn):
+        old_chunks = conn.execute("SELECT id, text FROM chunks WHERE file_path=?", (file_key,)).fetchall()
+        for chunk_id, old_text in old_chunks:
+            conn.execute(
+                "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
+                (chunk_id, old_text),
+            )
+        conn.execute("DELETE FROM chunks WHERE file_path=?", (file_key,))
+        conn.execute("DELETE FROM files WHERE path=?", (file_key,))
+        conn.commit()
+
+    writer.submit(_delete_phase)
 
 
 def _extract_definition_name(first_line: str) -> str | None:
@@ -274,7 +294,7 @@ def _extract_definition_name(first_line: str) -> str | None:
     return None
 
 
-def code_search(query, project="", max_results=None, min_score=None, db_path=None):
+def code_search(query, project="", max_results=None, min_score=None, db_path=None, *, writer=None):
     """Run weighted fusion of FTS5 keyword + sqlite-vec cosine search over code index."""
     cfg = get_config()
     if db_path is None:
@@ -284,70 +304,87 @@ def code_search(query, project="", max_results=None, min_score=None, db_path=Non
     if min_score is None:
         min_score = cfg.code_min_score
 
-    db = get_code_db(db_path)
-    candidates = max_results * cfg.code_candidate_multiplier
-    path_filter = f"{project}/%" if project else "%"
+    if writer is None:
+        writer = get_writer(db_path)
 
-    # Try to get query embedding
-    q_hash = hashlib.sha256(query.encode()).hexdigest()
-    q_embedding = _get_embedding(db, query, q_hash, model=cfg.code_embedding_model)
+    reader = writer.get_reader()
+    try:
+        candidates = max_results * cfg.code_candidate_multiplier
+        path_filter = f"{project}/%" if project else "%"
 
-    vec_scores = {}
-    if q_embedding is not None:
-        try:
-            import sqlite_vec
+        # Try to get query embedding (read-only fetch; cache write via writer on miss)
+        q_hash = hashlib.sha256(query.encode()).hexdigest()
+        q_embedding, is_new = _fetch_embedding(reader, query, q_hash, model=cfg.code_embedding_model)
 
-            vec_rows = db.execute(
-                """
-                SELECT c.id, c.file_path, c.start_line, c.end_line, c.text,
-                       vec_distance_cosine(cv.embedding, ?) AS distance
-                FROM chunks_vec cv
-                JOIN chunks c ON c.id = cv.rowid
-                WHERE c.file_path LIKE ?
-                ORDER BY distance ASC
-                LIMIT ?
-                """,
-                (
-                    sqlite_vec.serialize_float32(q_embedding),
-                    path_filter,
-                    candidates,
-                ),
-            ).fetchall()
-            vec_scores = {
-                row[0]: {
-                    "path": row[1],
-                    "start_line": row[2],
-                    "end_line": row[3],
-                    "text": row[4],
-                    "vec_score": 1.0 - row[5],
+        # If cache miss produced a new embedding, persist it through the writer
+        if is_new and q_embedding is not None:
+            _text_hash = q_hash
+            _embedding = q_embedding
+
+            def _cache_write(conn):
+                _save_embedding_cache(conn, _text_hash, _embedding)
+                conn.commit()
+
+            writer.submit(_cache_write)
+
+        vec_scores = {}
+        if q_embedding is not None:
+            try:
+                import sqlite_vec
+
+                vec_rows = reader.execute(
+                    """
+                    SELECT c.id, c.file_path, c.start_line, c.end_line, c.text,
+                           vec_distance_cosine(cv.embedding, ?) AS distance
+                    FROM chunks_vec cv
+                    JOIN chunks c ON c.id = cv.rowid
+                    WHERE c.file_path LIKE ?
+                    ORDER BY distance ASC
+                    LIMIT ?
+                    """,
+                    (
+                        sqlite_vec.serialize_float32(q_embedding),
+                        path_filter,
+                        candidates,
+                    ),
+                ).fetchall()
+                vec_scores = {
+                    row[0]: {
+                        "path": row[1],
+                        "start_line": row[2],
+                        "end_line": row[3],
+                        "text": row[4],
+                        "vec_score": 1.0 - row[5],
+                    }
+                    for row in vec_rows
                 }
-                for row in vec_rows
-            }
-        except Exception:
-            pass
+            except Exception:
+                pass
 
-    # Keyword search (always available)
-    fts_rows = db.execute(
-        """
-        SELECT c.id, c.file_path, c.start_line, c.end_line, c.text, rank
-        FROM chunks_fts
-        JOIN chunks c ON c.id = chunks_fts.rowid
-        WHERE chunks_fts MATCH ? AND c.file_path LIKE ?
-        ORDER BY rank
-        LIMIT ?
-        """,
-        (query, path_filter, candidates),
-    ).fetchall()
-    kw_scores = {
-        row[0]: {
-            "path": row[1],
-            "start_line": row[2],
-            "end_line": row[3],
-            "text": row[4],
-            "kw_score": 1.0 / (1.0 + abs(row[5])),
+        # Keyword search (always available)
+        fts_rows = reader.execute(
+            """
+            SELECT c.id, c.file_path, c.start_line, c.end_line, c.text, rank
+            FROM chunks_fts
+            JOIN chunks c ON c.id = chunks_fts.rowid
+            WHERE chunks_fts MATCH ? AND c.file_path LIKE ?
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (query, path_filter, candidates),
+        ).fetchall()
+        kw_scores = {
+            row[0]: {
+                "path": row[1],
+                "start_line": row[2],
+                "end_line": row[3],
+                "text": row[4],
+                "kw_score": 1.0 / (1.0 + abs(row[5])),
+            }
+            for row in fts_rows
         }
-        for row in fts_rows
-    }
+    finally:
+        reader.close()
 
     # Build query terms for definition boost matching
     query_terms = set(query.lower().split())
@@ -389,7 +426,6 @@ def code_search(query, project="", max_results=None, min_score=None, db_path=Non
         )
 
     results.sort(key=lambda r: (-r["score"], r["path"]))
-    db.close()
     return results[:max_results]
 
 
@@ -586,7 +622,7 @@ def _parse_git_diff(stdout: str, root: Path):
     return results
 
 
-def reconcile_project_index(project: str, tracked_paths: list[Path], db_path, source_root: Path):
+def reconcile_project_index(project: str, tracked_paths: list[Path], db_path, source_root: Path, *, writer=None):
     """Remove code.db entries for files no longer in the tracked set.
 
     Called after a full re-walk to clean up stale entries (e.g. files that
@@ -594,6 +630,9 @@ def reconcile_project_index(project: str, tracked_paths: list[Path], db_path, so
 
     Returns the number of stale entries removed.
     """
+    if writer is None:
+        writer = get_writer(db_path)
+
     tracked_keys = set()
     for p in tracked_paths:
         try:
@@ -602,78 +641,100 @@ def reconcile_project_index(project: str, tracked_paths: list[Path], db_path, so
             rel = p
         tracked_keys.add(f"{project}/{rel}")
 
-    db = get_code_db(db_path)
-    prefix = f"{project}/%"
-    indexed = db.execute("SELECT path FROM files WHERE path LIKE ?", (prefix,)).fetchall()
+    # Read phase: find stale keys
+    reader = writer.get_reader()
+    try:
+        prefix = f"{project}/%"
+        indexed = reader.execute("SELECT path FROM files WHERE path LIKE ?", (prefix,)).fetchall()
+    finally:
+        reader.close()
 
-    removed = 0
-    for (file_key,) in indexed:
-        if file_key not in tracked_keys:
+    stale_keys = [file_key for (file_key,) in indexed if file_key not in tracked_keys]
+
+    if not stale_keys:
+        return 0
+
+    # Write phase: remove stale entries
+    def _reconcile_write(conn):
+        for file_key in stale_keys:
             # FTS5 sync
-            old_chunks = db.execute(
+            old_chunks = conn.execute(
                 "SELECT id, text FROM chunks WHERE file_path=?", (file_key,)
             ).fetchall()
             for chunk_id, old_text in old_chunks:
-                db.execute(
+                conn.execute(
                     "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
                     (chunk_id, old_text),
                 )
-            db.execute("DELETE FROM chunks WHERE file_path=?", (file_key,))
-            db.execute("DELETE FROM files WHERE path=?", (file_key,))
-            removed += 1
+            conn.execute("DELETE FROM chunks WHERE file_path=?", (file_key,))
+            conn.execute("DELETE FROM files WHERE path=?", (file_key,))
+        conn.commit()
 
-    if removed:
-        db.commit()
-    db.close()
-    return removed
+    writer.submit(_reconcile_write)
+    return len(stale_keys)
 
 
-def clear_project_index(project: str, db_path):
+def clear_project_index(project: str, db_path, *, writer=None):
     """Delete all index entries for project from code DB (chunks + files tables)."""
-    db = get_code_db(db_path)
+    if writer is None:
+        writer = get_writer(db_path)
+
     prefix = f"{project}/%"
 
-    # FTS5 sync: delete from chunks_fts before removing chunks rows
-    old_chunks = db.execute(
-        "SELECT id, text FROM chunks WHERE file_path LIKE ?", (prefix,)
-    ).fetchall()
-    for chunk_id, old_text in old_chunks:
-        db.execute(
-            "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
-            (chunk_id, old_text),
-        )
+    def _clear_write(conn):
+        # FTS5 sync: delete from chunks_fts before removing chunks rows
+        old_chunks = conn.execute(
+            "SELECT id, text FROM chunks WHERE file_path LIKE ?", (prefix,)
+        ).fetchall()
+        for chunk_id, old_text in old_chunks:
+            conn.execute(
+                "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
+                (chunk_id, old_text),
+            )
+        conn.execute("DELETE FROM chunks WHERE file_path LIKE ?", (prefix,))
+        conn.execute("DELETE FROM files WHERE path LIKE ?", (prefix,))
+        conn.commit()
 
-    db.execute("DELETE FROM chunks WHERE file_path LIKE ?", (prefix,))
-    db.execute("DELETE FROM files WHERE path LIKE ?", (prefix,))
-    db.commit()
-    db.close()
+    writer.submit(_clear_write)
 
 
-def get_last_indexed_sha(project: str, db_path=None):
+def get_last_indexed_sha(project: str, db_path=None, *, writer=None):
     """Return the last indexed git SHA for project, or None if never indexed."""
     if db_path is None:
         db_path = get_config().code_db_path
-    db = get_code_db(db_path)
-    row = db.execute("SELECT value FROM meta WHERE key=?", (f"last_sha:{project}",)).fetchone()
-    db.close()
-    return row[0] if row else None
+
+    if writer is None:
+        writer = get_writer(db_path)
+
+    reader = writer.get_reader()
+    try:
+        row = reader.execute("SELECT value FROM meta WHERE key=?", (f"last_sha:{project}",)).fetchone()
+        return row[0] if row else None
+    finally:
+        reader.close()
 
 
-def set_last_indexed_sha(project: str, sha: str, db_path=None):
+def set_last_indexed_sha(project: str, sha: str, db_path=None, *, writer=None):
     """Store the last indexed git SHA and timestamp for project in code.db."""
     import time
 
     if db_path is None:
         db_path = get_config().code_db_path
-    db = get_code_db(db_path)
+
+    if writer is None:
+        writer = get_writer(db_path)
+
     now = str(time.time())
-    db.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-        (f"last_sha:{project}", sha),
-    )
-    db.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-        (f"last_indexed_at:{project}", now),
-    )
-    db.commit()
-    db.close()
+
+    def _set_sha(conn):
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (f"last_sha:{project}", sha),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (f"last_indexed_at:{project}", now),
+        )
+        conn.commit()
+
+    writer.submit(_set_sha)

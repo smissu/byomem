@@ -421,6 +421,12 @@ def run_worker():
         return
 
     try:
+        # Pre-initialize the CodeDBWriter so all process_job calls share it
+        from core.db_writer import get_writer
+        cfg_init = get_config()
+        if cfg_init.code_db_path:
+            get_writer(cfg_init.code_db_path)
+
         while True:
             pending = claim_pending()
             if not pending:
@@ -516,4 +522,6 @@ def run_worker():
             # Loop back to check for jobs that arrived while we were processing
             logger.info("Rechecking for new pending jobs")
     finally:
+        from core.db_writer import shutdown_all
+        shutdown_all()
         release_worker_lock()
