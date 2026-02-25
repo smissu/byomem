@@ -660,6 +660,20 @@ def cmd_queue(purge=False, history=0):
                     describe_entries.append(entry)
                 else:
                     summary_entries.append(entry)
+                    # Worker entries have both summarize_s and descripterize —
+                    # add to describe list too when descripterize actually ran
+                    d = entry.get("descripterize")
+                    if d and d.get("described", 0) + d.get("failed", 0) > 0:
+                        describe_entries.append({
+                            "ts": entry.get("ts", ""),
+                            "session": entry.get("session", "worker"),
+                            "project": entry.get("project", ""),
+                            "model": entry.get("model", "auto"),
+                            "duration_s": entry.get("descripterize_s", 0),
+                            "descripterize": d,
+                            "status": "ok" if d.get("failed", 0) == 0 else "partial",
+                            "pipeline": "describe",
+                        })
             except (json.JSONDecodeError, KeyError):
                 continue
 
