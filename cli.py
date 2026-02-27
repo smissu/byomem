@@ -484,7 +484,7 @@ def cmd_health(repair=False):
     return 0
 
 
-def cmd_queue(purge=False, history=0):
+def cmd_queue(purge=False, history=0, desc_detail=False):
     """Show queue status: pending, processing, and worker lock."""
     cfg = get_config()
     pending_dir = cfg.queue_path / "pending"
@@ -664,11 +664,16 @@ def cmd_queue(purge=False, history=0):
                     # add to describe list too when descripterize actually ran
                     d = entry.get("descripterize")
                     if d and d.get("described", 0) + d.get("failed", 0) > 0:
+                        # Use actual descripterizer model, not summarizer model
+                        desc_model = entry.get("desc_model", "") or d.get("desc_model", "")
+                        if not desc_model:
+                            # Old entries pre-date tracking — were gemini-only
+                            desc_model = entry.get("model", "gemini")
                         describe_entries.append({
                             "ts": entry.get("ts", ""),
                             "session": entry.get("session", "worker"),
                             "project": entry.get("project", ""),
-                            "model": entry.get("model", "auto"),
+                            "model": desc_model,
                             "duration_s": entry.get("descripterize_s", 0),
                             "descripterize": d,
                             "status": "ok" if d.get("failed", 0) == 0 else "partial",
@@ -706,7 +711,37 @@ def cmd_queue(purge=False, history=0):
 
         # Describe pipeline table
         recent_desc = describe_entries[-n:]
-        if recent_desc:
+        if recent_desc and desc_detail:
+            # Per-batch view from debug log
+            debug_path = cfg.queue_path / "descripterizer_debug.jsonl"
+            batch_entries = []
+            if debug_path.exists():
+                with open(debug_path) as df:
+                    for dline in df:
+                        try:
+                            de = json.loads(dline)
+                            if de.get("event") in ("batch_ok", "batch_fail"):
+                                batch_entries.append(de)
+                        except (json.JSONDecodeError, KeyError):
+                            continue
+            recent_batches = batch_entries[-n * 5:]  # show more rows for detail
+            if recent_batches:
+                from core.descripterizer import get_backend_model_label
+                print(f"\n  Describe history — per batch ({len(recent_batches)} batches):")
+                print(
+                    f"  {'Timestamp':<19}  {'Model':<20}  {'Chunks':>6}  {'Status'}"
+                )
+                print(
+                    f"  {'-'*19}  {'-'*20}  {'-'*6}  {'-'*6}"
+                )
+                for be in recent_batches:
+                    model = get_backend_model_label(be.get("backend"))
+                    chunks = len(be.get("chunk_ids", []))
+                    status = "ok" if be["event"] == "batch_ok" else "fail"
+                    print(
+                        f"  {be.get('ts', '?'):<19}  {model:<20}  {chunks:>6}  {status}"
+                    )
+        elif recent_desc:
             d_mw = max(5, max((len(e.get("model", "")) for e in recent_desc), default=5))
             print(f"\n  Describe history ({len(recent_desc)}/{len(describe_entries)}):")
             print(
@@ -1861,6 +1896,11 @@ def main():
         metavar="N",
         help="Show last N history entries (default: 10)",
     )
+    p_queue.add_argument(
+        "--desc-detail",
+        action="store_true",
+        help="Show per-batch describe rows instead of aggregate per-run",
+    )
 
     p_wipe = sub.add_parser("wipe", help="Wipe all data for a fresh start")
     p_wipe.add_argument(
@@ -2000,7 +2040,7 @@ def main():
     elif args.command == "merge":
         sys.exit(cmd_merge(args.project, args.branch))
     elif args.command == "queue":
-        sys.exit(cmd_queue(purge=args.purge, history=args.history))
+        sys.exit(cmd_queue(purge=args.purge, history=args.history, desc_detail=args.desc_detail))
     elif args.command == "wipe":
         if args.action == "list":
             cmd_projects()

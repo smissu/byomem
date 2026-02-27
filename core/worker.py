@@ -309,6 +309,7 @@ def process_job(
             "descripterize_s": descripterize_s,
             "reindex": reindex_stats if reindex_stats else None,
             "descripterize": descripterize_stats if descripterize_stats else None,
+            "desc_model": descripterize_stats.get("desc_model", "") if descripterize_stats else "",
         }
     finally:
         fcntl.flock(lock_file, fcntl.LOCK_UN)

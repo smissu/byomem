@@ -479,6 +479,7 @@ def descripterize_project(
     concurrency = cfg.descripterizer_concurrency
     described = 0
     failed = 0
+    backends_used: dict[str, int] = {}  # backend -> chunks described
     _counter_lock = threading.Lock()
 
     # Load .env for API keys (ZAI_API_KEY etc.)
@@ -725,6 +726,8 @@ def descripterize_project(
                 with _counter_lock:
                     if n > 0:
                         described += n
+                        if backend:
+                            backends_used[backend] = backends_used.get(backend, 0) + n
                     else:
                         failed += len(batch_chunks)
                     if on_batch:
@@ -779,9 +782,17 @@ def descripterize_project(
             status = "DISABLED" if b in disabled_backends else f"{backend_cooldowns[b]}/{max_cooldowns} cooldowns"
             print(f"  Backend '{b}': {status}", file=sys.stderr)
 
+    # Build model label from backends that actually processed chunks
+    if backends_used:
+        labels = [f"{get_backend_model_label(b)}({n})" for b, n in backends_used.items()]
+        desc_model = " / ".join(labels)
+    else:
+        desc_model = get_active_model_label()
+
     return {
         "described": described,
         "failed": failed,
         "skipped": total - described - failed,
         "total": total,
+        "desc_model": desc_model,
     }
