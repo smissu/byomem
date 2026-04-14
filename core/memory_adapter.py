@@ -10,10 +10,12 @@ from pydantic import ValidationError
 from core.models import MemoryRecord, MemoryScope
 
 
-def _relative_source_prefix(source_kind: str, path: Path, project_name: str | None = None) -> str:
+def _relative_source_prefix(source_kind: str, path: Path, project_root: Path | None = None) -> str:
     rel_path = path
-    if project_name is not None and project_name in path.parts:
-        rel_path = Path(project_name, *path.parts[path.parts.index(project_name) + 1 :])
+    if project_root is not None:
+        parts = path.parts
+        if project_root.name in parts:
+            rel_path = Path(project_root.name, *parts[parts.index(project_root.name) + 1 :])
     return f"{source_kind}:{rel_path.as_posix()}"
 
 
@@ -57,7 +59,7 @@ def branch_artifact_to_memory_record(
     return MemoryRecord(
         id=re.sub(r"[^a-zA-Z0-9_.-]+", "_", artifact_path.stem),
         scope=scope,
-        source=_relative_source_prefix(source_kind, artifact_path, project),
+        source=_relative_source_prefix(source_kind, artifact_path, Path(project)),
         content=content,
     )
 
@@ -69,21 +71,10 @@ def project_memory_path_to_memory_record(
     source_kind: str,
     scope_hint: str | None = None,
 ) -> MemoryRecord:
-    if scope_hint is not None and scope_hint not in {"project", "dir", "user", "agent"}:
-        raise ValidationError.from_exception_data(
-            "MemoryRecord",
-            [
-                {
-                    "type": "literal_error",
-                    "loc": ("scope_hint",),
-                    "msg": "Input should be 'project', 'dir', 'user', or 'agent'",
-                    "input": scope_hint,
-                    "ctx": {"expected": "'project', 'dir', 'user', or 'agent'"},
-                }
-            ],
-        )
-
-    scope: MemoryScope = "dir" if memory_path.parent != project_root else "project"
+    if scope_hint is not None:
+        scope = scope_hint  # intentionally explicit: caller decides final scope
+    else:
+        scope = "dir" if memory_path.parent != project_root else "project"
     return MemoryRecord(
         id=memory_path.stem,
         scope=scope,

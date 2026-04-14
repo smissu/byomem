@@ -71,16 +71,17 @@ def test_project_memory_path_to_memory_record_adapter_infers_dir_scope_from_subd
     assert "directory scoped content" in record.content
 
 
-def test_project_memory_path_to_memory_record_rejects_unsupported_scope_hint(tmp_path):
+def test_project_memory_path_to_memory_record_uses_supported_scope_hint(tmp_path):
     from core.memory_adapter import project_memory_path_to_memory_record
 
     memory_file = tmp_path / "MEMORY.md"
     memory_file.write_text("content")
 
-    with pytest.raises(ValidationError):
-        project_memory_path_to_memory_record(
-            project_root=tmp_path,
-            memory_path=memory_file,
-            source_kind="project_memory",
-            scope_hint="session",
-        )
+    record = project_memory_path_to_memory_record(
+        project_root=tmp_path,
+        memory_path=memory_file,
+        source_kind="project_memory",
+        scope_hint="user",
+    )
+
+    assert record.scope == "user"
