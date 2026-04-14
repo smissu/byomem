@@ -108,14 +108,12 @@ def test_retrieval_adapter_rejects_hidden_state_dependence(request_kwargs):
     "candidate_scope, should_keep",
     [
         ("project", True),
-        ("dir", True),
-        ("user", True),
-        ("agent", True),
-        ("session", False),
-        ("global", False),
+        ("dir", False),
+        ("user", False),
+        ("agent", False),
     ],
 )
-def test_retrieval_drops_out_of_scope_candidates_from_mixed_backend_results(monkeypatch, candidate_scope, should_keep):
+def test_retrieval_returns_only_candidates_matching_request_scope(monkeypatch, candidate_scope, should_keep):
     from core import memory_retrieval
 
     request = MemoryRetrievalRequest(
@@ -126,14 +124,11 @@ def test_retrieval_drops_out_of_scope_candidates_from_mixed_backend_results(monk
 
     candidate = MemoryRecord(
         id=f"mem_{candidate_scope}",
-        scope="project" if candidate_scope in {"project", "dir", "user", "agent"} else "project",
+        scope=candidate_scope,
         source=f"{candidate_scope}.md",
         content="mixed scope candidate",
-        lifecycle="active",
     )
 
-    # Force the test to model mixed backend results by mutating the candidate scope after creation.
-    candidate = candidate.model_copy(update={"scope": candidate_scope})
     monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: [candidate])
 
     response = memory_retrieval.retrieve_memory(request)
@@ -144,8 +139,32 @@ def test_retrieval_drops_out_of_scope_candidates_from_mixed_backend_results(monk
         assert response.results == []
 
 
+def test_retrieval_filters_mixed_scope_backend_batches(monkeypatch):
+    from core import memory_retrieval
+
+    request = MemoryRetrievalRequest(
+        query="find release notes",
+        scope="project",
+        filters={"project": "repo-a", "lifecycle": ["active", "archived", "superseded"]},
+    )
+
+    candidates = [
+        MemoryRecord(id="project-1", scope="project", source="p.md", content="keep me"),
+        MemoryRecord(id="dir-1", scope="dir", source="d.md", content="drop me"),
+        MemoryRecord(id="user-1", scope="user", source="u.md", content="drop me"),
+        MemoryRecord(id="agent-1", scope="agent", source="a.md", content="drop me"),
+    ]
+
+    monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: candidates)
+
+    response = memory_retrieval.retrieve_memory(request)
+
+    assert [r.scope for r in response.results] == ["project"]
+    assert [r.id for r in response.results] == ["project-1"]
+
+
 @pytest.mark.parametrize("scope", ["project", "dir", "user", "agent"])
-def test_retrieval_keeps_lifecycle_defaults_intact_while_filtering_by_scope(monkeypatch, scope):
+def test_retrieval_keeps_lifecycle_defaults_intact_while_filtering_by_request_scope(monkeypatch, scope):
     from core import memory_retrieval
 
     candidate = MemoryRecord(

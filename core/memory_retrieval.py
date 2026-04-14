@@ -26,7 +26,8 @@ def _filtered_results(candidates: list[MemoryRecord], request: MemoryRetrievalRe
     return [
         candidate
         for candidate in candidates
-        if candidate.scope in _ALLOWED_SCOPES
+        if candidate.scope == request.scope
+        and candidate.scope in _ALLOWED_SCOPES
         and candidate.lifecycle in allowed
         and candidate.lifecycle != "deleted"
         and candidate.lifecycle != "expired"
