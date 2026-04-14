@@ -1,10 +1,14 @@
-"""Pydantic models for structured data flow throughout byomem."""
+"""Pydantic models for structured data flow throughout byomem.
+
+This file contains the tranche-1 minimum contract only; later sprints may extend
+these models, but should avoid breaking the base shape defined here.
+"""
 
 from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class Turn(BaseModel):
@@ -67,3 +71,47 @@ class BatchDescriptionResponse(BaseModel):
     """Response wrapper for batch code chunk descriptions."""
 
     descriptions: list[ChunkDescription]
+
+
+MemoryScope = Literal["project", "dir", "user", "agent"]
+MemoryLifecycle = Literal["active", "superseded", "archived", "deleted", "expired"]
+
+
+class MemoryRecord(BaseModel):
+    """Canonical memory record for tranche-1 contract tests.
+
+    Retrieval metadata such as score or explainability belongs on the response
+    envelope, not on the stored memory record.
+    """
+
+    id: str
+    scope: MemoryScope
+    source: str
+    content: str
+    lifecycle: MemoryLifecycle = "active"
+
+
+class MemoryRetrievalRequest(BaseModel):
+    """Stateless retrieval request contract."""
+
+    query: str
+    scope: MemoryScope
+    filters: dict[str, str | list[str]] = Field(default_factory=dict)
+
+    @field_validator("filters")
+    @classmethod
+    def _validate_filters(cls, value: dict[str, str | list[str]]):
+        allowed_keys = {"project", "dir", "user", "agent", "lifecycle", "source"}
+        if not value:
+            raise ValueError("filters must include at least one supported filter")
+        invalid_keys = set(value) - allowed_keys
+        if invalid_keys:
+            raise ValueError(f"unsupported filters: {', '.join(sorted(invalid_keys))}")
+        return value
+
+
+class MemoryRetrievalResponse(BaseModel):
+    """Stateless retrieval response contract."""
+
+    results: list[MemoryRecord]
+    request: MemoryRetrievalRequest = Field(...)
