@@ -91,6 +91,17 @@ class MemoryRecord(BaseModel):
     lifecycle: MemoryLifecycle = "active"
 
 
+class MemoryRetrievalResult(BaseModel):
+    """Returned retrieval result with compact explainability metadata."""
+
+    record: MemoryRecord
+    reason: str = "scope/lifecycle match"
+    provenance: str = ""
+
+    def __getattr__(self, item: str):
+        return getattr(self.record, item)
+
+
 class MemoryRetrievalRequest(BaseModel):
     """Stateless retrieval request contract."""
 
@@ -113,5 +124,5 @@ class MemoryRetrievalRequest(BaseModel):
 class MemoryRetrievalResponse(BaseModel):
     """Stateless retrieval response contract."""
 
-    results: list[MemoryRecord]
+    results: list[MemoryRetrievalResult]
     request: MemoryRetrievalRequest = Field(...)

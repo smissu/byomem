@@ -6,7 +6,7 @@ cross-scope precedence or ranking.
 
 from __future__ import annotations
 
-from core.models import MemoryRecord, MemoryRetrievalRequest, MemoryRetrievalResponse
+from core.models import MemoryRecord, MemoryRetrievalRequest, MemoryRetrievalResponse, MemoryRetrievalResult
 
 
 _ALLOWED_LIFECYCLES = {"active", "archived", "superseded"}
@@ -19,14 +19,18 @@ def fetch_candidates(request: MemoryRetrievalRequest) -> list[MemoryRecord]:
     return []
 
 
-def _filtered_results(candidates: list[MemoryRecord], request: MemoryRetrievalRequest) -> list[MemoryRecord]:
+def _filtered_results(candidates: list[MemoryRecord], request: MemoryRetrievalRequest) -> list[MemoryRetrievalResult]:
     allowed_lifecycles = request.filters.get("lifecycle")
     allowed = set(allowed_lifecycles) if isinstance(allowed_lifecycles, list) else _ALLOWED_LIFECYCLES
     allowed &= _ALLOWED_LIFECYCLES
 
     # Tranche 1 is exact-match only: keep only candidates in the explicit request scope.
     return [
-        candidate
+        MemoryRetrievalResult(
+            record=candidate,
+            reason="scope/lifecycle match",
+            provenance=f"{candidate.source}#{candidate.id}",
+        )
         for candidate in candidates
         if candidate.scope == request.scope
         and candidate.scope in _ALLOWED_SCOPES

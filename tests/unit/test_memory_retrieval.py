@@ -1,8 +1,19 @@
 """RED seam tests for the stateless retrieval adapter."""
 
+from dataclasses import dataclass
+
 import pytest
 
 from core.models import MemoryRecord, MemoryRetrievalRequest, MemoryRetrievalResponse
+
+
+@dataclass(frozen=True)
+class PersistedArtifactFixture:
+    source_kind: str
+    path: str
+    scope: str
+    lifecycle: str = "active"
+    content: str = "persisted content"
 
 
 @pytest.mark.parametrize("scope", ["project", "dir", "user", "agent"])
@@ -189,39 +200,77 @@ def test_retrieval_keeps_lifecycle_defaults_intact_while_filtering_by_request_sc
     assert response.request == request
 
 
-def test_retrieval_uses_normalized_persisted_candidates(monkeypatch, tmp_path):
+def test_retrieval_includes_compact_reason_metadata_per_result(monkeypatch):
     from core import memory_retrieval
 
-    persisted = tmp_path / "main.md"
-    persisted.write_text(
-        "# project-x\n\n"
-        "## Key Decisions & Fixes\n"
-        "- [2026-04-14] [FEATURE] Normalized candidate from persisted artifact\n"
-    )
-
-    normalized = MemoryRecord(
-        id="normalized-1",
-        scope="project",
-        source="main.md",
-        content="Normalized candidate from persisted artifact",
-    )
-
-    monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: [normalized])
+    candidate = MemoryRecord(id="main-1", scope="project", source="main.md", content="keep me", lifecycle="active")
+    monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: [candidate])
 
     request = MemoryRetrievalRequest(
-        query="normalized persisted candidates",
+        query="reason metadata",
         scope="project",
         filters={"project": "repo-a", "lifecycle": ["active"]},
     )
 
     response = memory_retrieval.retrieve_memory(request)
 
-    assert response.results[0].source == "main.md"
-    assert response.results[0].scope == "project"
+    assert len(response.results) == 1
+    assert response.results[0].record == candidate
+    assert response.results[0].reason == "scope/lifecycle match"
+    assert response.results[0].provenance == "main.md#main-1"
+
+
+def test_retrieval_request_echo_and_stateless_behavior_remain_unchanged(monkeypatch):
+    from core import memory_retrieval
+
+    request = MemoryRetrievalRequest(
+        query="echo me",
+        scope="project",
+        filters={"project": "repo-a", "lifecycle": ["active"]},
+    )
+
+    monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda incoming: [])
+
+    response = memory_retrieval.retrieve_memory(request)
+
     assert response.request == request
+    assert response.results == []
 
 
-def test_retrieval_preserves_request_scope_and_lifecycle_behavior_on_normalized_candidates(monkeypatch):
+def test_retrieval_assembles_candidates_from_persisted_artifacts_via_adapter(monkeypatch):
+    from core import memory_retrieval
+
+    fixtures = [
+        PersistedArtifactFixture(source_kind="main_md", path="main.md", scope="project", content="main summary"),
+        PersistedArtifactFixture(source_kind="branch_commit", path="branches/2026-04-14-abc12345/commit.md", scope="project", content="branch summary"),
+        PersistedArtifactFixture(source_kind="branch_log", path="branches/2026-04-14-abc12345/log.md", scope="project", content="turn summary"),
+    ]
+
+    seen = {}
+
+    def fake_assemble_candidates(request):
+        seen["request"] = request
+        return [
+            MemoryRecord(id=f"{item.source_kind}-1", scope=item.scope, source=item.path, content=item.content)
+            for item in fixtures
+        ]
+
+    monkeypatch.setattr(memory_retrieval, "fetch_candidates", fake_assemble_candidates)
+
+    request = MemoryRetrievalRequest(
+        query="assembled from persisted artifacts",
+        scope="project",
+        filters={"project": "repo-a", "lifecycle": ["active", "archived", "superseded"]},
+    )
+
+    response = memory_retrieval.retrieve_memory(request)
+
+    assert seen["request"] == request
+    assert [r.source for r in response.results] == ["main.md", "branches/2026-04-14-abc12345/commit.md", "branches/2026-04-14-abc12345/log.md"]
+    assert [r.content for r in response.results] == ["main summary", "branch summary", "turn summary"]
+
+
+def test_retrieval_preserves_request_scope_and_lifecycle_behavior_on_persisted_candidates(monkeypatch):
     from core import memory_retrieval
 
     candidates = [
