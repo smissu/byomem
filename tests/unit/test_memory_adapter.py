@@ -1,7 +1,5 @@
 """RED seam-bridging tests for mapping write-path artifacts into memory contracts."""
 
-from pathlib import Path
-
 import pytest
 from pydantic import ValidationError
 
@@ -85,3 +83,51 @@ def test_project_memory_path_to_memory_record_uses_supported_scope_hint(tmp_path
     )
 
     assert record.scope == "user"
+
+
+def test_main_md_path_normalizes_to_memory_record(tmp_path):
+    from core.memory_adapter import persisted_artifact_to_memory_record
+
+    main_md = tmp_path / "main.md"
+    main_md.write_text(
+        "# project-x\n\n"
+        "## Key Decisions & Fixes\n"
+        "- [2026-04-14] [FEATURE] Added memory seam: mapped from main.md\n"
+    )
+
+    record = persisted_artifact_to_memory_record(
+        project_root=tmp_path,
+        artifact_path=main_md,
+        source_kind="main_md",
+        scope="project",
+    )
+
+    assert isinstance(record, MemoryRecord)
+    assert record.scope == "project"
+    assert record.source.endswith("main.md")
+    assert "Added memory seam" in record.content
+
+
+def test_branch_log_path_normalizes_to_memory_record(tmp_path):
+    from core.memory_adapter import persisted_artifact_to_memory_record
+
+    log_md = tmp_path / "branches" / "2026-04-14-abc12345" / "log.md"
+    log_md.parent.mkdir(parents=True)
+    log_md.write_text(
+        "<!-- last_id: turn-1 -->\n"
+        "---\n"
+        "**[2026-04-14T10:00:00]** user asked for scope-aware retrieval\n\n"
+        "assistant recorded the outcome\n"
+    )
+
+    record = persisted_artifact_to_memory_record(
+        project_root=tmp_path,
+        artifact_path=log_md,
+        source_kind="branch_log",
+        scope="project",
+        turn_id="turn-1",
+    )
+
+    assert record.scope == "project"
+    assert record.source.endswith("branches/2026-04-14-abc12345/log.md")
+    assert "scope-aware retrieval" in record.content

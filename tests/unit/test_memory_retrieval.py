@@ -187,3 +187,58 @@ def test_retrieval_keeps_lifecycle_defaults_intact_while_filtering_by_request_sc
 
     assert response.results[0].lifecycle == "active"
     assert response.request == request
+
+
+def test_retrieval_uses_normalized_persisted_candidates(monkeypatch, tmp_path):
+    from core import memory_retrieval
+
+    persisted = tmp_path / "main.md"
+    persisted.write_text(
+        "# project-x\n\n"
+        "## Key Decisions & Fixes\n"
+        "- [2026-04-14] [FEATURE] Normalized candidate from persisted artifact\n"
+    )
+
+    normalized = MemoryRecord(
+        id="normalized-1",
+        scope="project",
+        source="main.md",
+        content="Normalized candidate from persisted artifact",
+    )
+
+    monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: [normalized])
+
+    request = MemoryRetrievalRequest(
+        query="normalized persisted candidates",
+        scope="project",
+        filters={"project": "repo-a", "lifecycle": ["active"]},
+    )
+
+    response = memory_retrieval.retrieve_memory(request)
+
+    assert response.results[0].source == "main.md"
+    assert response.results[0].scope == "project"
+    assert response.request == request
+
+
+def test_retrieval_preserves_request_scope_and_lifecycle_behavior_on_normalized_candidates(monkeypatch):
+    from core import memory_retrieval
+
+    candidates = [
+        MemoryRecord(id="keep", scope="project", source="main.md", content="keep", lifecycle="active"),
+        MemoryRecord(id="drop-scope", scope="dir", source="commit.md", content="drop", lifecycle="active"),
+        MemoryRecord(id="drop-life", scope="project", source="log.md", content="drop", lifecycle="deleted"),
+    ]
+
+    monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: candidates)
+
+    request = MemoryRetrievalRequest(
+        query="request-driven",
+        scope="project",
+        filters={"project": "repo-a", "lifecycle": ["active", "archived", "superseded"]},
+    )
+
+    response = memory_retrieval.retrieve_memory(request)
+
+    assert [r.id for r in response.results] == ["keep"]
+    assert response.request == request
