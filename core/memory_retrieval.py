@@ -1,4 +1,8 @@
-"""Minimal stateless retrieval seam for tranche-1 contract bridging."""
+"""Minimal stateless retrieval seam for tranche-1 contract bridging.
+
+Tranche 1 uses strict exact request-scope matching and does not yet implement
+cross-scope precedence or ranking.
+"""
 
 from __future__ import annotations
 
@@ -17,20 +21,17 @@ def fetch_candidates(request: MemoryRetrievalRequest) -> list[MemoryRecord]:
 
 def _filtered_results(candidates: list[MemoryRecord], request: MemoryRetrievalRequest) -> list[MemoryRecord]:
     allowed_lifecycles = request.filters.get("lifecycle")
-    if isinstance(allowed_lifecycles, list):
-        allowed = set(allowed_lifecycles)
-    else:
-        allowed = {"active", "archived", "superseded"}
-
+    allowed = set(allowed_lifecycles) if isinstance(allowed_lifecycles, list) else _ALLOWED_LIFECYCLES
     allowed &= _ALLOWED_LIFECYCLES
+
+    # Tranche 1 is exact-match only: keep only candidates in the explicit request scope.
     return [
         candidate
         for candidate in candidates
         if candidate.scope == request.scope
         and candidate.scope in _ALLOWED_SCOPES
         and candidate.lifecycle in allowed
-        and candidate.lifecycle != "deleted"
-        and candidate.lifecycle != "expired"
+        and candidate.lifecycle not in {"deleted", "expired"}
     ]
 
 
