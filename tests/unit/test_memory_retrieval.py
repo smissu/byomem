@@ -102,3 +102,69 @@ def test_retrieval_adapter_rejects_hidden_state_dependence(request_kwargs):
 
     assert response.request == request
     assert response.results == []
+
+
+@pytest.mark.parametrize(
+    "candidate_scope, should_keep",
+    [
+        ("project", True),
+        ("dir", True),
+        ("user", True),
+        ("agent", True),
+        ("session", False),
+        ("global", False),
+    ],
+)
+def test_retrieval_drops_out_of_scope_candidates_from_mixed_backend_results(monkeypatch, candidate_scope, should_keep):
+    from core import memory_retrieval
+
+    request = MemoryRetrievalRequest(
+        query="find release notes",
+        scope="project",
+        filters={"project": "repo-a", "lifecycle": ["active", "archived", "superseded"]},
+    )
+
+    candidate = MemoryRecord(
+        id=f"mem_{candidate_scope}",
+        scope="project" if candidate_scope in {"project", "dir", "user", "agent"} else "project",
+        source=f"{candidate_scope}.md",
+        content="mixed scope candidate",
+        lifecycle="active",
+    )
+
+    # Force the test to model mixed backend results by mutating the candidate scope after creation.
+    candidate = candidate.model_copy(update={"scope": candidate_scope})
+    monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: [candidate])
+
+    response = memory_retrieval.retrieve_memory(request)
+
+    if should_keep:
+        assert [r.id for r in response.results] == [candidate.id]
+    else:
+        assert response.results == []
+
+
+@pytest.mark.parametrize("scope", ["project", "dir", "user", "agent"])
+def test_retrieval_keeps_lifecycle_defaults_intact_while_filtering_by_scope(monkeypatch, scope):
+    from core import memory_retrieval
+
+    candidate = MemoryRecord(
+        id="mem_active",
+        scope=scope,
+        source="notes.md",
+        content="candidate content",
+    )
+    assert candidate.lifecycle == "active"
+
+    monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: [candidate])
+
+    request = MemoryRetrievalRequest(
+        query="find release notes",
+        scope=scope,
+        filters={scope: f"{scope}-a", "lifecycle": ["active"]},
+    )
+
+    response = memory_retrieval.retrieve_memory(request)
+
+    assert response.results[0].lifecycle == "active"
+    assert response.request == request

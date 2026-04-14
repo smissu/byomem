@@ -6,6 +6,7 @@ from core.models import MemoryRecord, MemoryRetrievalRequest, MemoryRetrievalRes
 
 
 _ALLOWED_LIFECYCLES = {"active", "archived", "superseded"}
+_ALLOWED_SCOPES = {"project", "dir", "user", "agent"}
 
 
 def fetch_candidates(request: MemoryRetrievalRequest) -> list[MemoryRecord]:
@@ -25,7 +26,10 @@ def _filtered_results(candidates: list[MemoryRecord], request: MemoryRetrievalRe
     return [
         candidate
         for candidate in candidates
-        if candidate.lifecycle in allowed and candidate.lifecycle != "deleted" and candidate.lifecycle != "expired"
+        if candidate.scope in _ALLOWED_SCOPES
+        and candidate.lifecycle in allowed
+        and candidate.lifecycle != "deleted"
+        and candidate.lifecycle != "expired"
     ]
 
 
