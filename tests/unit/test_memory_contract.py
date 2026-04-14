@@ -10,6 +10,7 @@ from core.models import (
     MemoryRecord,
     MemoryRetrievalRequest,
     MemoryRetrievalResponse,
+    MemoryRetrievalResult,
 )
 
 
@@ -128,15 +129,19 @@ def test_memory_retrieval_response_requires_explicit_result_shape():
     assert response.request.scope == "project"
 
 
-def test_memory_retrieval_response_round_trips_canonical_result_shape():
+def test_memory_retrieval_response_round_trips_result_wrapper_shape():
     response = MemoryRetrievalResponse(
         results=[
             {
-                "id": "mem_1",
-                "scope": "project",
-                "source": "notes.md",
-                "content": "Result content",
-                "lifecycle": "active",
+                "record": {
+                    "id": "mem_1",
+                    "scope": "project",
+                    "source": "notes.md",
+                    "content": "Result content",
+                    "lifecycle": "active",
+                },
+                "reason": "scope/lifecycle match",
+                "provenance": "notes.md#mem_1",
             }
         ],
         request={
@@ -145,5 +150,8 @@ def test_memory_retrieval_response_round_trips_canonical_result_shape():
             "filters": {"project": "repo-a"},
         },
     )
-    assert response.results[0].id == "mem_1"
+    assert isinstance(response.results[0], MemoryRetrievalResult)
+    assert response.results[0].record.id == "mem_1"
+    assert response.results[0].reason == "scope/lifecycle match"
+    assert response.results[0].provenance == "notes.md#mem_1"
     assert response.request.scope == "project"
