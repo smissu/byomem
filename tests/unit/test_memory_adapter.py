@@ -105,7 +105,42 @@ def test_main_md_path_normalizes_to_memory_record(tmp_path):
     assert isinstance(record, MemoryRecord)
     assert record.scope == "project"
     assert record.source.endswith("main.md")
+    assert record.source.startswith("project_memory:")
     assert "Added memory seam" in record.content
+    assert "turn:" not in record.content
+
+
+def test_main_md_path_requires_explicit_project_memory_source_kind(tmp_path):
+    from core.memory_adapter import persisted_artifact_to_memory_record
+
+    main_md = tmp_path / "main.md"
+    main_md.write_text("# project-x\n\nmain.md provenance is intentionally lighter than branch artifacts\n")
+
+    record = persisted_artifact_to_memory_record(
+        project_root=tmp_path,
+        artifact_path=main_md,
+        source_kind="main_md",
+        scope="project",
+    )
+
+    assert record.source.endswith("main.md")
+    assert record.source.startswith("project_memory:")
+    assert "turn:" not in record.content
+
+
+def test_persisted_artifact_to_memory_record_rejects_unsupported_source_kind(tmp_path):
+    from core.memory_adapter import persisted_artifact_to_memory_record
+
+    artifact = tmp_path / "artifact.md"
+    artifact.write_text("content")
+
+    with pytest.raises(ValueError, match="unsupported persisted artifact source_kind"):
+        persisted_artifact_to_memory_record(
+            project_root=tmp_path,
+            artifact_path=artifact,
+            source_kind="unsupported_kind",
+            scope="project",
+        )
 
 
 def test_branch_log_path_normalizes_to_memory_record(tmp_path):
