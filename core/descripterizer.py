@@ -149,13 +149,13 @@ def get_active_model_label() -> str:
                 model = model.rsplit("/", 1)[-1]
             labels.append(model)
         elif b == "lmstudio":
-            labels.append(cfg.descripterizer_model or cfg.summarizer_lmstudio_model or "lmstudio")
+            labels.append(cfg.summarizer_lmstudio_model or "lmstudio")
         elif b == "zai":
             labels.append(cfg.descripterizer_zai_model)
         else:
             is_ollama, model_override = _parse_ollama_backend(b)
             if is_ollama:
-                labels.append(model_override or cfg.summarizer_model)
+                labels.append(model_override or cfg.descripterizer_model or cfg.summarizer_model)
             else:
                 labels.append(b)
 

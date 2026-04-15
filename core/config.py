@@ -130,6 +130,12 @@ def _load_config() -> Config:
     if "concurrency" in summarizer:
         kwargs["summarizer_concurrency"] = summarizer["concurrency"]
 
+    descripterizer = data.get("descripterizer", {})
+    if "model" in descripterizer:
+        kwargs["descripterizer_model"] = descripterizer["model"]
+    if "fallback_model" in descripterizer:
+        kwargs["descripterizer_fallback_model"] = descripterizer["fallback_model"]
+
     embeddings = data.get("embeddings", {})
     if "model" in embeddings:
         kwargs["embedding_model"] = embeddings["model"]
@@ -164,11 +170,6 @@ def _load_config() -> Config:
         kwargs["code_embedding_dimension"] = int(memory["code_embedding_dimension"])
     if "code_chunk_tokens" in memory:
         kwargs["code_chunk_tokens"] = int(memory["code_chunk_tokens"])
-    if "descripterizer_model" in data:
-        kwargs["descripterizer_model"] = data["descripterizer_model"]
-    if "descripterizer_fallback_model" in data:
-        kwargs["descripterizer_fallback_model"] = data["descripterizer_fallback_model"]
-
     if "descripterizer_batch_size" in memory:
         kwargs["descripterizer_batch_size"] = int(memory["descripterizer_batch_size"])
     if "descripterizer_max_tokens" in memory:
