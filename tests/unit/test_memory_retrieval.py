@@ -50,6 +50,9 @@ def test_retrieval_adapter_lifecycle_filtering_contract(monkeypatch, lifecycle, 
         MemoryRecord(
             id="mem_1",
             scope="project",
+            scope_id="repo-a",
+            created_at="2026-04-15T00:00:00Z",
+            updated_at="2026-04-15T01:00:00Z",
             source="notes.md",
             content="candidate content",
             lifecycle=lifecycle,
@@ -136,6 +139,9 @@ def test_retrieval_returns_only_candidates_matching_request_scope(monkeypatch, c
     candidate = MemoryRecord(
         id=f"mem_{candidate_scope}",
         scope=candidate_scope,
+        scope_id="repo-a",
+        created_at="2026-04-15T00:00:00Z",
+        updated_at="2026-04-15T01:00:00Z",
         source=f"{candidate_scope}.md",
         content="mixed scope candidate",
     )
@@ -160,10 +166,10 @@ def test_retrieval_filters_mixed_scope_backend_batches(monkeypatch):
     )
 
     candidates = [
-        MemoryRecord(id="project-1", scope="project", source="p.md", content="keep me"),
-        MemoryRecord(id="dir-1", scope="dir", source="d.md", content="drop me"),
-        MemoryRecord(id="user-1", scope="user", source="u.md", content="drop me"),
-        MemoryRecord(id="agent-1", scope="agent", source="a.md", content="drop me"),
+        MemoryRecord(id="project-1", scope="project", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="p.md", content="keep me"),
+        MemoryRecord(id="dir-1", scope="dir", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="d.md", content="drop me"),
+        MemoryRecord(id="user-1", scope="user", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="u.md", content="drop me"),
+        MemoryRecord(id="agent-1", scope="agent", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="a.md", content="drop me"),
     ]
 
     monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: candidates)
@@ -181,6 +187,9 @@ def test_retrieval_keeps_lifecycle_defaults_intact_while_filtering_by_request_sc
     candidate = MemoryRecord(
         id="mem_active",
         scope=scope,
+        scope_id="repo-a",
+        created_at="2026-04-15T00:00:00Z",
+        updated_at="2026-04-15T01:00:00Z",
         source="notes.md",
         content="candidate content",
     )
@@ -203,7 +212,7 @@ def test_retrieval_keeps_lifecycle_defaults_intact_while_filtering_by_request_sc
 def test_retrieval_includes_compact_reason_metadata_per_result(monkeypatch):
     from core import memory_retrieval
 
-    candidate = MemoryRecord(id="main-1", scope="project", source="main.md", content="keep me", lifecycle="active")
+    candidate = MemoryRecord(id="main-1", scope="project", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="main.md", content="keep me", lifecycle="active")
     monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: [candidate])
 
     request = MemoryRetrievalRequest(
@@ -251,7 +260,7 @@ def test_retrieval_assembles_candidates_from_persisted_artifacts_via_adapter(mon
     def fake_assemble_candidates(request):
         seen["request"] = request
         return [
-            MemoryRecord(id=f"{item.source_kind}-1", scope=item.scope, source=item.path, content=item.content)
+            MemoryRecord(id=f"{item.source_kind}-1", scope=item.scope, scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source=item.path, content=item.content)
             for item in fixtures
         ]
 
@@ -274,9 +283,9 @@ def test_retrieval_preserves_request_scope_and_lifecycle_behavior_on_persisted_c
     from core import memory_retrieval
 
     candidates = [
-        MemoryRecord(id="keep", scope="project", source="main.md", content="keep", lifecycle="active"),
-        MemoryRecord(id="drop-scope", scope="dir", source="commit.md", content="drop", lifecycle="active"),
-        MemoryRecord(id="drop-life", scope="project", source="log.md", content="drop", lifecycle="deleted"),
+        MemoryRecord(id="keep", scope="project", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="main.md", content="keep", lifecycle="active"),
+        MemoryRecord(id="drop-scope", scope="dir", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="commit.md", content="drop", lifecycle="active"),
+        MemoryRecord(id="drop-life", scope="project", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="log.md", content="drop", lifecycle="deleted"),
     ]
 
     monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: candidates)

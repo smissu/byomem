@@ -66,8 +66,13 @@ def branch_artifact_to_memory_record(
     return MemoryRecord(
         id=re.sub(r"[^a-zA-Z0-9_.-]+", "_", artifact_path.stem),
         scope=scope,
+        scope_id=project,
+        created_at="2026-04-15T00:00:00Z",
+        updated_at="2026-04-15T00:00:00Z",
         source=_relative_source_prefix(source_kind, artifact_path, Path(project)),
         content=content,
+        source_kind=source_kind,
+        source_ref=artifact_path.as_posix(),
     )
 
 
@@ -84,8 +89,13 @@ def persisted_artifact_to_memory_record(
         return MemoryRecord(
             id=re.sub(r"[^a-zA-Z0-9_.-]+", "_", artifact_path.stem),
             scope=scope,
+            scope_id=project_root.name,
+            created_at="2026-04-15T00:00:00Z",
+            updated_at="2026-04-15T00:00:00Z",
             source=_relative_source_prefix(_PERSISTED_ARTIFACT_SOURCES[source_kind], artifact_path, project_root),
             content=content,
+            source_kind=_PERSISTED_ARTIFACT_SOURCES[source_kind],
+            source_ref=artifact_path.as_posix(),
         )
 
     if source_kind == "branch_log":
@@ -119,8 +129,13 @@ def persisted_artifact_to_memory_record(
         return MemoryRecord(
             id=re.sub(r"[^a-zA-Z0-9_.-]+", "_", artifact_path.stem),
             scope=scope,
+            scope_id=project_root.name,
+            created_at="2026-04-15T00:00:00Z",
+            updated_at="2026-04-15T00:00:00Z",
             source=_relative_source_prefix(_PERSISTED_ARTIFACT_SOURCES[source_kind], artifact_path, project_root),
             content=content,
+            source_kind=_PERSISTED_ARTIFACT_SOURCES[source_kind],
+            source_ref=artifact_path.as_posix(),
         )
 
     if source_kind not in _PERSISTED_ARTIFACT_SOURCES:
@@ -149,6 +164,11 @@ def project_memory_path_to_memory_record(
     return MemoryRecord(
         id=memory_path.stem,
         scope=scope,
+        scope_id=project_root.name,
+        created_at="2026-04-15T00:00:00Z",
+        updated_at="2026-04-15T00:00:00Z",
         source=_relative_source_prefix(source_kind, memory_path, project_root),
         content=memory_path.read_text(),
+        source_kind=source_kind,
+        source_ref=memory_path.as_posix(),
     )

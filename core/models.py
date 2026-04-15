@@ -6,6 +6,7 @@ these models, but should avoid breaking the base shape defined here.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -86,9 +87,16 @@ class MemoryRecord(BaseModel):
 
     id: str
     scope: MemoryScope
+    scope_id: str
+    created_at: str
+    updated_at: str
     source: str
     content: str
     lifecycle: MemoryLifecycle = "active"
+    expires_at: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    source_kind: str | None = None
+    source_ref: str | None = None
 
 
 class MemoryRetrievalResult(BaseModel):
