@@ -270,6 +270,39 @@ def test_descripterizer_batch_size_default():
     assert cfg.descripterizer_batch_size == 8
 
 
+def test_descripterizer_dedicated_model_fields_override_summarizer(monkeypatch):
+    """Dedicated descripterizer model fields are loaded and used by Ollama paths."""
+    from core.config import Config
+    from core.descripterizer import _call_llm
+
+    cfg = Config(
+        summarizer_model="qwen3:8b",
+        summarizer_fallback_model="qwen2.5:7b",
+        summarizer_base_url="http://localhost:11434/v1",
+        descripterizer_model="qwen3:14b",
+        descripterizer_fallback_model="qwen2.5:3b",
+    )
+    monkeypatch.setattr("core.descripterizer.get_config", lambda: cfg)
+
+    # Targeted Ollama backend should use the dedicated descripterizer model.
+    from core.descripterizer import _parse_ollama_backend
+    assert _parse_ollama_backend("ollama") == (True, None)
+
+    calls = {}
+    def fake_post(url, json, timeout):
+        calls["model"] = json["model"]
+        class R:
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {"message": {"content": '{"descriptions": []}'}}
+        return R()
+    monkeypatch.setattr("httpx.post", fake_post)
+
+    _call_llm("--- Chunk 1 ---\ncode", backend="ollama")
+    assert calls["model"] == "qwen3:14b"
+
+
 def test_system_prompt_content():
     """System prompt includes key instructions."""
     from core.descripterizer import DESCRIPTERIZER_SYSTEM

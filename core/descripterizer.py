@@ -129,7 +129,7 @@ def get_active_model_label() -> str:
         backends = _get_available_backends()
 
     if not backends:
-        return cfg.summarizer_model
+        return cfg.descripterizer_model or cfg.summarizer_model
 
     # Map backend name → short model label
     labels = []
@@ -149,7 +149,7 @@ def get_active_model_label() -> str:
                 model = model.rsplit("/", 1)[-1]
             labels.append(model)
         elif b == "lmstudio":
-            labels.append(cfg.summarizer_lmstudio_model or "lmstudio")
+            labels.append(cfg.descripterizer_model or cfg.summarizer_lmstudio_model or "lmstudio")
         elif b == "zai":
             labels.append(cfg.descripterizer_zai_model)
         else:
@@ -182,7 +182,7 @@ def get_backend_model_label(backend: str | None) -> str:
     if backend:
         is_ollama, model_override = _parse_ollama_backend(backend)
         if is_ollama:
-            return model_override or cfg.summarizer_model
+            return model_override or cfg.descripterizer_model or cfg.summarizer_model
     return backend or "unknown"
 
 
@@ -237,7 +237,7 @@ def _call_llm(prompt: str, *, backend: str | None = None) -> str:
         if is_ollama and cfg.summarizer_base_url:
             import httpx
 
-            ollama_model = model_override or cfg.summarizer_model
+            ollama_model = model_override or cfg.descripterizer_model or cfg.summarizer_model
             resp = httpx.post(
                 _ollama_api_url(cfg),
                 json={
@@ -333,7 +333,7 @@ def _call_llm(prompt: str, *, backend: str | None = None) -> str:
             resp = httpx.post(
                 _ollama_api_url(cfg),
                 json={
-                    "model": cfg.summarizer_model,
+                    "model": cfg.descripterizer_model or cfg.summarizer_model,
                     "stream": False,
                     "think": False,
                     "format": BatchDescriptionResponse.model_json_schema(),
@@ -355,7 +355,7 @@ def _call_llm(prompt: str, *, backend: str | None = None) -> str:
         try:
             import openai
 
-            model = cfg.summarizer_fallback_model or cfg.summarizer_model
+            model = cfg.descripterizer_fallback_model or cfg.summarizer_fallback_model or cfg.descripterizer_model or cfg.summarizer_model
             client = openai.OpenAI(base_url=cfg.summarizer_base_url, api_key="ollama")
             resp = client.chat.completions.create(
                 model=model,

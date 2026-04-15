@@ -59,6 +59,8 @@ class Config:
     code_embedding_model: str | None = None
     code_embedding_dimension: int | None = None
     code_chunk_tokens: int | None = None
+    descripterizer_model: str | None = None
+    descripterizer_fallback_model: str | None = None
     descripterizer_batch_size: int = 8
     descripterizer_max_tokens: int = 1024
     descripterizer_concurrency: int = 4
@@ -162,6 +164,11 @@ def _load_config() -> Config:
         kwargs["code_embedding_dimension"] = int(memory["code_embedding_dimension"])
     if "code_chunk_tokens" in memory:
         kwargs["code_chunk_tokens"] = int(memory["code_chunk_tokens"])
+    if "descripterizer_model" in data:
+        kwargs["descripterizer_model"] = data["descripterizer_model"]
+    if "descripterizer_fallback_model" in data:
+        kwargs["descripterizer_fallback_model"] = data["descripterizer_fallback_model"]
+
     if "descripterizer_batch_size" in memory:
         kwargs["descripterizer_batch_size"] = int(memory["descripterizer_batch_size"])
     if "descripterizer_max_tokens" in memory:
