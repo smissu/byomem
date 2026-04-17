@@ -250,6 +250,46 @@ def test_search_calls_hybrid(tmp_settings, mocker, capsys):
     assert "0.85" in captured.out or "Fixed the bug" in captured.out
 
 
+def test_search_timeout_message_and_no_results(tmp_settings, mocker, capsys):
+    """Timeouts should be handled by the CLI with a clean stderr message."""
+    mock_search = mocker.patch(
+        "core.search_index.hybrid_search",
+        side_effect=TimeoutError("search timed out after 5s"),
+    )
+
+    result = cmd_search("slow query")
+
+    assert result == 1
+    mock_search.assert_called_once()
+    captured = capsys.readouterr()
+    assert "Search timed out after" in captured.err
+    assert "search timed out after 5s" in captured.err
+    assert "No results." not in captured.out
+    assert "Fixed the bug" not in captured.out
+
+
+def test_search_hanging_operation_times_out_quickly(tmp_settings, mocker, capsys):
+    """A genuinely slow search should be cut off by the CLI timeout."""
+    import time
+
+    def slow_search(*args, **kwargs):
+        time.sleep(0.2)
+        return []
+
+    mocker.patch("core.search_index.hybrid_search", side_effect=slow_search)
+    mocker.patch("cli.get_config", return_value=type("Cfg", (), {"search_timeout_seconds": 0.05})())
+
+    start = time.perf_counter()
+    result = cmd_search("slow query")
+    elapsed = time.perf_counter() - start
+
+    assert result == 1
+    assert elapsed < 0.15
+    captured = capsys.readouterr()
+    assert "Search timed out after 0.05s." in captured.err
+    assert "No results." not in captured.out
+
+
 # ---------------------------------------------------------------------------
 # merge
 # ---------------------------------------------------------------------------

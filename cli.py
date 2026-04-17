@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -193,18 +194,46 @@ def cmd_search(query, project=""):
         from core.search_index import hybrid_search
     except ImportError as e:
         print(f"Search unavailable: {e}", file=sys.stderr)
-        return
+        return 1
 
-    results = hybrid_search(query, project=project, min_score=0.0)
+    cfg = get_config()
+    search_timeout = getattr(cfg, "search_timeout_seconds", 15.0)
+    result_box = {}
+
+    def _run_search():
+        try:
+            result_box["results"] = hybrid_search(
+                query, project=project, min_score=0.0, timeout=search_timeout
+            )
+        except BaseException as exc:  # capture timeout and any unexpected search failure
+            result_box["error"] = exc
+
+    worker = threading.Thread(target=_run_search, daemon=True)
+    worker.start()
+    worker.join(search_timeout)
+
+    if worker.is_alive():
+        print(f"Search timed out after {search_timeout}s.", file=sys.stderr)
+        return 1
+
+    error = result_box.get("error")
+    if error is not None:
+        if isinstance(error, TimeoutError):
+            print(f"Search timed out after {search_timeout}s: {error}", file=sys.stderr)
+            return 1
+        raise error
+
+    results = result_box.get("results") or []
     if not results:
         print("No results.")
-        return
+        return 0
 
     for r in results:
         print(f"[{r['score']:.4f}] {r['path']}  (lines {r['start_line']}-{r['end_line']})")
         preview = r["preview"][:200].replace("\n", " ")
         print(f"  {preview}")
         print()
+    return 0
 
 
 def cmd_merge(project, branch):

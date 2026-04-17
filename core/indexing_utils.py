@@ -1,13 +1,14 @@
 """Shared embedding and chunking helpers for search_index and code_index."""
 
 import struct
+from contextlib import suppress
 
 import openai
 
 from core.config import get_config
 
 
-def _fetch_embedding(db, text, text_hash, *, model=None):
+def _fetch_embedding(db, text, text_hash, *, model=None, timeout=None):
     """Check cache then API. Returns (embedding, is_new) without writing to DB.
 
     On cache hit:    returns (embedding_list, False)
@@ -29,6 +30,10 @@ def _fetch_embedding(db, text, text_hash, *, model=None):
         if cfg.embedding_base_url:
             client_kwargs["base_url"] = cfg.embedding_base_url
             client_kwargs["api_key"] = "ollama"
+        if timeout is not None:
+            client_kwargs["timeout"] = timeout
+        elif cfg.embedding_request_timeout is not None:
+            client_kwargs["timeout"] = cfg.embedding_request_timeout
         resp = openai.OpenAI(**client_kwargs).embeddings.create(
             model=model or cfg.embedding_model, input=text
         )
@@ -47,7 +52,7 @@ def _save_embedding_cache(db, text_hash, embedding):
     )
 
 
-def _get_embedding(db, text, text_hash, *, model=None, writer=None):
+def _get_embedding(db, text, text_hash, *, model=None, writer=None, timeout=None):
     """Return cached embedding or generate via OpenAI. Returns None on failure.
 
     Backward-compat wrapper around _fetch_embedding + _save_embedding_cache.
@@ -55,8 +60,26 @@ def _get_embedding(db, text, text_hash, *, model=None, writer=None):
     If writer is provided, cache writes go through it (for thread-safe writes
     when db is a read-only connection).  If writer is None, falls back to
     writing on db directly (legacy behavior).
+
+    If timeout is provided, the embedding lookup/generation is bounded by that
+    wall-clock budget.
     """
-    embedding, is_new = _fetch_embedding(db, text, text_hash, model=model)
+    if timeout is not None and timeout <= 0:
+        raise TimeoutError("embedding lookup timed out")
+
+    if timeout is None:
+        embedding, is_new = _fetch_embedding(db, text, text_hash, model=model, timeout=timeout)
+    else:
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_fetch_embedding, db, text, text_hash, model=model, timeout=timeout)
+            try:
+                embedding, is_new = future.result(timeout=timeout)
+            except FutureTimeoutError as exc:
+                future.cancel()
+                raise TimeoutError("embedding lookup timed out") from exc
+
     if is_new and embedding is not None:
         if writer is not None:
             writer.submit(lambda conn: (_save_embedding_cache(conn, text_hash, embedding), conn.commit()))
@@ -104,6 +127,8 @@ def _get_embeddings_batch(db, texts, text_hashes, batch_size=20, *, model=None):
             if cfg.embedding_base_url:
                 client_kwargs["base_url"] = cfg.embedding_base_url
                 client_kwargs["api_key"] = "ollama"
+            if cfg.embedding_request_timeout is not None:
+                client_kwargs["timeout"] = cfg.embedding_request_timeout
             client = openai.OpenAI(**client_kwargs)
         except Exception:
             # Client construction failed — mark all uncached as failed

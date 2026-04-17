@@ -1,302 +1,188 @@
-"""RED seam tests for the stateless retrieval adapter."""
+"""RED retrieval tests for the stateless memory seam."""
 
-from dataclasses import dataclass
-
-import pytest
-
-from core.models import MemoryRecord, MemoryRetrievalRequest, MemoryRetrievalResponse
+from core.models import MemoryRecord, MemoryRetrievalRequest
 
 
-@dataclass(frozen=True)
-class PersistedArtifactFixture:
-    source_kind: str
-    path: str
-    scope: str
-    lifecycle: str = "active"
-    content: str = "persisted content"
-
-
-@pytest.mark.parametrize("scope", ["project", "dir", "user", "agent"])
-def test_retrieval_adapter_honors_explicit_scope(scope):
+def test_retrieval_ranks_best_matching_project_record_first(tmp_path, mocker):
+    from core.memory_identity import resolve_project_id
     from core.memory_retrieval import retrieve_memory
+    from core.memory_store import reset_native_store
 
-    request = MemoryRetrievalRequest(
-        query="find release notes",
-        scope=scope,
-        filters={scope: f"{scope}-a", "lifecycle": ["active"]},
-    )
+    mocker.patch("core.native_memory_index._get_embeddings_batch", return_value=[([0.1, 0.1], True)])
+    mocker.patch("core.native_memory_index._get_embedding", return_value=[0.1, 0.1])
+    store = reset_native_store(tmp_path / ".byomem" / "native")
+    cwd = tmp_path / "repo-a"
+    cwd.mkdir()
+    project_id = resolve_project_id(str(cwd))
+    store.write(MemoryRecord(id="r1", scope="project", scope_id=project_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="alpha beta gamma", source_kind="pi_native_store"))
+    store.write(MemoryRecord(id="r2", scope="project", scope_id=project_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="beta only", source_kind="pi_native_store"))
+    store.write(MemoryRecord(id="r3", scope="project", scope_id=project_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="completely unrelated", source_kind="pi_native_store"))
 
+    request = MemoryRetrievalRequest(query="beta gamma", scope="project", filters={"project": project_id, "lifecycle": ["active"]})
     response = retrieve_memory(request)
-
-    assert isinstance(response, MemoryRetrievalResponse)
-    assert response.request == request
-    assert response.results == []
-
-
-@pytest.mark.parametrize(
-    "lifecycle, included",
-    [
-        ("active", True),
-        ("deleted", False),
-        ("expired", False),
-        ("archived", True),
-        ("superseded", True),
-    ],
-)
-def test_retrieval_adapter_lifecycle_filtering_contract(monkeypatch, lifecycle, included):
-    from core import memory_retrieval
-
-    candidates = [
-        MemoryRecord(
-            id="mem_1",
-            scope="project",
-            scope_id="repo-a",
-            created_at="2026-04-15T00:00:00Z",
-            updated_at="2026-04-15T01:00:00Z",
-            source="notes.md",
-            content="candidate content",
-            lifecycle=lifecycle,
-        )
-    ]
-
-    monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: candidates)
-
-    request = MemoryRetrievalRequest(
-        query="find release notes",
-        scope="project",
-        filters={"project": "repo-a", "lifecycle": ["active", "archived", "superseded"]},
-    )
-
-    response = memory_retrieval.retrieve_memory(request)
-
-    assert isinstance(response, MemoryRetrievalResponse)
-    if included:
-        assert len(response.results) == 1
-        assert response.results[0].lifecycle == lifecycle
-    else:
-        assert response.results == []
+    assert [result.record.content for result in response.results][:2] == ["alpha beta gamma", "beta only"]
+    assert all("candidate_source=" in result.provenance for result in response.results)
+    assert all("semantic_rerank=" in result.provenance for result in response.results)
 
 
-@pytest.mark.parametrize("scope", ["project", "dir", "user", "agent"])
-def test_retrieval_adapter_scope_specific_results_require_explicit_request_inputs(monkeypatch, scope):
-    from core import memory_retrieval
-
-    seen = {}
-
-    def fake_fetch_candidates(request):
-        seen["request"] = request
-        return []
-
-    monkeypatch.setattr(memory_retrieval, "fetch_candidates", fake_fetch_candidates)
-
-    request = MemoryRetrievalRequest(
-        query="find release notes",
-        scope=scope,
-        filters={scope: f"{scope}-a", "lifecycle": ["active"]},
-    )
-
-    memory_retrieval.retrieve_memory(request)
-
-    assert seen["request"] == request
-
-
-@pytest.mark.parametrize(
-    "request_kwargs",
-    [
-        {"query": "find release notes", "scope": "project", "filters": {"project": "repo-a"}},
-        {"query": "find release notes", "scope": "dir", "filters": {"dir": "src"}},
-    ],
-)
-def test_retrieval_adapter_rejects_hidden_state_dependence(request_kwargs):
+def test_retrieval_lexical_only_semantic_unavailable(tmp_path, mocker):
+    from core.memory_identity import resolve_project_id
     from core.memory_retrieval import retrieve_memory
+    from core.memory_store import reset_native_store
 
-    request = MemoryRetrievalRequest(**request_kwargs)
+    mocker.patch("core.native_memory_index._get_embedding", return_value=None)
 
+    store = reset_native_store(tmp_path / ".byomem" / "native")
+    cwd = tmp_path / "repo-a"
+    cwd.mkdir()
+    project_id = resolve_project_id(str(cwd))
+    store.write(MemoryRecord(id="p1", scope="project", scope_id=project_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="project note about alpha beta", source_kind="pi_native_store"))
+
+    request = MemoryRetrievalRequest(query="alpha beta", scope="project", filters={"project": project_id, "lifecycle": ["active"]})
     response = retrieve_memory(request)
-
-    assert response.request == request
-    assert response.results == []
-
-
-@pytest.mark.parametrize(
-    "candidate_scope, should_keep",
-    [
-        ("project", True),
-        ("dir", False),
-        ("user", False),
-        ("agent", False),
-    ],
-)
-def test_retrieval_returns_only_candidates_matching_request_scope(monkeypatch, candidate_scope, should_keep):
-    from core import memory_retrieval
-
-    request = MemoryRetrievalRequest(
-        query="find release notes",
-        scope="project",
-        filters={"project": "repo-a", "lifecycle": ["active", "archived", "superseded"]},
-    )
-
-    candidate = MemoryRecord(
-        id=f"mem_{candidate_scope}",
-        scope=candidate_scope,
-        scope_id="repo-a",
-        created_at="2026-04-15T00:00:00Z",
-        updated_at="2026-04-15T01:00:00Z",
-        source=f"{candidate_scope}.md",
-        content="mixed scope candidate",
-    )
-
-    monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: [candidate])
-
-    response = memory_retrieval.retrieve_memory(request)
-
-    if should_keep:
-        assert [r.id for r in response.results] == [candidate.id]
-    else:
-        assert response.results == []
+    assert response.results
+    assert response.results[0].reason == "fts lexical match (semantic unavailable)"
+    assert "semantic_available=false" in response.results[0].provenance
+    assert "semantic_rerank=false" in response.results[0].provenance
 
 
-def test_retrieval_filters_mixed_scope_backend_batches(monkeypatch):
-    from core import memory_retrieval
+def test_retrieval_semantic_rerank_applied(tmp_path):
+    from core.memory_identity import resolve_project_id
+    from core.memory_retrieval import retrieve_memory
+    from core.memory_store import reset_native_store
 
-    request = MemoryRetrievalRequest(
-        query="find release notes",
-        scope="project",
-        filters={"project": "repo-a", "lifecycle": ["active", "archived", "superseded"]},
-    )
+    embed_map = {
+        "alpha beta gamma": [0.95, 0.05],
+        "beta only": [0.99, 0.01],
+        "completely unrelated": [0.1, 0.9],
+    }
+    from core import native_memory_index as nmi
 
-    candidates = [
-        MemoryRecord(id="project-1", scope="project", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="p.md", content="keep me"),
-        MemoryRecord(id="dir-1", scope="dir", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="d.md", content="drop me"),
-        MemoryRecord(id="user-1", scope="user", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="u.md", content="drop me"),
-        MemoryRecord(id="agent-1", scope="agent", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="a.md", content="drop me"),
-    ]
+    nmi._get_embedding = lambda db, text, text_hash: [0.99, 0.01]
+    nmi._get_embeddings_batch = lambda db, texts, hashes, **kw: [(embed_map[text], True) for text in texts]
 
-    monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: candidates)
+    store = reset_native_store(tmp_path / ".byomem" / "native")
+    cwd = tmp_path / "repo-a"
+    cwd.mkdir()
+    project_id = resolve_project_id(str(cwd))
+    store.write(MemoryRecord(id="r1", scope="project", scope_id=project_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="alpha beta gamma", source_kind="pi_native_store"))
+    store.write(MemoryRecord(id="r2", scope="project", scope_id=project_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="beta only", source_kind="pi_native_store"))
 
-    response = memory_retrieval.retrieve_memory(request)
-
-    assert [r.scope for r in response.results] == ["project"]
-    assert [r.id for r in response.results] == ["project-1"]
-
-
-@pytest.mark.parametrize("scope", ["project", "dir", "user", "agent"])
-def test_retrieval_keeps_lifecycle_defaults_intact_while_filtering_by_request_scope(monkeypatch, scope):
-    from core import memory_retrieval
-
-    candidate = MemoryRecord(
-        id="mem_active",
-        scope=scope,
-        scope_id="repo-a",
-        created_at="2026-04-15T00:00:00Z",
-        updated_at="2026-04-15T01:00:00Z",
-        source="notes.md",
-        content="candidate content",
-    )
-    assert candidate.lifecycle == "active"
-
-    monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: [candidate])
-
-    request = MemoryRetrievalRequest(
-        query="find release notes",
-        scope=scope,
-        filters={scope: f"{scope}-a", "lifecycle": ["active"]},
-    )
-
-    response = memory_retrieval.retrieve_memory(request)
-
-    assert response.results[0].lifecycle == "active"
-    assert response.request == request
+    request = MemoryRetrievalRequest(query="beta gamma", scope="project", filters={"project": project_id, "lifecycle": ["active"]})
+    response = retrieve_memory(request)
+    assert [result.record.content for result in response.results] == ["alpha beta gamma", "beta only"]
+    assert all(result.reason in {"fts lexical match with semantic rerank", "hybrid lexical + semantic recall"} for result in response.results)
+    assert all("semantic_score=" in result.provenance for result in response.results)
 
 
-def test_retrieval_includes_compact_reason_metadata_per_result(monkeypatch):
-    from core import memory_retrieval
+def test_retrieval_does_not_cross_project_user_scope(tmp_path, monkeypatch):
+    from core.memory_identity import resolve_project_id, resolve_user_id
+    from core.memory_retrieval import retrieve_memory
+    from core.memory_store import reset_native_store
 
-    candidate = MemoryRecord(id="main-1", scope="project", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="main.md", content="keep me", lifecycle="active")
-    monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: [candidate])
+    monkeypatch.setenv("BYOMEM_USER_ID", "alice")
+    from core import native_memory_index as nmi
+    nmi._get_embeddings_batch = lambda db, texts, hashes, **kw: [([0.1, 0.1], True) for _ in texts]
+    nmi._get_embedding = lambda db, text, text_hash: [0.1, 0.1]
+    store = reset_native_store(tmp_path / ".byomem" / "native")
+    cwd = tmp_path / "repo-a"
+    cwd.mkdir()
+    project_id = resolve_project_id(str(cwd))
+    user_id = resolve_user_id()
+    store.write(MemoryRecord(id="p1", scope="project", scope_id=project_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="project note", source_kind="pi_native_store"))
+    store.write(MemoryRecord(id="u1", scope="user", scope_id=user_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="user note", source_kind="pi_native_store"))
 
-    request = MemoryRetrievalRequest(
-        query="reason metadata",
-        scope="project",
-        filters={"project": "repo-a", "lifecycle": ["active"]},
-    )
-
-    response = memory_retrieval.retrieve_memory(request)
-
-    assert len(response.results) == 1
-    assert response.results[0].record == candidate
-    assert response.results[0].reason == "scope/lifecycle match"
-    assert response.results[0].provenance == "main.md#main-1"
-
-
-def test_retrieval_request_echo_and_stateless_behavior_remain_unchanged(monkeypatch):
-    from core import memory_retrieval
-
-    request = MemoryRetrievalRequest(
-        query="echo me",
-        scope="project",
-        filters={"project": "repo-a", "lifecycle": ["active"]},
-    )
-
-    monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda incoming: [])
-
-    response = memory_retrieval.retrieve_memory(request)
-
-    assert response.request == request
-    assert response.results == []
+    request = MemoryRetrievalRequest(query="note", scope="project", filters={"project": project_id, "lifecycle": ["active"]})
+    response = retrieve_memory(request)
+    assert all(result.record.scope == "project" for result in response.results)
 
 
-def test_retrieval_assembles_candidates_from_persisted_artifacts_via_adapter(monkeypatch):
-    from core import memory_retrieval
+def test_retrieval_semantic_only_recall_identifies_non_fts_path(tmp_path, mocker):
+    from core.memory_identity import resolve_project_id
+    from core.memory_retrieval import retrieve_memory
+    from core.memory_store import reset_native_store
 
-    fixtures = [
-        PersistedArtifactFixture(source_kind="main_md", path="main.md", scope="project", content="main summary"),
-        PersistedArtifactFixture(source_kind="branch_commit", path="branches/2026-04-14-abc12345/commit.md", scope="project", content="branch summary"),
-        PersistedArtifactFixture(source_kind="branch_log", path="branches/2026-04-14-abc12345/log.md", scope="project", content="turn summary"),
-    ]
+    mocker.patch("core.native_memory_index._get_embedding", return_value=[0.9, 0.1])
 
-    seen = {}
+    store = reset_native_store(tmp_path / ".byomem" / "native")
+    cwd = tmp_path / "repo-a"
+    cwd.mkdir()
+    project_id = resolve_project_id(str(cwd))
+    store.write(MemoryRecord(id="s1", scope="project", scope_id=project_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="semantic only content", source_kind="pi_native_store"))
 
-    def fake_assemble_candidates(request):
-        seen["request"] = request
-        return [
-            MemoryRecord(id=f"{item.source_kind}-1", scope=item.scope, scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source=item.path, content=item.content)
-            for item in fixtures
-        ]
-
-    monkeypatch.setattr(memory_retrieval, "fetch_candidates", fake_assemble_candidates)
-
-    request = MemoryRetrievalRequest(
-        query="assembled from persisted artifacts",
-        scope="project",
-        filters={"project": "repo-a", "lifecycle": ["active", "archived", "superseded"]},
-    )
-
-    response = memory_retrieval.retrieve_memory(request)
-
-    assert seen["request"] == request
-    assert [r.source for r in response.results] == ["main.md", "branches/2026-04-14-abc12345/commit.md", "branches/2026-04-14-abc12345/log.md"]
-    assert [r.content for r in response.results] == ["main summary", "branch summary", "turn summary"]
+    response = retrieve_memory(MemoryRetrievalRequest(query="no fts hit here", scope="project", filters={"project": project_id, "lifecycle": ["active"]}))
+    assert response.results
+    assert response.results[0].reason == "semantic-only recall beyond FTS gate"
+    assert "candidate_source=semantic" in response.results[0].provenance
+    assert "semantic_available=true" in response.results[0].provenance
 
 
-def test_retrieval_preserves_request_scope_and_lifecycle_behavior_on_persisted_candidates(monkeypatch):
-    from core import memory_retrieval
+def test_retrieval_merges_fts_and_semantic_candidates(tmp_path, mocker):
+    from core.memory_identity import resolve_project_id
+    from core.memory_retrieval import retrieve_memory
+    from core.memory_store import reset_native_store
 
-    candidates = [
-        MemoryRecord(id="keep", scope="project", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="main.md", content="keep", lifecycle="active"),
-        MemoryRecord(id="drop-scope", scope="dir", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="commit.md", content="drop", lifecycle="active"),
-        MemoryRecord(id="drop-life", scope="project", scope_id="repo-a", created_at="2026-04-15T00:00:00Z", updated_at="2026-04-15T01:00:00Z", source="log.md", content="drop", lifecycle="deleted"),
-    ]
+    mocker.patch("core.native_memory_index._get_embedding", return_value=[0.8, 0.2])
 
-    monkeypatch.setattr(memory_retrieval, "fetch_candidates", lambda request: candidates)
+    store = reset_native_store(tmp_path / ".byomem" / "native")
+    cwd = tmp_path / "repo-a"
+    cwd.mkdir()
+    project_id = resolve_project_id(str(cwd))
+    store.write(MemoryRecord(id="h1", scope="project", scope_id=project_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="alpha beta shared", source_kind="pi_native_store"))
 
-    request = MemoryRetrievalRequest(
-        query="request-driven",
-        scope="project",
-        filters={"project": "repo-a", "lifecycle": ["active", "archived", "superseded"]},
-    )
+    response = retrieve_memory(MemoryRetrievalRequest(query="alpha beta", scope="project", filters={"project": project_id, "lifecycle": ["active"]}))
+    assert response.results
+    assert len({result.record.id for result in response.results}) == len(response.results)
+    assert any(result.reason in {"hybrid lexical + semantic recall", "fts lexical match with semantic rerank"} for result in response.results)
+    assert all(result.record.content != "completely unrelated" for result in response.results)
 
-    response = memory_retrieval.retrieve_memory(request)
 
-    assert [r.id for r in response.results] == ["keep"]
-    assert response.request == request
+def test_retrieval_lexical_score_prefers_stronger_fts_hit(tmp_path, mocker):
+    from core.memory_identity import resolve_project_id
+    from core.memory_retrieval import retrieve_memory
+    from core.memory_store import reset_native_store
+
+    mocker.patch("core.native_memory_index._get_embedding", return_value=None)
+    store = reset_native_store(tmp_path / ".byomem" / "native")
+    cwd = tmp_path / "repo-a"
+    cwd.mkdir()
+    project_id = resolve_project_id(str(cwd))
+    store.write(MemoryRecord(id="a1", scope="project", scope_id=project_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="alpha beta gamma", source_kind="pi_native_store"))
+    store.write(MemoryRecord(id="a2", scope="project", scope_id=project_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="alpha beta", source_kind="pi_native_store"))
+
+    response = retrieve_memory(MemoryRetrievalRequest(query="alpha beta gamma", scope="project", filters={"project": project_id, "lifecycle": ["active"]}))
+    assert response.results[0].record.content == "alpha beta gamma"
+    assert "lexical_score=" in response.results[0].provenance
+    assert response.results[0].reason.startswith("fts lexical match")
+
+
+def test_retrieval_lexical_score_absent_for_semantic_only(tmp_path, mocker):
+    from core.memory_identity import resolve_project_id
+    from core.memory_retrieval import retrieve_memory
+    from core.memory_store import reset_native_store
+
+    mocker.patch("core.native_memory_index._get_embedding", return_value=[0.9, 0.1])
+    store = reset_native_store(tmp_path / ".byomem" / "native")
+    cwd = tmp_path / "repo-a"
+    cwd.mkdir()
+    project_id = resolve_project_id(str(cwd))
+    store.write(MemoryRecord(id="s1", scope="project", scope_id=project_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="semantic only content", source_kind="pi_native_store"))
+
+    response = retrieve_memory(MemoryRetrievalRequest(query="no fts hit here", scope="project", filters={"project": project_id, "lifecycle": ["active"]}))
+    assert response.results[0].reason == "semantic-only recall beyond FTS gate"
+    assert "lexical_score=0.0000" in response.results[0].provenance
+
+
+def test_pi_adapter_preserves_rank_order_with_real_lexical_scoring(tmp_path, mocker):
+    from core.memory_store import reset_native_store
+    from core.pi_adapter import handle_pi_request
+
+    mocker.patch("core.native_memory_index._get_embedding", return_value=None)
+    reset_native_store(tmp_path / ".byomem" / "native")
+    cwd = tmp_path / "team-a" / "shared"
+    cwd.mkdir(parents=True)
+    handle_pi_request({"action": "store", "cwd": str(cwd), "text": "alpha beta gamma", "scope": "project"})
+    handle_pi_request({"action": "store", "cwd": str(cwd), "text": "alpha beta", "scope": "project"})
+
+    response = handle_pi_request({"query": "alpha beta gamma", "cwd": str(cwd)})
+    assert [item["text"] for item in response["items"]][:2] == ["alpha beta gamma", "alpha beta"]

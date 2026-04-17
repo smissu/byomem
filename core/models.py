@@ -120,7 +120,7 @@ class MemoryRetrievalRequest(BaseModel):
     @field_validator("filters")
     @classmethod
     def _validate_filters(cls, value: dict[str, str | list[str]]):
-        allowed_keys = {"project", "dir", "user", "agent", "lifecycle", "source"}
+        allowed_keys = {"project", "dir", "user", "agent", "lifecycle", "source", "cwd"}
         if not value:
             raise ValueError("filters must include at least one supported filter")
         invalid_keys = set(value) - allowed_keys
@@ -134,3 +134,33 @@ class MemoryRetrievalResponse(BaseModel):
 
     results: list[MemoryRetrievalResult]
     request: MemoryRetrievalRequest = Field(...)
+
+
+class MemoryStoreRequest(BaseModel):
+    """Explicit manual memory write contract."""
+
+    action: Literal["store"] = "store"
+    cwd: str
+    text: str
+    summary: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    scope: Literal["project", "user"] = "project"
+
+    @field_validator("text")
+    @classmethod
+    def _validate_text(cls, value: str):
+        value = value.strip()
+        if not value:
+            raise ValueError("text must not be empty")
+        return value
+
+
+class MemoryStoreResponse(BaseModel):
+    """Compact write result contract."""
+
+    ok: bool = True
+    project: str
+    scope: MemoryScope
+    scope_id: str
+    path: str
+    summary: str | None = None

@@ -27,6 +27,10 @@ and merges learnings back up. Result: **48% resolution on SWE-Bench-Lite** (stat
 
 ---
 
+## Local LLM benchmark
+
+See [docs/local-llm-benchmark-report.md](docs/local-llm-benchmark-report.md) for the local Ollama benchmark results and model recommendations for summarization and descripterizer paths.
+
 ## Architecture
 
 ```
@@ -61,6 +65,22 @@ and merges learnings back up. Result: **48% resolution on SWE-Bench-Lite** (stat
 ```
 
 ---
+
+## Configuration
+
+Project-level settings live in `~/.byomem/config.yaml`.
+
+Embedding requests can now be tuned with `embeddings.request_timeout`:
+
+```yaml
+embeddings:
+  model: text-embedding-3-small
+  base_url: http://localhost:11434/v1
+  request_timeout: 7
+```
+
+- `base_url` is optional and is used for Ollama-compatible or other local OpenAI-style endpoints.
+- `request_timeout` is optional and is passed through to the OpenAI client when constructing embedding requests.
 
 ## File Structure
 

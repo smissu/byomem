@@ -26,7 +26,7 @@ def maybe_update_main(project: str, summary: dict, turn_id: str | None = None):
 
 
 def maybe_update_project_memory(cwd: str, summary: dict):
-    path = _cc_memory_path(cwd)
+    path = claude_project_memory_path(cwd)
     content = path.read_text() if path.exists() else ""
     entry = f"\n- [{date.today()}] {summary['title']}: {summary['summary']}"
     if "## Auto-captured" not in content:
@@ -34,8 +34,12 @@ def maybe_update_project_memory(cwd: str, summary: dict):
     path.write_text(content + entry)
 
 
-def _cc_memory_path(cwd: str) -> Path:
+def claude_project_memory_path(cwd: str) -> Path:
     encoded = cwd.replace("/", "-")
     mem_dir = Path.home() / ".claude" / "projects" / encoded / "memory"
     mem_dir.mkdir(parents=True, exist_ok=True)
     return mem_dir / "MEMORY.md"
+
+
+def _cc_memory_path(cwd: str) -> Path:
+    return claude_project_memory_path(cwd)

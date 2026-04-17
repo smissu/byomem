@@ -1,5 +1,10 @@
 """Tests for core/search_index.py — hybrid FTS5 + sqlite-vec search index."""
 
+import sqlite3
+import time
+
+import pytest
+
 from core.search_index import (
     _chunk_structured,
     _chunk_text,
@@ -203,6 +208,92 @@ def test_keyword_only_fallback(tmp_byomem, mocker):
     results = hybrid_search("fallback", min_score=0.0)
     assert len(results) > 0
     assert "fallback" in results[0]["preview"]
+
+
+def test_hybrid_search_timeout_aborts_slow_embedding(tmp_byomem, mocker):
+    """A slow embedding lookup should hit the internal search timeout."""
+    proj_dir = tmp_byomem / "proj"
+    proj_dir.mkdir(parents=True)
+    f = proj_dir / "doc.md"
+    f.write_text("fallback keyword search test")
+    index_file(f, project="proj")
+
+    def slow_get_embedding(*args, **kwargs):
+        time.sleep(0.2)
+        return None
+
+    mocker.patch("core.search_index._get_embedding", side_effect=slow_get_embedding)
+    mocker.patch("core.search_index.time.monotonic", side_effect=[100.0, 100.0, 100.1])
+
+    with pytest.raises(TimeoutError, match="search timed out"):
+        hybrid_search("fallback", min_score=0.0, timeout=0.05)
+
+
+def test_get_embedding_timeout_waits_for_budget(tmp_byomem, mocker):
+    """_get_embedding should wait for the timeout budget and then fail."""
+    class DummyDB:
+        def execute(self, *args, **kwargs):
+            class Row:
+                def fetchone(self):
+                    return None
+
+            return Row()
+
+    def slow_fetch(*args, **kwargs):
+        time.sleep(0.2)
+        return None, False
+
+    mocker.patch("core.indexing_utils._fetch_embedding", side_effect=slow_fetch)
+
+    start = time.perf_counter()
+    with pytest.raises(TimeoutError, match="embedding lookup timed out"):
+        from core.indexing_utils import _get_embedding
+
+        _get_embedding(DummyDB(), "text", "hash", timeout=0.05)
+    assert time.perf_counter() - start < 0.3
+
+
+def test_hybrid_search_timeout_surfaces_sqlite_interrupt(tmp_byomem, mocker):
+    """SQLite interruption should surface as timeout, not be swallowed by fallback."""
+    proj_dir = tmp_byomem / "proj"
+    proj_dir.mkdir(parents=True)
+    f = proj_dir / "doc.md"
+    f.write_text("interrupt me")
+    index_file(f, project="proj")
+
+    class FakeCursor:
+        def fetchall(self):
+            raise sqlite3.OperationalError("interrupted")
+
+        def fetchone(self):
+            return None
+
+    class FakeDB:
+        def __init__(self):
+            self.progress_handler = None
+
+        def set_progress_handler(self, handler, n):
+            self.progress_handler = handler
+
+        def execute(self, sql, params=()):
+            if "embedding_cache" in sql:
+                return FakeCursor()
+            if "chunks_vec" in sql:
+                return FakeCursor()
+            return FakeCursor()
+
+        def close(self):
+            pass
+
+    class FakeWriter:
+        def get_reader(self):
+            return FakeDB()
+
+    mocker.patch("core.search_index._get_search_writer", return_value=FakeWriter())
+    mocker.patch("core.search_index._get_embedding", return_value=[0.1, 0.2])
+
+    with pytest.raises(TimeoutError, match="search timed out"):
+        hybrid_search("interrupt", min_score=0.0, timeout=0.05)
 
 
 def test_log_score_demotion_in_index_mode(tmp_byomem, mock_openai_embed, monkeypatch):

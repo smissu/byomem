@@ -2,6 +2,7 @@
 
 import hashlib
 import sqlite3
+import time
 from pathlib import Path
 
 from core.config import get_config
@@ -180,7 +181,7 @@ def index_file(path: Path, project: str):
     writer.submit(_write_phase)
 
 
-def hybrid_search(query, project="", max_results=None, min_score=None):
+def hybrid_search(query, project="", max_results=None, min_score=None, timeout=None):
     """Run weighted fusion of FTS5 keyword + sqlite-vec cosine search."""
     cfg = get_config()
     if max_results is None:
@@ -188,15 +189,39 @@ def hybrid_search(query, project="", max_results=None, min_score=None):
     if min_score is None:
         min_score = cfg.min_score
 
+    deadline = None if timeout is None else time.monotonic() + timeout
+
+    def _remaining_timeout():
+        if deadline is None:
+            return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("search timed out")
+        return remaining
+
     writer = _get_search_writer()
     db = writer.get_reader()
     try:
+        if deadline is not None:
+            db.set_progress_handler(
+                lambda: 1 if time.monotonic() >= deadline else 0,
+                1000,
+            )
         candidates = max_results * cfg.candidate_multiplier
         path_filter = f"{project}/%" if project else "%"
 
+        if deadline is not None:
+            _remaining_timeout()
+
         # Try to get query embedding (cache read via reader, cache write via writer)
         q_hash = hashlib.sha256(query.encode()).hexdigest()
-        q_embedding = _get_embedding(db, query, q_hash, writer=writer)
+        q_embedding = _get_embedding(
+            db,
+            query,
+            q_hash,
+            writer=writer,
+            timeout=_remaining_timeout(),
+        )
 
         vec_scores = {}
         if q_embedding is not None:
@@ -229,21 +254,30 @@ def hybrid_search(query, project="", max_results=None, min_score=None):
                     }
                     for row in vec_rows
                 }
+            except sqlite3.OperationalError as exc:
+                if "interrupted" in str(exc).lower():
+                    raise TimeoutError("search timed out") from exc
+                raise
             except Exception:
                 pass
 
         # Keyword search (always available)
-        fts_rows = db.execute(
-            """
-            SELECT c.id, c.file_path, c.start_line, c.end_line, c.text, rank
-            FROM chunks_fts
-            JOIN chunks c ON c.id = chunks_fts.rowid
-            WHERE chunks_fts MATCH ? AND c.file_path LIKE ?
-            ORDER BY rank
-            LIMIT ?
-            """,
-            (query, path_filter, candidates),
-        ).fetchall()
+        try:
+            fts_rows = db.execute(
+                """
+                SELECT c.id, c.file_path, c.start_line, c.end_line, c.text, rank
+                FROM chunks_fts
+                JOIN chunks c ON c.id = chunks_fts.rowid
+                WHERE chunks_fts MATCH ? AND c.file_path LIKE ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (query, path_filter, candidates),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "interrupted" in str(exc).lower():
+                raise TimeoutError("search timed out") from exc
+            raise
         kw_scores = {
             row[0]: {
                 "path": row[1],
@@ -255,6 +289,7 @@ def hybrid_search(query, project="", max_results=None, min_score=None):
             for row in fts_rows
         }
     finally:
+        db.set_progress_handler(None, 0)
         db.close()
 
     # Weighted fusion

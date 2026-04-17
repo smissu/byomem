@@ -33,6 +33,7 @@ class Config:
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1536
     embedding_base_url: str | None = None
+    embedding_request_timeout: float | None = None
     chunk_tokens: int = 400
     chunk_overlap: int = 80
     max_results: int = 6
@@ -71,6 +72,7 @@ class Config:
     descripterizer_zai_model: str = "glm-4.6"
     descripterizer_debug: bool = False
     summarizer_debug: bool = False
+    byomem_debug: bool = False
     code_db_path: Path = field(default_factory=lambda: Path.home() / ".byomem" / "code.db")
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
     settings_path: Path = field(default_factory=lambda: Path.home() / ".claude" / "settings.json")
@@ -143,6 +145,8 @@ def _load_config() -> Config:
         kwargs["embedding_dimension"] = embeddings["dimension"]
     if "base_url" in embeddings:
         kwargs["embedding_base_url"] = embeddings["base_url"]
+    if "request_timeout" in embeddings:
+        kwargs["embedding_request_timeout"] = float(embeddings["request_timeout"])
 
     memory = data.get("memory", {})
     for key in (
@@ -192,6 +196,8 @@ def _load_config() -> Config:
         kwargs["descripterizer_zai_model"] = memory["descripterizer_zai_model"]
     if "descripterizer_debug" in memory:
         kwargs["descripterizer_debug"] = bool(memory["descripterizer_debug"])
+    if "byomem_debug" in memory:
+        kwargs["byomem_debug"] = bool(memory["byomem_debug"])
 
     queue = data.get("queue", {})
     if "batch_size" in queue:
