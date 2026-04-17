@@ -23,6 +23,7 @@ def test_defaults_without_yaml():
     assert cfg.keyword_weight == 0.3
     assert cfg.settings_path == Path.home() / ".claude" / "settings.json"
     assert cfg.session_capture_enabled is False
+    assert cfg.session_capture_write_markdown is True
     assert cfg.session_capture_threshold_turns == 4
     assert cfg.session_capture_idle_flush_seconds == 90
 
@@ -216,10 +217,28 @@ def test_session_capture_section_loads(tmp_path, monkeypatch):
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     cfg = _load_config()
     assert cfg.session_capture_enabled is True
+    assert cfg.session_capture_write_markdown is True
     assert cfg.session_capture_threshold_turns == 5
     assert cfg.session_capture_large_turn_chars == 5000
     assert cfg.session_capture_idle_flush_seconds == 120
     assert cfg.session_capture_min_turns == 2
+
+
+def test_session_capture_write_markdown_loads(tmp_path, monkeypatch):
+    config_yaml = tmp_path / ".byomem" / "config.yaml"
+    config_yaml.parent.mkdir(parents=True)
+    config_yaml.write_text(
+        yaml.dump(
+            {
+                "session_capture": {
+                    "write_markdown": False,
+                }
+            }
+        )
+    )
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    cfg = _load_config()
+    assert cfg.session_capture_write_markdown is False
 
 
 # ---------------------------------------------------------------------------

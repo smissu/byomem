@@ -77,6 +77,7 @@ class Config:
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
     settings_path: Path = field(default_factory=lambda: Path.home() / ".claude" / "settings.json")
     session_capture_enabled: bool = False
+    session_capture_write_markdown: bool = True
     session_capture_threshold_turns: int = 4
     session_capture_large_turn_chars: int = 4096
     session_capture_idle_flush_seconds: int = 90
@@ -246,6 +247,8 @@ def _load_config() -> Config:
     session_capture = data.get("session_capture", {}) or {}
     if "enabled" in session_capture:
         kwargs["session_capture_enabled"] = bool(session_capture["enabled"])
+    if "write_markdown" in session_capture:
+        kwargs["session_capture_write_markdown"] = bool(session_capture["write_markdown"])
     if "threshold_turns" in session_capture:
         kwargs["session_capture_threshold_turns"] = int(session_capture["threshold_turns"])
     if "large_turn_chars" in session_capture:

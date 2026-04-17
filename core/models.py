@@ -198,3 +198,5 @@ class SessionCaptureResponse(BaseModel):
     pending_turns: int = 0
     checkpoint_offset: int = 0
     flushed_count: int = 0
+    native_written_count: int = 0
+    native_skipped_count: int = 0
