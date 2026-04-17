@@ -269,6 +269,7 @@ def test_pi_adapter_session_capture_checkpoints_then_flushes(tmp_path, monkeypat
     assert captured["flushed_count"] == 0
     assert captured["native_written_count"] == 0
     assert captured["native_skipped_count"] == 0
+    assert captured["native_record_ids"] == []
     assert summarized_batches == []
 
     transcript.write_text(transcript.read_text() + "\n".join([
@@ -287,6 +288,8 @@ def test_pi_adapter_session_capture_checkpoints_then_flushes(tmp_path, monkeypat
     assert flushed["flushed_count"] == 4
     assert flushed["native_written_count"] == 4
     assert flushed["native_skipped_count"] == 0
+    assert len(flushed["native_record_ids"]) == 4
+    assert all(record_id.startswith("session-capture:") for record_id in flushed["native_record_ids"])
     assert summarized_batches == [["u1", "u2", "u3", "u4"]]
 
 
@@ -359,10 +362,12 @@ def test_pi_adapter_session_capture_is_idempotent_in_native_store(tmp_path, monk
     assert first["result"] == "flushed"
     assert first["native_written_count"] == 1
     assert first["native_skipped_count"] == 0
+    assert len(first["native_record_ids"]) == 1
     assert second["result"] == "captured"
     assert second["reason"] == "no-pending-turns"
     assert second["native_written_count"] == 0
     assert second["native_skipped_count"] == 0
+    assert second["native_record_ids"] == []
     assert len(native_lines) == 1
 
 
@@ -388,6 +393,8 @@ def test_pi_adapter_session_capture_records_are_retrievable_via_native_path(tmp_
     response = handle_pi_request({"action": "session_capture", "cwd": str(tmp_path), "session_id": "sess-retrieve", "transcript_path": str(transcript), "event": "agent_end", "final": True, "idle": False, "summary_only": True, "message_count": 2})
     assert response["result"] == "flushed"
     assert response["native_written_count"] == 1
+    assert len(response["native_record_ids"]) == 1
+    assert response["native_record_ids"][0].startswith("session-capture:")
 
     project_id = resolve_project_id(str(tmp_path))
     retrieval = retrieve_memory(MemoryRetrievalRequest(query="Session turn", scope="project", filters={"project": project_id, "lifecycle": ["active", "archived", "superseded"]}))

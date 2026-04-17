@@ -200,3 +200,4 @@ class SessionCaptureResponse(BaseModel):
     flushed_count: int = 0
     native_written_count: int = 0
     native_skipped_count: int = 0
+    native_record_ids: list[str] = Field(default_factory=list)

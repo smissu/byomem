@@ -274,6 +274,7 @@ def handle_session_capture(request: dict) -> dict:
         response.flushed_count = 0
         response.native_written_count = 0
         response.native_skipped_count = 0
+        response.native_record_ids = []
         _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "persist", "metadata": {"target": "state", "reason": response.reason, "pending_turns": response.pending_turns}})
         return response.model_dump()
 
@@ -287,6 +288,7 @@ def handle_session_capture(request: dict) -> dict:
         response.flushed_count = 0
         response.native_written_count = 0
         response.native_skipped_count = 0
+        response.native_record_ids = []
         _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "persist", "metadata": {"target": "state", "reason": response.reason, "pending_turns": response.pending_turns}})
         return response.model_dump()
 
@@ -308,6 +310,7 @@ def handle_session_capture(request: dict) -> dict:
     response.flushed_count = flushed
     response.native_written_count = native_written
     response.native_skipped_count = native_skipped
+    response.native_record_ids = [record_id for record_id in native_record_ids if record_id]
     response.pending_turns = 0
     _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "persist_complete", "metadata": {"target": "rollup", "flushed_count": flushed, "native_written_count": native_written, "native_skipped_count": native_skipped, "native_record_ids": [record_id for record_id in native_record_ids if record_id], "reason": reason, "project": response.project, "session_id": capture_request.session_id, "transcript_path": capture_request.transcript_path}})
     return response.model_dump()
