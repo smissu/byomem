@@ -109,7 +109,7 @@ def _native_record_id(session_id: str, turn_id: str, transcript_path: str) -> st
     return f"session-capture:{session_id}:{turn_id}:{Path(transcript_path).name}"
 
 
-def _write_native_session_record(*, cwd: str, session_id: str, turn: Turn, summary: TurnSummary, agent: str | None, model: str | None, transcript_path: str, event: str | None) -> tuple[bool, bool]:
+def _write_native_session_record(*, cwd: str, session_id: str, turn: Turn, summary: TurnSummary, agent: str | None, model: str | None, transcript_path: str, event: str | None) -> tuple[bool, bool, dict[str, str | bool]]:
     record = MemoryRecord(
         id=_native_record_id(session_id, turn.id, transcript_path),
         scope="project",
@@ -128,13 +128,14 @@ def _write_native_session_record(*, cwd: str, session_id: str, turn: Turn, summa
         existing = [record.id for record in store.load()]
     duplicate = record.id in existing
     _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "native_write_attempt", "metadata": {"session_id": session_id, "turn_id": turn.id, "record_id": record.id, "scope_id": record.scope_id, "source_ref": record.source_ref, "store_path": str(store.path), "duplicate": duplicate}})
+    metadata = {"session_id": session_id, "turn_id": turn.id, "record_id": record.id, "scope_id": record.scope_id, "source_ref": record.source_ref, "duplicate": duplicate}
     if duplicate:
-        _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "native_write_skip", "metadata": {"session_id": session_id, "turn_id": turn.id, "record_id": record.id, "reason": "duplicate"}})
-        return False, True
+        _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "native_write_skip", "metadata": {**metadata, "reason": "duplicate"}})
+        return False, True, metadata
     try:
         store.write(record)
-        _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "native_write_complete", "metadata": {"session_id": session_id, "turn_id": turn.id, "record_id": record.id, "store_path": str(store.path)}})
-        return True, False
+        _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "native_write_complete", "metadata": {**metadata, "store_path": str(store.path)}})
+        return True, False, metadata
     except Exception as exc:
         _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "native_write_error", "metadata": {"session_id": session_id, "turn_id": turn.id, "record_id": record.id, "error_type": type(exc).__name__, "error": str(exc)[:200]}})
         raise
@@ -176,13 +177,14 @@ def _flush_session_rollup(
     transcript_path: str,
     event: str | None,
     summary_only: bool,
-) -> int:
+) -> tuple[int, int, int, list[str]]:
     project = _resolve_project_name(cwd)
     _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "flush_start", "metadata": {"session_id": session_id, "cwd": cwd, "pending_turns": len(pending_turns), "agent": agent, "model": model, "transcript_path": transcript_path, "event_name": event, "summary_only": summary_only, "project": project}})
     summaries = summarize_batch(pending_turns)
     flushed = 0
     native_written = 0
     native_skipped = 0
+    native_record_ids: list[str] = []
     write_markdown = get_config().session_capture_write_markdown
     for turn, summary in zip(pending_turns, summaries):
         summary_dict = summary.model_dump()
@@ -191,7 +193,7 @@ def _flush_session_rollup(
             f"[session_id={session_id} agent={agent or 'unknown'} model={model or 'unknown'} "
             f"event={event or 'agent_end'} transcript={transcript_path}]"
         ).strip()
-        wrote_native, skipped_native = _write_native_session_record(
+        wrote_native, skipped_native, native_metadata = _write_native_session_record(
             cwd=cwd,
             session_id=session_id,
             turn=turn,
@@ -203,12 +205,13 @@ def _flush_session_rollup(
         )
         native_written += int(wrote_native)
         native_skipped += int(skipped_native)
+        native_record_ids.append(str(native_metadata.get("record_id", "")))
         if write_markdown:
             maybe_update_main(project, summary_dict, turn_id=turn.id)
             if summary_only:
                 maybe_update_project_memory(cwd, summary_dict)
         flushed += 1
-    return flushed
+    return flushed, native_written, native_skipped, native_record_ids
 
 
 def handle_session_capture(request: dict) -> dict:
@@ -268,6 +271,9 @@ def handle_session_capture(request: dict) -> dict:
         response.result = "captured"
         response.reason = "checkpointed"
         response.pending_turns = len(pending_turns)
+        response.flushed_count = 0
+        response.native_written_count = 0
+        response.native_skipped_count = 0
         _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "persist", "metadata": {"target": "state", "reason": response.reason, "pending_turns": response.pending_turns}})
         return response.model_dump()
 
@@ -276,13 +282,16 @@ def handle_session_capture(request: dict) -> dict:
     if not should_flush:
         _save_state(capture_request.session_id, state)
         response.result = "captured"
-        response.reason = reason
+        response.reason = "checkpointed" if reason == "below-threshold" else reason
         response.pending_turns = len(pending_turns)
+        response.flushed_count = 0
+        response.native_written_count = 0
+        response.native_skipped_count = 0
         _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "persist", "metadata": {"target": "state", "reason": response.reason, "pending_turns": response.pending_turns}})
         return response.model_dump()
 
     _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "persist_start", "metadata": {"target": "rollup", "pending_turns": len(pending_turns), "summary_only": capture_request.summary_only}})
-    flushed = _flush_session_rollup(
+    flushed, native_written, native_skipped, native_record_ids = _flush_session_rollup(
         cwd=capture_request.cwd,
         session_id=capture_request.session_id,
         pending_turns=pending_turns,
@@ -297,6 +306,8 @@ def handle_session_capture(request: dict) -> dict:
     response.reason = reason
     response.project = _resolve_project_name(capture_request.cwd)
     response.flushed_count = flushed
+    response.native_written_count = native_written
+    response.native_skipped_count = native_skipped
     response.pending_turns = 0
-    _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "persist_complete", "metadata": {"target": "rollup", "flushed_count": flushed, "reason": reason, "project": response.project}})
+    _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "persist_complete", "metadata": {"target": "rollup", "flushed_count": flushed, "native_written_count": native_written, "native_skipped_count": native_skipped, "native_record_ids": [record_id for record_id in native_record_ids if record_id], "reason": reason, "project": response.project, "session_id": capture_request.session_id, "transcript_path": capture_request.transcript_path}})
     return response.model_dump()
