@@ -9,6 +9,8 @@ from core.models import (
     BatchSummaryItem,
     BatchSummaryResponse,
     QueueJob,
+    SessionCaptureRequest,
+    SessionCaptureResponse,
     Turn,
     TurnSummary,
 )
@@ -266,3 +268,18 @@ def test_queue_job_model_override_none_by_default():
     job = QueueJob(session_id="s1", transcript_path="/tmp/t.jsonl")
     d = job.model_dump()
     assert d["model_override"] is None
+
+
+def test_session_capture_request_minimal():
+    req = SessionCaptureRequest(cwd="/repo", session_id="sess-1", transcript_path="/tmp/t.jsonl")
+    assert req.action == "session_capture"
+    assert req.final is False
+    assert req.idle is False
+    assert req.summary_only is True
+
+
+def test_session_capture_response_defaults():
+    resp = SessionCaptureResponse(session_id="sess-1", result="captured")
+    assert resp.ok is True
+    assert resp.action == "session_capture"
+    assert resp.pending_turns == 0

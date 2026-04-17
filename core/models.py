@@ -164,3 +164,37 @@ class MemoryStoreResponse(BaseModel):
     scope_id: str
     path: str
     summary: str | None = None
+
+
+class SessionCaptureRequest(BaseModel):
+    """Pi extension request contract for thresholded session capture."""
+
+    action: Literal["session_capture"] = "session_capture"
+    cwd: str
+    session_id: str
+    transcript_path: str
+    transcript_bytes: int | None = None
+    message_count: int | None = None
+    agent: str | None = None
+    model: str | None = None
+    event: str | None = None
+    final: bool = False
+    idle: bool = False
+    summary_only: bool = True
+    metadata: dict[str, str | int | bool | None] = Field(default_factory=dict)
+
+
+class SessionCaptureResponse(BaseModel):
+    """Compact response for a session capture checkpoint/flush request."""
+
+    ok: bool = True
+    action: Literal["session_capture"] = "session_capture"
+    session_id: str
+    result: Literal["skipped", "captured", "flushed"]
+    reason: str | None = None
+    project: str | None = None
+    turns_seen: int = 0
+    new_turns: int = 0
+    pending_turns: int = 0
+    checkpoint_offset: int = 0
+    flushed_count: int = 0

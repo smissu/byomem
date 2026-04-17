@@ -76,6 +76,11 @@ class Config:
     code_db_path: Path = field(default_factory=lambda: Path.home() / ".byomem" / "code.db")
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
     settings_path: Path = field(default_factory=lambda: Path.home() / ".claude" / "settings.json")
+    session_capture_enabled: bool = False
+    session_capture_threshold_turns: int = 4
+    session_capture_large_turn_chars: int = 4096
+    session_capture_idle_flush_seconds: int = 90
+    session_capture_min_turns: int = 2
 
     @property
     def db_path(self) -> Path:
@@ -237,6 +242,18 @@ def _load_config() -> Config:
 
     if "settings_path" in data:
         kwargs["settings_path"] = Path(data["settings_path"])
+
+    session_capture = data.get("session_capture", {}) or {}
+    if "enabled" in session_capture:
+        kwargs["session_capture_enabled"] = bool(session_capture["enabled"])
+    if "threshold_turns" in session_capture:
+        kwargs["session_capture_threshold_turns"] = int(session_capture["threshold_turns"])
+    if "large_turn_chars" in session_capture:
+        kwargs["session_capture_large_turn_chars"] = int(session_capture["large_turn_chars"])
+    if "idle_flush_seconds" in session_capture:
+        kwargs["session_capture_idle_flush_seconds"] = int(session_capture["idle_flush_seconds"])
+    if "min_turns" in session_capture:
+        kwargs["session_capture_min_turns"] = int(session_capture["min_turns"])
 
     return Config(**kwargs)
 

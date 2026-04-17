@@ -22,6 +22,9 @@ def test_defaults_without_yaml():
     assert cfg.vector_weight == 0.7
     assert cfg.keyword_weight == 0.3
     assert cfg.settings_path == Path.home() / ".claude" / "settings.json"
+    assert cfg.session_capture_enabled is False
+    assert cfg.session_capture_threshold_turns == 4
+    assert cfg.session_capture_idle_flush_seconds == 90
 
 
 def test_loads_from_yaml(tmp_path, monkeypatch):
@@ -192,6 +195,31 @@ def test_partial_truncation_merges(tmp_path, monkeypatch):
     cfg = _load_config()
     assert cfg.user_message_max == 500
     assert cfg.assistant_message_max == 3000  # default
+
+
+def test_session_capture_section_loads(tmp_path, monkeypatch):
+    config_yaml = tmp_path / ".byomem" / "config.yaml"
+    config_yaml.parent.mkdir(parents=True)
+    config_yaml.write_text(
+        yaml.dump(
+            {
+                "session_capture": {
+                    "enabled": True,
+                    "threshold_turns": 5,
+                    "large_turn_chars": 5000,
+                    "idle_flush_seconds": 120,
+                    "min_turns": 2,
+                }
+            }
+        )
+    )
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    cfg = _load_config()
+    assert cfg.session_capture_enabled is True
+    assert cfg.session_capture_threshold_turns == 5
+    assert cfg.session_capture_large_turn_chars == 5000
+    assert cfg.session_capture_idle_flush_seconds == 120
+    assert cfg.session_capture_min_turns == 2
 
 
 # ---------------------------------------------------------------------------
