@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "action": "session_capture",
+  "session_id": "sess-001",
+  "result": "captured",
+  "reason": "checkpointed",
+  "project": null,
+  "turns_seen": 1,
+  "new_turns": 1,
+  "pending_turns": 1,
+  "checkpoint_offset": 201,
+  "flushed_count": 0,
+  "native_written_count": 0,
+  "native_skipped_count": 0,
+  "native_record_ids": []
+}

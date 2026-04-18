@@ -1,0 +1,6 @@
+{
+  "query": "stop price",
+  "cwd": "/workspace/byomem/repo-a",
+  "scope": "project",
+  "max_results": 3
+}
