@@ -15,6 +15,18 @@ def _make_msg(uuid, msg_type, content, parent_uuid=None, timestamp="2026-02-19T1
     return msg
 
 
+def _make_event_msg(uuid, role, content, parent_uuid=None, timestamp="2026-02-19T10:00:00", type_="message"):
+    message = {
+        "uuid": uuid,
+        "role": role,
+        "content": content,
+        "timestamp": timestamp,
+    }
+    if parent_uuid:
+        message["parentUUID"] = parent_uuid
+    return {"type": type_, "message": message}
+
+
 def _write_jsonl(path, messages):
     path.write_text("\n".join(json.dumps(m) for m in messages))
     return path
@@ -185,3 +197,54 @@ def test_byte_offset_resumes(tmp_path):
     assert len(turns2) == 1
     assert turns2[0].id == "u2"
     assert offset2 > offset1
+
+
+def test_event_transcript_schema_parses_turns(tmp_path):
+    msgs = [
+        _make_event_msg("u1", "user", "hello", type_="message"),
+        _make_event_msg("a1", "assistant", "hi there", parent_uuid="u1", type_="message"),
+    ]
+    f = _write_jsonl(tmp_path / "event.jsonl", msgs)
+    turns, offset = parse_new_turns(f)
+    assert len(turns) == 1
+    assert turns[0].id == "u1"
+    assert turns[0].user == "hello"
+    assert turns[0].assistant == "hi there"
+
+
+def test_event_transcript_session_capture_sees_turns(tmp_path):
+    transcript = tmp_path / "live.jsonl"
+    msgs = [
+        _make_event_msg("u1", "user", "first question", type_="message"),
+        _make_event_msg("a1", "assistant", "first answer", parent_uuid="u1", type_="message"),
+        _make_event_msg("tool1", "toolResult", "tool output", parent_uuid="u1", type_="message"),
+        _make_event_msg("a2", "assistant", "final answer", parent_uuid="tool1", type_="message"),
+        _make_event_msg("u2", "user", "second question", timestamp="2026-02-19T11:00:00", type_="message"),
+        _make_event_msg("a3", "assistant", "second answer", parent_uuid="u2", type_="message"),
+    ]
+    f = _write_jsonl(transcript, msgs)
+
+    turns, offset = parse_new_turns(f)
+    assert len(turns) == 2
+    assert [t.id for t in turns] == ["u1", "u2"]
+    assert turns[0].assistant == "first answer\n\nfinal answer"
+    assert offset > 0
+
+
+def test_event_transcript_parent_id_shape_parses_turns(tmp_path):
+    transcript = tmp_path / "fresh-live.jsonl"
+    msgs = [
+        {"type": "session", "version": "v3", "id": "sess1", "timestamp": "2026-04-18T10:53:42.791Z", "cwd": "/tmp"},
+        {"type": "message", "id": "u1", "parentId": "root1", "timestamp": "2026-04-18T10:53:43.000Z", "message": {"role": "user", "content": [{"type": "text", "text": "Reply with exactly: live-repro-20260418T105342Z-92424"}]}},
+        {"type": "message", "id": "a1", "parentId": "u1", "timestamp": "2026-04-18T10:53:44.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking"}]}},
+        {"type": "message", "id": "tool1", "parentId": "a1", "timestamp": "2026-04-18T10:53:45.000Z", "message": {"role": "toolResult", "content": [{"type": "text", "text": "[codex-planner] done in 1s\nlive-repro-20260418T105342Z-92424"}]}},
+        {"type": "message", "id": "a2", "parentId": "tool1", "timestamp": "2026-04-18T10:53:46.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "live-repro-20260418T105342Z-92424"}]}},
+    ]
+    f = _write_jsonl(transcript, msgs)
+
+    turns, offset = parse_new_turns(f)
+    assert len(turns) == 1
+    assert turns[0].id == "u1"
+    assert turns[0].user == "Reply with exactly: live-repro-20260418T105342Z-92424"
+    assert turns[0].assistant == "thinking\n\nlive-repro-20260418T105342Z-92424"
+    assert offset > 0

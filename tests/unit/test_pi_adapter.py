@@ -293,6 +293,64 @@ def test_pi_adapter_session_capture_checkpoints_then_flushes(tmp_path, monkeypat
     assert summarized_batches == [["u1", "u2", "u3", "u4"]]
 
 
+def test_pi_adapter_session_capture_retries_once_when_turn_end_sees_no_new_turns(tmp_path, monkeypatch):
+    from core.config import Config
+    from core.pi_adapter import handle_pi_request
+
+    cfg = Config(byomem=tmp_path / ".byomem", session_capture_enabled=True, session_capture_threshold_turns=4, session_capture_min_turns=1)
+    monkeypatch.setattr("core.config._config", cfg)
+    monkeypatch.setattr("core.session_capture.get_config", lambda: cfg)
+
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        '{"type":"user","uuid":"u1","message":{"content":"q1"},"timestamp":"2026-01-01T00:00:00"}\n'
+        '{"type":"assistant","uuid":"a1","parentUUID":"u1","message":{"content":"r1"},"timestamp":"2026-01-01T00:00:01"}\n'
+    )
+
+    first = handle_pi_request({"action": "session_capture", "cwd": str(tmp_path), "session_id": "sess-race", "transcript_path": str(transcript), "event": "turn_end", "final": False, "idle": False, "summary_only": True, "message_count": 2})
+    assert first["result"] == "captured"
+    assert first["reason"] == "checkpointed"
+    assert first["new_turns"] == 1
+    assert first["pending_turns"] == 1
+    assert first["checkpoint_offset"] > 0
+
+    transcript.write_text(
+        transcript.read_text()
+        + '{"type":"user","uuid":"u2","message":{"content":"q2"},"timestamp":"2026-01-01T00:02:00"}\n'
+        '{"type":"assistant","uuid":"a2","parentUUID":"u2","message":{"content":"r2"},"timestamp":"2026-01-01T00:02:01"}\n'
+    )
+
+    second = handle_pi_request({"action": "session_capture", "cwd": str(tmp_path), "session_id": "sess-race", "transcript_path": str(transcript), "event": "turn_end", "final": False, "idle": False, "summary_only": True, "message_count": 4})
+    assert second["result"] == "captured"
+    assert second["reason"] == "checkpointed"
+    assert second["new_turns"] == 1
+    assert second["pending_turns"] == 2
+    assert second["checkpoint_offset"] > first["checkpoint_offset"]
+
+
+def test_pi_adapter_session_capture_preserves_final_and_idle_paths(tmp_path, monkeypatch):
+    from core.config import Config
+    from core.pi_adapter import handle_pi_request
+
+    cfg = Config(byomem=tmp_path / ".byomem", session_capture_enabled=True, session_capture_threshold_turns=1, session_capture_min_turns=1)
+    monkeypatch.setattr("core.config._config", cfg)
+    monkeypatch.setattr("core.session_capture.get_config", lambda: cfg)
+
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        '{"type":"user","uuid":"u1","message":{"content":"q1"},"timestamp":"2026-01-01T00:00:00"}\n'
+        '{"type":"assistant","uuid":"a1","parentUUID":"u1","message":{"content":"r1"},"timestamp":"2026-01-01T00:00:01"}\n'
+    )
+
+    final_response = handle_pi_request({"action": "session_capture", "cwd": str(tmp_path), "session_id": "sess-final", "transcript_path": str(transcript), "event": "agent_end", "final": True, "idle": False, "summary_only": True, "message_count": 2})
+    idle_response = handle_pi_request({"action": "session_capture", "cwd": str(tmp_path), "session_id": "sess-idle", "transcript_path": str(transcript), "event": "idle", "final": False, "idle": True, "summary_only": True, "message_count": 2})
+
+    assert final_response["result"] == "flushed"
+    assert final_response["reason"] == "final"
+    assert idle_response["result"] == "flushed"
+    assert idle_response["reason"] == "idle"
+
+
 def test_pi_adapter_session_capture_can_skip_markdown_writes(tmp_path, monkeypatch):
     from core.config import Config
     from core.memory_store import reset_native_store

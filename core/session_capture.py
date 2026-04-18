@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -214,6 +215,50 @@ def _flush_session_rollup(
     return flushed, native_written, native_skipped, native_record_ids
 
 
+def _session_capture_parse_debug(
+    *,
+    capture_request: SessionCaptureRequest,
+    transcript: Path,
+    state_offset: int,
+    saved_offset: int,
+    pending_turns_count: int,
+    parse_attempt: int,
+    file_size_before: int | None,
+    file_size_after: int | None,
+    start_offset: int,
+    end_offset: int,
+    new_turns: list[Turn],
+) -> None:
+    _write_debug_entry(
+        DEBUG_LOG_FILE,
+        {
+            "layer": "python_adapter",
+            "action": "session_capture",
+            "event": "parse_attempt",
+            "metadata": {
+                "session_id": capture_request.session_id,
+                "event_name": capture_request.event,
+                "final": capture_request.final,
+                "idle": capture_request.idle,
+                "message_count": capture_request.message_count,
+                "transcript_path": capture_request.transcript_path,
+                "transcript_exists": transcript.exists(),
+                "transcript_size_before": file_size_before,
+                "transcript_size_after": file_size_after,
+                "state_offset": state_offset,
+                "saved_offset": saved_offset,
+                "start_offset": start_offset,
+                "end_offset": end_offset,
+                "new_turns": len(new_turns),
+                "offset_advanced": end_offset > start_offset,
+                "file_size_changed": file_size_before is not None and file_size_after is not None and file_size_before != file_size_after,
+                "parse_attempt": parse_attempt,
+                "pending_turns": pending_turns_count,
+            },
+        },
+    )
+
+
 def handle_session_capture(request: dict) -> dict:
     cfg = get_config()
     _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "request_received", "metadata": {"has_cwd": bool(request.get("cwd")), "has_session_id": bool(request.get("session_id") or request.get("sessionId")), "has_transcript_path": bool(request.get("transcript_path") or request.get("transcriptPath")), "message_count": request.get("message_count") if isinstance(request.get("message_count"), int) else request.get("messageCount") if isinstance(request.get("messageCount"), int) else None}})
@@ -238,23 +283,49 @@ def handle_session_capture(request: dict) -> dict:
         return response.model_dump()
 
     state = _load_state(capture_request.session_id)
-    start_offset = state.offset or get_session_offset(capture_request.session_id)
+    saved_offset = get_session_offset(capture_request.session_id)
+    start_offset = state.offset or saved_offset
+    file_size_before = transcript.stat().st_size
     new_turns, end_offset = parse_new_turns(transcript, byte_offset=start_offset)
+    parse_attempt = 1
+    if not new_turns and not capture_request.final and not capture_request.idle:
+        time.sleep(0.05)
+        file_size_mid = transcript.stat().st_size
+        _session_capture_parse_debug(
+            capture_request=capture_request,
+            transcript=transcript,
+            state_offset=state.offset,
+            saved_offset=saved_offset,
+            pending_turns_count=len(state.pending_turns or []),
+            parse_attempt=parse_attempt,
+            file_size_before=file_size_before,
+            file_size_after=file_size_mid,
+            start_offset=start_offset,
+            end_offset=end_offset,
+            new_turns=new_turns,
+        )
+        new_turns, end_offset = parse_new_turns(transcript, byte_offset=start_offset)
+        parse_attempt = 2
+    file_size_after = transcript.stat().st_size
     response.turns_seen = len(state.pending_turns or []) + len(new_turns)
     response.new_turns = len(new_turns)
     response.checkpoint_offset = end_offset
-    _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "parsed_turns", "metadata": {"session_id": capture_request.session_id, "start_offset": start_offset, "end_offset": end_offset, "new_turns": len(new_turns), "pending_turns": len(state.pending_turns or []), "message_count": capture_request.message_count}})
+    _session_capture_parse_debug(
+        capture_request=capture_request,
+        transcript=transcript,
+        state_offset=state.offset,
+        saved_offset=saved_offset,
+        pending_turns_count=len(state.pending_turns or []),
+        parse_attempt=parse_attempt,
+        file_size_before=file_size_before,
+        file_size_after=file_size_after,
+        start_offset=start_offset,
+        end_offset=end_offset,
+        new_turns=new_turns,
+    )
 
     pending_turns = [Turn(**turn) for turn in (state.pending_turns or [])]
     pending_turns.extend(new_turns)
-
-    state.offset = end_offset
-    state.pending_turns = [turn.model_dump() for turn in pending_turns]
-    state.last_transcript_path = capture_request.transcript_path
-    state.last_cwd = capture_request.cwd
-    state.last_agent = capture_request.agent or ""
-    state.last_model = capture_request.model or ""
-    state.message_count = capture_request.message_count or 0
 
     should_flush, reason = _should_flush(
         pending_turns,
@@ -265,9 +336,17 @@ def handle_session_capture(request: dict) -> dict:
     )
     _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "flush_decision", "metadata": {"reason": reason, "should_flush": should_flush, "pending_turns": len(pending_turns), "final": capture_request.final, "idle": capture_request.idle, "threshold_turns": cfg.session_capture_threshold_turns, "large_turn_chars": cfg.session_capture_large_turn_chars}})
 
+    state.offset = end_offset if new_turns or capture_request.final or capture_request.idle else start_offset
+    state.pending_turns = [turn.model_dump() for turn in pending_turns]
+    state.last_transcript_path = capture_request.transcript_path
+    state.last_cwd = capture_request.cwd
+    state.last_agent = capture_request.agent or ""
+    state.last_model = capture_request.model or ""
+    state.message_count = capture_request.message_count or 0
+
     if len(pending_turns) < cfg.session_capture_min_turns and not capture_request.final and not capture_request.idle:
         _save_state(capture_request.session_id, state)
-        save_session_offset(capture_request.session_id, end_offset)
+        save_session_offset(capture_request.session_id, state.offset)
         response.result = "captured"
         response.reason = "checkpointed"
         response.pending_turns = len(pending_turns)
@@ -278,7 +357,7 @@ def handle_session_capture(request: dict) -> dict:
         _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "persist", "metadata": {"target": "state", "reason": response.reason, "pending_turns": response.pending_turns}})
         return response.model_dump()
 
-    save_session_offset(capture_request.session_id, end_offset)
+    save_session_offset(capture_request.session_id, state.offset)
 
     if not should_flush:
         _save_state(capture_request.session_id, state)
