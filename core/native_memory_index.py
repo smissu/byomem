@@ -183,9 +183,12 @@ def search_native_records(scope: str, scope_id: str, query: str, lifecycle: list
     try:
         allowed = lifecycle or ["active", "archived", "superseded"]
         rows = _fts_candidates(db, scope, scope_id, query, allowed)
+        from core.memory_store import get_native_store
+
+        stored_records = {record.id: record for record in get_native_store().retrieve(scope=scope, scope_id=scope_id)}
         lexical_records: list[dict[str, object]] = []
         for idx, row in enumerate(rows):
-            record = MemoryRecord(id=row[0], scope=row[1], scope_id=row[2], created_at=row[3], updated_at=row[4], source=row[5], content=row[6], lifecycle=row[7], source_kind="pi_native_store")
+            record = stored_records.get(row[0]) or MemoryRecord(id=row[0], scope=row[1], scope_id=row[2], created_at=row[3], updated_at=row[4], source=row[5], content=row[6], lifecycle=row[7], source_kind="pi_native_store")
             lexical_score = 1.0 / (1.0 + idx)
             lexical_records.append({"record": record, "candidate_source": "fts", "lexical_rank": row[8], "lexical_score": lexical_score, "semantic_available": False, "semantic_rerank_applied": False, "semantic_score": None})
 

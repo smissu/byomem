@@ -47,19 +47,41 @@ def _build_explainability(candidate: dict[str, object] | MemoryRecord) -> tuple[
     return reason, "; ".join(provenance_parts)
 
 
+def _looks_like_identity_lookup(query: str) -> bool:
+    query = query.strip()
+    return " " not in query and len(query) >= 8
+
+
 def fetch_candidates(request: MemoryRetrievalRequest) -> list[dict[str, object]]:
     scope_id = request.filters.get(request.scope)
     if not isinstance(scope_id, str) or not scope_id:
         return []
     allowed_lifecycles = request.filters.get("lifecycle")
     lifecycle = allowed_lifecycles if isinstance(allowed_lifecycles, list) else None
-    return search_native_records(
+
+    store = get_native_store()
+    candidates = search_native_records(
         request.scope,
         scope_id,
         request.query,
         lifecycle=lifecycle,
-        db_path=native_index_path_for_store(get_native_store().root),
+        db_path=native_index_path_for_store(store.root),
     )
+    if candidates:
+        if _looks_like_identity_lookup(request.query):
+            store_records = {record.id: record for record in store.retrieve(scope=request.scope, scope_id=scope_id)}
+            hydrated: list[dict[str, object]] = []
+            for candidate in candidates:
+                record = candidate.get("record")
+                if isinstance(record, MemoryRecord) and record.id in store_records:
+                    hydrated.append({**candidate, "record": store_records[record.id]})
+                else:
+                    hydrated.append(candidate)
+            return hydrated
+        return candidates
+
+    store_records = [record for record in store.retrieve(scope=request.scope, scope_id=scope_id) if record.lifecycle in (_ALLOWED_LIFECYCLES if lifecycle is None else set(lifecycle) & _ALLOWED_LIFECYCLES) and request.query.lower() in record.content.lower()]
+    return [{"record": record, "candidate_source": "store", "lexical_rank": None, "lexical_score": None, "semantic_available": False, "semantic_rerank_applied": False, "semantic_score": None} for record in store_records]
 
 
 def _final_score(candidate: dict[str, object] | MemoryRecord) -> float:

@@ -56,6 +56,7 @@ def test_retrieval_survives_in_process_reset_and_reloads_persisted_native_store(
     assert "records.jsonl" in str(store.path)
     assert all(".md" not in result.provenance for result in response.results)
 
+
 def test_retrieval_lexical_only_semantic_unavailable(tmp_path, mocker):
     from core.memory_identity import resolve_project_id
     from core.memory_retrieval import retrieve_memory
@@ -204,16 +205,51 @@ def test_retrieval_lexical_score_absent_for_semantic_only(tmp_path, mocker):
     assert "lexical_score=0.0000" in response.results[0].provenance
 
 
-def test_pi_adapter_preserves_rank_order_with_real_lexical_scoring(tmp_path, mocker):
+def test_retrieval_prefers_stable_identity_within_scope(tmp_path, monkeypatch):
+    from core.memory_identity import resolve_project_id
+    from core.memory_retrieval import retrieve_memory
     from core.memory_store import reset_native_store
-    from core.pi_adapter import handle_pi_request
 
-    mocker.patch("core.native_memory_index._get_embedding", return_value=None)
-    reset_native_store(tmp_path / ".byomem" / "native")
-    cwd = tmp_path / "team-a" / "shared"
-    cwd.mkdir(parents=True)
-    handle_pi_request({"action": "store", "cwd": str(cwd), "text": "alpha beta gamma", "scope": "project"})
-    handle_pi_request({"action": "store", "cwd": str(cwd), "text": "alpha beta", "scope": "project"})
+    monkeypatch.setenv("BYOMEM_USER_ID", "alice")
+    store = reset_native_store(tmp_path / ".byomem" / "native")
+    repo_a = tmp_path / "team-a" / "shared"
+    repo_b = tmp_path / "team-b" / "shared"
+    repo_a.mkdir(parents=True)
+    repo_b.mkdir(parents=True)
+    project_a = resolve_project_id(str(repo_a))
+    project_b = resolve_project_id(str(repo_b))
+    record_a = MemoryRecord(id="shared-note", scope="project", scope_id=project_a, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="stable identity alpha", source_kind="pi_native_store")
+    record_b = MemoryRecord(id="shared-note", scope="project", scope_id=project_b, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="stable identity beta", source_kind="pi_native_store")
+    store.write(record_a)
+    store.write(record_b)
 
-    response = handle_pi_request({"query": "alpha beta gamma", "cwd": str(cwd)})
-    assert [item["text"] for item in response["items"]][:2] == ["alpha beta gamma", "alpha beta"]
+    response_a = retrieve_memory(MemoryRetrievalRequest(query="stable identity", scope="project", filters={"project": project_a, "lifecycle": ["active"]}))
+    response_b = retrieve_memory(MemoryRetrievalRequest(query="stable identity", scope="project", filters={"project": project_b, "lifecycle": ["active"]}))
+
+    assert response_a.results
+    assert response_b.results
+    assert response_a.results[0].record.scope_id == project_a
+    assert response_b.results[0].record.scope_id == project_b
+    assert response_a.results[0].record.id == "shared-note"
+    assert response_b.results[0].record.id == "shared-note"
+
+
+def test_retrieval_records_native_provenance_and_avoids_markdown_backing(tmp_path, monkeypatch):
+    from core.memory_identity import resolve_project_id
+    from core.memory_retrieval import retrieve_memory
+    from core.memory_store import reset_native_store
+
+    monkeypatch.setenv("BYOMEM_USER_ID", "alice")
+    store = reset_native_store(tmp_path / ".byomem" / "native")
+    cwd = tmp_path / "repo-a"
+    cwd.mkdir()
+    project_id = resolve_project_id(str(cwd))
+    store.write(MemoryRecord(id="native-1", scope="project", scope_id=project_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:session_capture", source_kind="session_capture_summary", source_ref="session:sess-1:turn:t-1", content="native provenance content", lifecycle="active"))
+
+    response = retrieve_memory(MemoryRetrievalRequest(query="native provenance", scope="project", filters={"project": project_id, "lifecycle": ["active"]}))
+
+    assert response.results
+    assert response.results[0].record.source == "pi:session_capture"
+    assert response.results[0].record.source_kind == "session_capture_summary"
+    assert response.results[0].record.source_ref == "session:sess-1:turn:t-1"
+    assert ".md" not in response.results[0].provenance

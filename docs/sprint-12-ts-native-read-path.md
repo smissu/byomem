@@ -1,7 +1,7 @@
 # Sprint 12: TS Native Read Path
 
 ## Goal / Objective
-Implement and validate the TypeScript-native read path so BYOMem retrieval uses durable native storage instead of markdown discovery. Sprint 12 has begun with a passing native-read durability proof: retrieval survives in-process reset/reload without markdown dependence.
+Implement and validate the TypeScript-native read path so BYOMem retrieval uses durable native storage instead of markdown discovery. Sprint 12 is now complete for the intended read-path scope: retrieval survives in-process reset/reload without markdown dependence.
 
 ## Scope / Workstreams
 - Wire read APIs to the native store/index layer.
@@ -14,11 +14,17 @@ Implement and validate the TypeScript-native read path so BYOMem retrieval uses 
 - Native storage/stable identity work from Sprint 5.1.
 - Query-aware search/ranking behavior from Sprint 5.2.
 
-## Acceptance Criteria
+## Exit Criteria / Results
 - A written memory record can be read back through the TS-native path.
-- Retrieval survives reload without relying on markdown files.
-- Read behavior is consistent with the documented contract.
+- Retrieval survives in-process reset/reload without relying on markdown files.
+- Query-based native read coverage includes stable identity, provenance, and scope behavior as exercised by the current tests.
+- Session-capture records remain retrievable through the native path.
 - Native-read durability is proven by a passing in-process reset/reload replay.
+- Markdown is not required for passing read-path verification.
+
+## Verification Commands
+- `pytest -q tests/unit/test_memory_retrieval.py::test_retrieval_prefers_stable_identity_within_scope tests/unit/test_memory_retrieval.py::test_retrieval_records_native_provenance_and_avoids_markdown_backing tests/unit/test_memory_retrieval.py::test_retrieval_survives_in_process_reset_and_reloads_persisted_native_store`
+- `pytest -q tests/unit/test_memory_retrieval.py`
 
 ## Verification Steps
 - Write a known record through the native path.
