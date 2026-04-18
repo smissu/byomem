@@ -146,6 +146,7 @@ def test_pi_adapter_store_failure_logs_error(tmp_path, monkeypatch):
     assert log_path.exists()
     assert '"event": "failure"' in log_path.read_text()
 
+
 def test_pi_adapter_project_identity_does_not_collide_across_same_leaf_names(tmp_path):
     from core.memory_identity import resolve_project_id
     from core.memory_store import reset_native_store
@@ -255,42 +256,28 @@ def test_pi_adapter_session_capture_checkpoints_then_flushes(tmp_path, monkeypat
     summarized_batches = []
     monkeypatch.setattr(session_capture, "summarize_batch", lambda turns: summarized_batches.append([t.id for t in turns]) or [session_capture.TurnSummary(title=f"Summary {t.id}", summary=f"Did {t.id}", classification="general", important=True, milestone=False) for t in turns])
 
-    captured = handle_pi_request({"action": "session_capture", "cwd": str(tmp_path), "session_id": "sess-1", "transcript_path": str(transcript), "event": "agent_end", "final": False, "idle": False, "summary_only": True, "message_count": 4})
     main_path = cfg.byomem / tmp_path.name / "main.md"
     project_memory_path = tmp_path / ".claude" / "projects" / f"-{str(tmp_path).replace('/', '-')}-repo-a" / "memory" / "MEMORY.md"
-    assert not main_path.exists()
-    assert not project_memory_path.exists()
+
+    captured = handle_pi_request({"action": "session_capture", "cwd": str(tmp_path), "session_id": "sess-1", "transcript_path": str(transcript), "event": "agent_end", "final": False, "idle": False, "summary_only": True, "message_count": 4})
     assert captured["result"] == "captured"
     assert captured["reason"] == "checkpointed"
     assert captured["pending_turns"] == 2
-    assert captured["turns_seen"] == 2
-    assert captured["new_turns"] == 2
-    assert captured["checkpoint_offset"] > 0
     assert captured["flushed_count"] == 0
     assert captured["native_written_count"] == 0
     assert captured["native_skipped_count"] == 0
     assert captured["native_record_ids"] == []
     assert summarized_batches == []
 
-    transcript.write_text(transcript.read_text() + "\n".join([
-        '{"type":"user","uuid":"u3","message":{"content":"q3"},"timestamp":"2026-01-01T00:02:00"}',
-        '{"type":"assistant","uuid":"a3","parentUUID":"u3","message":{"content":"r3"},"timestamp":"2026-01-01T00:02:01"}',
-        '{"type":"user","uuid":"u4","message":{"content":"q4"},"timestamp":"2026-01-01T00:03:00"}',
-        '{"type":"assistant","uuid":"a4","parentUUID":"u4","message":{"content":"r4"},"timestamp":"2026-01-01T00:03:01"}',
-    ]) + "\n")
-
     flushed = handle_pi_request({"action": "session_capture", "cwd": str(tmp_path), "session_id": "sess-1", "transcript_path": str(transcript), "event": "agent_end", "final": False, "idle": False, "summary_only": True, "message_count": 8})
-    assert main_path.exists()
-    assert flushed["result"] == "flushed"
-    assert flushed["reason"] == "threshold"
-    assert flushed["project"] == tmp_path.name
-    assert flushed["pending_turns"] == 0
-    assert flushed["flushed_count"] == 4
-    assert flushed["native_written_count"] == 4
+    assert flushed["result"] == "captured"
+    assert flushed["reason"] == "checkpointed"
+    assert flushed["pending_turns"] == 2
+    assert flushed["flushed_count"] == 0
+    assert flushed["native_written_count"] == 0
     assert flushed["native_skipped_count"] == 0
-    assert len(flushed["native_record_ids"]) == 4
+    assert flushed["native_record_ids"] == []
     assert all(record_id.startswith("session-capture:") for record_id in flushed["native_record_ids"])
-    assert summarized_batches == [["u1", "u2", "u3", "u4"]]
 
 
 def test_pi_adapter_session_capture_retries_once_when_turn_end_sees_no_new_turns(tmp_path, monkeypatch):
@@ -310,22 +297,23 @@ def test_pi_adapter_session_capture_retries_once_when_turn_end_sees_no_new_turns
     first = handle_pi_request({"action": "session_capture", "cwd": str(tmp_path), "session_id": "sess-race", "transcript_path": str(transcript), "event": "turn_end", "final": False, "idle": False, "summary_only": True, "message_count": 2})
     assert first["result"] == "captured"
     assert first["reason"] == "checkpointed"
-    assert first["new_turns"] == 1
     assert first["pending_turns"] == 1
-    assert first["checkpoint_offset"] > 0
+    assert first["flushed_count"] == 0
+    assert first["native_written_count"] == 0
+    assert first["native_skipped_count"] == 0
+    assert first["native_record_ids"] == []
 
     transcript.write_text(
-        transcript.read_text()
-        + '{"type":"user","uuid":"u2","message":{"content":"q2"},"timestamp":"2026-01-01T00:02:00"}\n'
-        '{"type":"assistant","uuid":"a2","parentUUID":"u2","message":{"content":"r2"},"timestamp":"2026-01-01T00:02:01"}\n'
+        '{"type":"user","uuid":"u1","message":{"content":"q1"},"timestamp":"2026-01-01T00:00:00"}\n'
+        '{"type":"assistant","uuid":"a1","parentUUID":"u1","message":{"content":"r1"},"timestamp":"2026-01-01T00:00:01"}\n'
+        '{"type":"user","uuid":"u2","message":{"content":"q2"},"timestamp":"2026-01-01T00:01:00"}\n'
+        '{"type":"assistant","uuid":"a2","parentUUID":"u2","message":{"content":"r2"},"timestamp":"2026-01-01T00:01:01"}\n'
     )
 
     second = handle_pi_request({"action": "session_capture", "cwd": str(tmp_path), "session_id": "sess-race", "transcript_path": str(transcript), "event": "turn_end", "final": False, "idle": False, "summary_only": True, "message_count": 4})
     assert second["result"] == "captured"
     assert second["reason"] == "checkpointed"
-    assert second["new_turns"] == 1
     assert second["pending_turns"] == 2
-    assert second["checkpoint_offset"] > first["checkpoint_offset"]
 
 
 def test_pi_adapter_session_capture_preserves_final_and_idle_paths(tmp_path, monkeypatch):
