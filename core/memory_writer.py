@@ -1,4 +1,8 @@
-"""Write summarized session data to main.md and project MEMORY.md."""
+"""Write summarized session data to optional markdown compatibility/projection files.
+
+Native records remain the source of truth; main.md and project MEMORY.md are
+compatibility/export surfaces only.
+"""
 
 from datetime import date
 from pathlib import Path

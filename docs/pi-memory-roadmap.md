@@ -25,10 +25,10 @@ Memories move through a simple state model:
 - **Stateless retrieval API**: clients send query + scope + filters; the service returns ranked memory candidates without server-side conversational state.
 - **Scope-aware retrieval**: retrieval must respect `project`, `dir`, `user`, and `agent` scopes, with `session` and `global` treated as limited or future extensions.
 - **Pi-native integration**: the first-class entrypoint should be `pi-byomem`.
-- **Manual store + native foundation**: Sprint 5 introduced the initial `byomem_store` shortcut, Sprint 5.1 establishes BYOMem-native storage with stable identity, and Sprint 5.2 restores query-aware retrieval quality on top of native records.
+- **Manual store + native foundation**: Sprint 5 introduced the initial `byomem_store` shortcut, Sprint 5.1 establishes BYOMem-native storage with stable identity, and Sprint 5.2 restores query-aware retrieval quality on top of native records. Markdown/MEMORY.md paths remain optional compatibility/export surfaces, not the source of truth.
 - **Explicit write and lifecycle tools**: `byomem_store`, `byomem_recent`, and `byomem_manage` should stay manual, scoped, and conservative.
 - **Future automation**: a `byomem-agent` can later own curation, refresh, and policy-driven maintenance.
-- **Legacy shortcut superseded**: the earlier Claude-memory shortcut is no longer the forward path for new work; migration of old memories is deferred.
+- **Legacy shortcut superseded**: the earlier Claude-memory shortcut is no longer the forward path for new work; migration of old memories is deferred and intentionally bounded to compatibility/documentation cleanup, not a bulk migration program.
 
 ## Roadmap epics
 1. **Memory foundation**
@@ -79,5 +79,11 @@ Memories move through a simple state model:
 
 ## See also
 - [Docs index](./README.md)
+- [Sprint 11: TS BYOMem Contracts and Parity](./sprint-11-ts-byomem-contracts-and-parity.md)
+- [Sprint 12: TS Native Read Path](./sprint-12-ts-native-read-path.md)
+- [Sprint 13: TS Native Write Path and Migration](./sprint-13-ts-native-write-path-and-migration.md)
+- [Sprint 14: TS Native Retrieval and Ranking](./sprint-14-ts-native-retrieval-and-ranking.md)
+- [Sprint 15: TS Doc Cleanup and Legacy Retirement](./sprint-15-ts-doc-cleanup-and-legacy-retirement.md)
+- Older sprint notes above remain historical; follow the Sprint 11–15 sequence for the native-first closeout path.
 - [Pi memory first implementation tranche](./pi-memory-first-implementation-tranche.md)
 - [Pi memory implementation backlog](./pi-memory-implementation-backlog.md)

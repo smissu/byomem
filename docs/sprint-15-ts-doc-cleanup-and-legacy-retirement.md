@@ -1,13 +1,13 @@
 # Sprint 15: TS Doc Cleanup and Legacy Retirement
 
 ## Goal / Objective
-Retire markdown-first assumptions in BYOMem docs and code paths, and make the TypeScript-native flow the default documented implementation path.
+Retire markdown-first assumptions in BYOMem docs and code paths, and make the TypeScript-native flow the default documented implementation path. Native records and native store behavior remain the source of truth; markdown export/projection stays optional compatibility.
 
 ## Scope / Workstreams
 - Update doc references to favor the new TS-native sprint sequence.
 - Reduce or remove outdated markdown-first implementation language.
 - Identify any lingering compatibility shims that should be deprecated or removed.
-- Tighten verification coverage around native behavior and optional projections.
+- Tighten verification coverage around native behavior and optional projections/export.
 
 ## Dependencies
 - Sprint 11 through Sprint 14 completion.
@@ -18,11 +18,13 @@ Retire markdown-first assumptions in BYOMem docs and code paths, and make the Ty
 - The docs point readers to the TS-native sprint sequence first.
 - Legacy markdown-centric assumptions are clearly marked as deprecated or optional.
 - Remaining compatibility behavior is intentional and documented.
+- Native store behavior is explicit as the source of truth; markdown/main.md/MEMORY.md are documented as compatibility/projection artifacts only.
 
 ## Verification Steps
 - Review the BYOMem docs for markdown-first wording and update as needed.
 - Confirm the sprint sequence links are consistent across roadmap and sprint docs.
 - Check that native verification steps are the primary guidance.
+- Confirm any remaining markdown/main.md/MEMORY.md references are clearly labeled optional/export-only.
 
 ## Risks / Notes
 - Removing compatibility too early can disrupt callers still relying on old paths.

@@ -10,6 +10,11 @@ This directory holds lightweight verification notes and fixtures for the TypeScr
 - Keep fixture names stable and repo-relevant so future parity tests can compare outputs directly.
 - Treat markdown as a projection/export artifact, not the authoritative memory store.
 
+### Sprint 15 cleanup slice
+- Treat native records and native store behavior as the source of truth.
+- Keep markdown/main.md/MEMORY.md as optional compatibility or export artifacts only.
+- Bound legacy-retirement work to docs, comments, and narrow compatibility labels rather than behavior changes.
+
 ### Sprint 12 read-path slice
 - Treat durable native storage as the read-path baseline.
 - Verify retrieval from native storage survives in-process reset/reload without markdown dependence.
@@ -28,6 +33,11 @@ This directory holds lightweight verification notes and fixtures for the TypeScr
 - Verify reload/reset behavior and markdown-independence for retrieval correctness.
 - Keep ranking contract checks tied to native store behavior, not markdown discovery.
 
+### Sprint 15 cleanup slice
+- Treat the native store as the source of truth for all memory records.
+- Treat markdown/main.md/MEMORY.md as optional compatibility/export surfaces only.
+- Keep legacy-retirement verification focused on doc clarity and narrow compatibility labels, not new behavior.
+
 ### Current intent
 These notes are not a full test plan. They exist so Sprint 11 can grow a parity harness incrementally without redesigning the runtime path first.
 
@@ -45,6 +55,7 @@ These notes are not a full test plan. They exist so Sprint 11 can grow a parity 
 - metadata contract proof: provenance, scope, identity, source kind, and source ref are preserved on write
 - native retrieval/ranking proof: lexical, semantic, and hybrid behavior are exercised by targeted tests
 - markdown independence proof for retrieval/ranking behavior
+- native-first cleanup proof: markdown compatibility remains optional and export-only
 
 ### Useful verification commands
 ```bash
