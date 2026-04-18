@@ -25,6 +25,37 @@ def test_retrieval_ranks_best_matching_project_record_first(tmp_path, mocker):
     assert all("semantic_rerank=" in result.provenance for result in response.results)
 
 
+def test_retrieval_survives_in_process_reset_and_reloads_persisted_native_store(tmp_path, mocker):
+    from core.memory_identity import resolve_project_id
+    from core.memory_retrieval import retrieve_memory
+    from core.memory_store import reset_native_store
+
+    mocker.patch("core.native_memory_index._get_embedding", return_value=None)
+    store = reset_native_store(tmp_path / ".byomem" / "native")
+    cwd = tmp_path / "repo-a"
+    cwd.mkdir()
+    project_id = resolve_project_id(str(cwd))
+    record = MemoryRecord(
+        id="durable-1",
+        scope="project",
+        scope_id=project_id,
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:00Z",
+        source="pi:store",
+        content="durable native record",
+        source_kind="pi_native_store",
+    )
+    store.write(record)
+
+    reset_native_store(tmp_path / ".byomem" / "native")
+    response = retrieve_memory(MemoryRetrievalRequest(query="durable native", scope="project", filters={"project": project_id, "lifecycle": ["active"]}))
+
+    assert response.results
+    assert response.results[0].record == record
+    assert response.results[0].record.content == "durable native record"
+    assert "records.jsonl" in str(store.path)
+    assert all(".md" not in result.provenance for result in response.results)
+
 def test_retrieval_lexical_only_semantic_unavailable(tmp_path, mocker):
     from core.memory_identity import resolve_project_id
     from core.memory_retrieval import retrieve_memory

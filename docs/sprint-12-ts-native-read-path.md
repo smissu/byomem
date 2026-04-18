@@ -1,7 +1,7 @@
 # Sprint 12: TS Native Read Path
 
 ## Goal / Objective
-Implement and validate the TypeScript-native read path so BYOMem retrieval uses durable native storage instead of markdown discovery.
+Implement and validate the TypeScript-native read path so BYOMem retrieval uses durable native storage instead of markdown discovery. Sprint 12 has begun with a passing native-read durability proof: retrieval survives in-process reset/reload without markdown dependence.
 
 ## Scope / Workstreams
 - Wire read APIs to the native store/index layer.
@@ -18,6 +18,7 @@ Implement and validate the TypeScript-native read path so BYOMem retrieval uses 
 - A written memory record can be read back through the TS-native path.
 - Retrieval survives reload without relying on markdown files.
 - Read behavior is consistent with the documented contract.
+- Native-read durability is proven by a passing in-process reset/reload replay.
 
 ## Verification Steps
 - Write a known record through the native path.

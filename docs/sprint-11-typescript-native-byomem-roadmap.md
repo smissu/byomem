@@ -3,6 +3,9 @@
 ## Sprint goal
 Move the BYOMem implementation and sprint docs toward a TypeScript-native, implementation-ready path that stays aligned with the repo's modern sprint-planning format and the native-first memory architecture.
 
+## Status
+Sprint 11 is now documented as complete for the current parity slice: normalized fixtures/replays exist for store, search, session-capture checkpoint, and session-capture flush, with markdown treated as non-authoritative and native-first behavior as the baseline.
+
 ## Sprint sequence
 - [Sprint 11: TS BYOMem Contracts and Parity](./sprint-11-ts-byomem-contracts-and-parity.md)
 - [Sprint 12: TS Native Read Path](./sprint-12-ts-native-read-path.md)
