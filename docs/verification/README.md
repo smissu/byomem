@@ -22,6 +22,12 @@ This directory holds lightweight verification notes and fixtures for the TypeScr
 - Keep markdown optional and non-authoritative on write.
 - Bound migration to adapter/policy behavior instead of a bulk backfill pass.
 
+### Sprint 14 retrieval/ranking slice
+- Treat deterministic native retrieval as the contract for ranking and filtering.
+- Cover lexical, semantic, and hybrid paths with identity, recency, provenance, and scope awareness where the current tests exercise them.
+- Verify reload/reset behavior and markdown-independence for retrieval correctness.
+- Keep ranking contract checks tied to native store behavior, not markdown discovery.
+
 ### Current intent
 These notes are not a full test plan. They exist so Sprint 11 can grow a parity harness incrementally without redesigning the runtime path first.
 
@@ -37,13 +43,15 @@ These notes are not a full test plan. They exist so Sprint 11 can grow a parity 
 - native provenance preservation proof for stored `source_kind` / `source_ref`
 - native-write durability proof: records land in native storage and remain retrievable
 - metadata contract proof: provenance, scope, identity, source kind, and source ref are preserved on write
+- native retrieval/ranking proof: lexical, semantic, and hybrid behavior are exercised by targeted tests
+- markdown independence proof for retrieval/ranking behavior
 
 ### Useful verification commands
 ```bash
 python -m pytest tests/unit/test_parity_fixtures.py -m parity -q
 pytest -q tests/unit/test_parser.py
 pytest -q tests/unit/test_memory_retrieval.py::test_retrieval_prefers_stable_identity_within_scope tests/unit/test_memory_retrieval.py::test_retrieval_records_native_provenance_and_avoids_markdown_backing tests/unit/test_memory_retrieval.py::test_retrieval_survives_in_process_reset_and_reloads_persisted_native_store
-pytest -q tests/unit/test_pi_adapter.py::test_pi_adapter_project_store_and_ranked_read_round_trip tests/unit/test_pi_adapter.py::test_pi_adapter_user_scope_store_and_read_round_trip tests/unit/test_pi_adapter.py::test_pi_adapter_does_not_depend_on_claude_memory_md tests/unit/test_pi_adapter.py::test_pi_adapter_session_capture_can_skip_markdown_writes tests/unit/test_pi_adapter.py::test_pi_adapter_session_capture_is_idempotent_in_native_store
+pytest -q tests/unit/test_pi_adapter.py::test_pi_adapter_project_store_and_ranked_read_round_trip tests/unit/test_pi_adapter.py::test_pi_adapter_exposes_lexical_only_semantic_unavailable tests/unit/test_pi_adapter.py::test_pi_adapter_hybrid_ranking_contract_unchanged tests/unit/test_pi_adapter.py::test_pi_adapter_project_identity_does_not_collide_across_same_leaf_names tests/unit/test_pi_adapter.py::test_pi_adapter_does_not_depend_on_claude_memory_md
 ```
 
 ### Normalized golden outputs
