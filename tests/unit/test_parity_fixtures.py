@@ -161,3 +161,102 @@ def test_python_backed_session_capture_flush_parity_replay(tmp_path):
     expected = load_fixture("session_capture_flush_response.json")
 
     assert normalize_session_capture_response(actual) == normalize_session_capture_response(expected)
+
+
+def test_python_backed_session_capture_flush_records_are_retrievable(tmp_path):
+    from core.config import get_config
+    from core.memory_store import reset_native_store
+    from core.memory_identity import resolve_project_id
+    from core.models import MemoryRetrievalRequest
+    from core.pi_adapter import handle_pi_request
+    from core.memory_retrieval import retrieve_memory
+
+    cfg = get_config()
+    cfg.byomem = tmp_path / ".byomem"
+    cfg.byomem.mkdir(parents=True, exist_ok=True)
+    cfg.session_capture_enabled = True
+    cfg.session_capture_min_turns = 1
+    cfg.session_capture_threshold_turns = 4
+    cfg.session_capture_large_turn_chars = 9999
+    cfg.session_capture_write_markdown = False
+    reset_native_store(cfg.byomem / "native")
+
+    cwd = tmp_path / "repo-a"
+    cwd.mkdir()
+    transcript = tmp_path / "transcripts" / "sess-002.jsonl"
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    transcript.write_text(
+        '\n'.join([
+            '{"type":"user","uuid":"u1","message":{"content":"q1"},"timestamp":"2026-01-01T00:00:00"}',
+            '{"type":"assistant","uuid":"a1","parentUUID":"u1","message":{"content":"r1"},"timestamp":"2026-01-01T00:00:01"}',
+            '{"type":"user","uuid":"u2","message":{"content":"q2"},"timestamp":"2026-01-01T00:01:00"}',
+            '{"type":"assistant","uuid":"a2","parentUUID":"u2","message":{"content":"r2"},"timestamp":"2026-01-01T00:01:01"}',
+        ]) + '\n'
+    )
+
+    request = load_fixture("session_capture_flush_request.json")
+    request["cwd"] = str(cwd)
+    request["transcript_path"] = str(transcript)
+    request["message_count"] = 4
+    handle_pi_request(request)
+
+    retrieval_request = MemoryRetrievalRequest(
+        query="q1",
+        scope="project",
+        filters={"project": resolve_project_id(str(cwd)), "lifecycle": ["active", "archived", "superseded"]},
+    )
+    results = retrieve_memory(retrieval_request).results
+
+    assert results
+    assert any(result.record.source == "pi:session_capture" for result in results)
+    assert any((result.record.source_ref and "q1" in result.record.source_ref) or "q1" in result.record.content for result in results)
+
+
+def test_python_backed_session_capture_flush_idempotent_replay(tmp_path):
+    from core.config import get_config
+    from core.memory_store import reset_native_store
+    from core.memory_identity import resolve_project_id
+    from core.models import MemoryRetrievalRequest
+    from core.pi_adapter import handle_pi_request
+    from core.memory_retrieval import retrieve_memory
+
+    cfg = get_config()
+    cfg.byomem = tmp_path / ".byomem"
+    cfg.byomem.mkdir(parents=True, exist_ok=True)
+    cfg.session_capture_enabled = True
+    cfg.session_capture_min_turns = 1
+    cfg.session_capture_threshold_turns = 4
+    cfg.session_capture_large_turn_chars = 9999
+    cfg.session_capture_write_markdown = False
+    reset_native_store(cfg.byomem / "native")
+
+    cwd = tmp_path / "repo-a"
+    cwd.mkdir()
+    transcript = tmp_path / "transcripts" / "sess-002.jsonl"
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    transcript.write_text(
+        '\n'.join([
+            '{"type":"user","uuid":"u1","message":{"content":"q1"},"timestamp":"2026-01-01T00:00:00"}',
+            '{"type":"assistant","uuid":"a1","parentUUID":"u1","message":{"content":"r1"},"timestamp":"2026-01-01T00:00:01"}',
+            '{"type":"user","uuid":"u2","message":{"content":"q2"},"timestamp":"2026-01-01T00:01:00"}',
+            '{"type":"assistant","uuid":"a2","parentUUID":"u2","message":{"content":"r2"},"timestamp":"2026-01-01T00:01:01"}',
+        ]) + '\n'
+    )
+
+    request = load_fixture("session_capture_flush_request.json")
+    request["cwd"] = str(cwd)
+    request["transcript_path"] = str(transcript)
+    request["message_count"] = 4
+
+    first = handle_pi_request(request)
+    first_results = retrieve_memory(MemoryRetrievalRequest(query="q1", scope="project", filters={"project": resolve_project_id(str(cwd)), "lifecycle": ["active", "archived", "superseded"]})).results
+    first_count = len(first_results)
+
+    second = handle_pi_request(request)
+    second_results = retrieve_memory(MemoryRetrievalRequest(query="q1", scope="project", filters={"project": resolve_project_id(str(cwd)), "lifecycle": ["active", "archived", "superseded"]})).results
+
+    assert first["result"] == "flushed"
+    assert second["result"] in {"captured", "flushed"}
+    assert len(second_results) == first_count
+    assert any(result.record.source == "pi:session_capture" for result in second_results)
+    assert any((result.record.source_ref and "q1" in result.record.source_ref) or "q1" in result.record.content for result in second_results)
