@@ -248,3 +248,19 @@ def test_event_transcript_parent_id_shape_parses_turns(tmp_path):
     assert turns[0].user == "Reply with exactly: live-repro-20260418T105342Z-92424"
     assert turns[0].assistant == "thinking\n\nlive-repro-20260418T105342Z-92424"
     assert offset > 0
+
+
+def test_event_transcript_top_level_ids_without_nested_uuids_parses_turns(tmp_path):
+    transcript = tmp_path / "top-level-id.jsonl"
+    msgs = [
+        {"type": "message", "id": "u9", "parentId": "root1", "timestamp": "2026-04-18T10:54:00.000Z", "message": {"role": "user", "content": "trim this"}},
+        {"type": "message", "id": "a9", "parentId": "u9", "timestamp": "2026-04-18T10:54:01.000Z", "message": {"role": "assistant", "content": [{"type": "reasoning", "text": "ignored"}, {"type": "text", "text": "kept"}, {"type": "image", "url": "http://x"}]}},
+    ]
+    f = _write_jsonl(transcript, msgs)
+
+    turns, offset = parse_new_turns(f)
+    assert len(turns) == 1
+    assert turns[0].id == "u9"
+    assert turns[0].user == "trim this"
+    assert turns[0].assistant == "kept"
+    assert offset > 0
