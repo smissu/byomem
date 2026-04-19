@@ -7,3 +7,11 @@ dist/
 build/
 .ruff_cache/
 .env
+.byomem/
+.claude/
+.pi/
+.playwright-cli/
+queue/
+tmp/
+watch_*
+tmp_ollama_descripterizer_results.json
