@@ -1,0 +1,88 @@
+{
+  "projectWriteIntent": {
+    "scope": "project",
+    "identity": {
+      "namespace": "byomem",
+      "leafName": "Sprint 20 Project Alpha",
+      "parentContext": "root"
+    },
+    "content": {
+      "text": "project write"
+    },
+    "provenance": {
+      "source": "fixtures",
+      "adapter": "native-store"
+    }
+  },
+  "userWriteIntent": {
+    "scope": "user",
+    "identity": {
+      "namespace": "byomem",
+      "leafName": "Sprint 20 User Alpha",
+      "parentContext": "root"
+    },
+    "content": {
+      "structured": {
+        "kind": "user-scope"
+      }
+    },
+    "provenance": {
+      "source": "fixtures",
+      "adapter": "native-store"
+    }
+  },
+  "replaceWriteIntent": {
+    "scope": "project",
+    "identity": {
+      "namespace": "byomem",
+      "leafName": "Sprint 20 Replace Alpha",
+      "parentContext": "root"
+    },
+    "content": {
+      "text": "replacement content"
+    },
+    "provenance": {
+      "source": "fixtures",
+      "adapter": "native-store"
+    }
+  },
+  "candidateApproval": {
+    "approved": false,
+    "intent": {
+      "scope": "project",
+      "identity": {
+        "namespace": "byomem",
+        "leafName": "Sprint 20 Candidate Alpha",
+        "parentContext": "root"
+      },
+      "content": {
+        "text": "candidate content"
+      },
+      "provenance": {
+        "source": "candidate",
+        "adapter": "native-store"
+      }
+    }
+  },
+  "metadataSeedRecord": {
+    "id": "project:byomem:root:sprint-20-metadata-alpha",
+    "scope": "project",
+    "provenance": {
+      "source": "fixtures"
+    },
+    "identity": {
+      "namespace": "byomem",
+      "leafName": "sprint-20-metadata-alpha",
+      "parentContext": "root",
+      "stableKey": "project:byomem:root:sprint-20-metadata-alpha"
+    },
+    "content": {
+      "text": "seed"
+    },
+    "metadata": {
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-02T00:00:00.000Z",
+      "sourcePath": "/tmp/original.json"
+    }
+  }
+}

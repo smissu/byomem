@@ -2,8 +2,8 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from '
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { MemoryIdentity, MemoryRecord, MemoryScope, WriteIntent } from './contracts.js';
-import { normalizeIdentity, normalizeRecord, normalizeWriteIntent } from './normalizers.js';
-import { normalizeStableKey } from './identity.js';
+import { normalizeRecord, normalizeWriteIntent } from './normalizers.js';
+import { normalizeIdentity, normalizeStableKey } from './identity.js';
 
 export interface NativeStoreOptions {
   baseDir: string;
@@ -14,6 +14,7 @@ export interface NativeStore {
   write(intent: WriteIntent): MemoryRecord;
   read(id: string): MemoryRecord | undefined;
   list(): MemoryRecord[];
+  prune(id: string): MemoryRecord | undefined;
   close(): void;
 }
 
@@ -60,7 +61,7 @@ export function openNativeStore(options: NativeStoreOptions): NativeStore {
         id,
         scope: normalized.scope,
         provenance: normalized.provenance ?? { source: 'native-store' },
-        identity: normalized.identity,
+        identity: normalizeIdentity(normalized.scope, normalized.identity),
         content: normalized.content,
         metadata: {
           createdAt: recordsById.get(id)?.metadata?.createdAt ?? new Date().toISOString(),
@@ -76,6 +77,13 @@ export function openNativeStore(options: NativeStoreOptions): NativeStore {
     },
     list(): MemoryRecord[] {
       return [...recordsById.values()];
+    },
+    prune(id: string): MemoryRecord | undefined {
+      const removed = recordsById.get(id);
+      if (!removed) return undefined;
+      recordsById.delete(id);
+      persistSnapshot(filePath, { version: 1, records: [...recordsById.values()] });
+      return removed;
     },
     close(): void {
       persistSnapshot(filePath, { version: 1, records: [...recordsById.values()] });
