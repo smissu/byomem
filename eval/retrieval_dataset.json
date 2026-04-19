@@ -1,0 +1,134 @@
+{
+  "cases": [
+    {
+      "id": "lexical-strong-1",
+      "category": "lexical_dominant",
+      "note": "Exact lexical match should rank the direct FTS hit first.",
+      "query": "alpha beta gamma",
+      "scope": "project",
+      "filters": {"project": "proj-a", "lifecycle": ["active"]},
+      "relevant_ids": ["r-alpha"],
+      "irrelevant_ids": ["r-sem", "r-trap"]
+    },
+    {
+      "id": "lexical-strong-2",
+      "category": "lexical_dominant",
+      "note": "Longer lexical query should still prefer the exact phrase match.",
+      "query": "release blocker root cause",
+      "scope": "project",
+      "filters": {"project": "proj-a", "lifecycle": ["active"]},
+      "relevant_ids": ["r-blocker"],
+      "irrelevant_ids": ["r-sem", "r-trap"]
+    },
+    {
+      "id": "lexical-weak-1",
+      "category": "lexical_dominant",
+      "note": "Partial lexical overlap should still keep the stronger phrase above weaker matches.",
+      "query": "alpha beta",
+      "scope": "project",
+      "filters": {"project": "proj-a", "lifecycle": ["active"]},
+      "relevant_ids": ["r-alpha"],
+      "irrelevant_ids": ["r-trap"]
+    },
+    {
+      "id": "semantic-dom-1",
+      "category": "semantic_dominant",
+      "note": "Semantic-only candidate should win when lexical match is absent.",
+      "query": "conceptual alignment discussion",
+      "scope": "project",
+      "filters": {"project": "proj-a", "lifecycle": ["active"]},
+      "relevant_ids": ["r-sem"],
+      "irrelevant_ids": ["r-alpha", "r-trap"]
+    },
+    {
+      "id": "semantic-dom-2",
+      "category": "semantic_dominant",
+      "note": "Another semantic-first case with no strong lexical hit.",
+      "query": "architecture decision follow-up",
+      "scope": "project",
+      "filters": {"project": "proj-a", "lifecycle": ["active"]},
+      "relevant_ids": ["r-sem-arch"],
+      "irrelevant_ids": ["r-trap"]
+    },
+    {
+      "id": "trap-1",
+      "category": "lexical_trap",
+      "note": "Trap terms should not outrank the intended project note.",
+      "query": "shared note",
+      "scope": "project",
+      "filters": {"project": "proj-b", "lifecycle": ["active"]},
+      "relevant_ids": ["r-shared"],
+      "irrelevant_ids": ["r-trap"]
+    },
+    {
+      "id": "trap-2",
+      "category": "lexical_trap",
+      "note": "False-friend lexical overlap should be demoted relative to the relevant note.",
+      "query": "blocker",
+      "scope": "project",
+      "filters": {"project": "proj-a", "lifecycle": ["active"]},
+      "relevant_ids": ["r-blocker"],
+      "irrelevant_ids": ["r-trap-blocker"]
+    },
+    {
+      "id": "mixed-1",
+      "category": "mixed_conflict",
+      "note": "Lexical and semantic signals disagree; the blended score should choose the intended hybrid result.",
+      "query": "alpha blocker",
+      "scope": "project",
+      "filters": {"project": "proj-a", "lifecycle": ["active"]},
+      "relevant_ids": ["r-hybrid"],
+      "irrelevant_ids": ["r-alpha", "r-trap-blocker"]
+    },
+    {
+      "id": "mixed-2",
+      "category": "mixed_conflict",
+      "note": "A hybrid case where lexical phrase is weaker than semantic content.",
+      "query": "planning sync",
+      "scope": "project",
+      "filters": {"project": "proj-a", "lifecycle": ["active"]},
+      "relevant_ids": ["r-hybrid-sync"],
+      "irrelevant_ids": ["r-sync-trap"]
+    },
+    {
+      "id": "boundary-1",
+      "category": "scope_boundary",
+      "note": "Project scope must not cross into another project's note.",
+      "query": "shared note",
+      "scope": "project",
+      "filters": {"project": "proj-a", "lifecycle": ["active"]},
+      "relevant_ids": ["r-local"],
+      "irrelevant_ids": ["r-shared-other-project"]
+    },
+    {
+      "id": "boundary-2",
+      "category": "scope_boundary",
+      "note": "Lifecycle filter should exclude stale records.",
+      "query": "deprecated note",
+      "scope": "project",
+      "filters": {"project": "proj-a", "lifecycle": ["active"]},
+      "relevant_ids": ["r-active-note"],
+      "irrelevant_ids": ["r-deleted-note"]
+    },
+    {
+      "id": "boundary-3",
+      "category": "scope_boundary",
+      "note": "Project scope should ignore user-only memories.",
+      "query": "personal reminder",
+      "scope": "project",
+      "filters": {"project": "proj-a", "lifecycle": ["active"]},
+      "relevant_ids": ["r-project-reminder"],
+      "irrelevant_ids": ["r-user-reminder"]
+    },
+    {
+      "id": "boundary-4",
+      "category": "scope_boundary",
+      "note": "Semantic recall must still respect the project boundary.",
+      "query": "decision note",
+      "scope": "project",
+      "filters": {"project": "proj-b", "lifecycle": ["active"]},
+      "relevant_ids": ["r-b-decision"],
+      "irrelevant_ids": ["r-a-decision"]
+    }
+  ]
+}
