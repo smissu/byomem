@@ -144,6 +144,56 @@ def _capture_candidate(request: dict, correlation_id: str) -> dict:
     return {"candidate": None if candidate is None else candidate.__dict__}
 
 
+def _prune_native_memory(request: dict, correlation_id: str) -> dict:
+    record_id = str(request.get("record_id", "")).strip()
+    cwd = str(request.get("cwd", "")).strip()
+    scope = str(request.get("scope", "")).strip() or None
+    scope_id = str(request.get("scope_id", "")).strip() or None
+    if not record_id:
+        raise ValueError("record_id is required")
+    store = get_native_store()
+    tombstone = store.tombstone(record_id, scope=scope, scope_id=scope_id, updated_at=_now_iso())
+    if tombstone is None:
+        return {"ok": False, "deleted": False, "record_id": record_id}
+    return {"ok": True, "deleted": True, "record_id": record_id, "path": str(store.path), "cwd": cwd}
+
+
+def _replace_native_memory(request: dict, correlation_id: str) -> dict:
+    record_id = str(request.get("record_id", "")).strip()
+    cwd = str(request.get("cwd", "")).strip()
+    text = str(request.get("text", "")).strip()
+    if not record_id:
+        raise ValueError("record_id is required")
+    if not text:
+        raise ValueError("text is required")
+    scope = str(request.get("scope", "project")).strip() or "project"
+    if scope not in {"project", "user"}:
+        raise ValueError("scope must be project or user")
+    if not cwd:
+        raise ValueError("cwd is required")
+    project_id = resolve_project_id(cwd)
+    user_id = resolve_user_id()
+    scope_id = project_id if scope == "project" else user_id
+    store = get_native_store()
+    tombstone = store.tombstone(record_id, scope=scope, scope_id=scope_id, updated_at=_now_iso())
+    if tombstone is None:
+        raise ValueError("record_id not found or already deleted")
+    record = MemoryRecord(
+        id=str(uuid4()),
+        scope=scope,
+        scope_id=scope_id,
+        created_at=_now_iso(),
+        updated_at=_now_iso(),
+        source="pi:replace",
+        content=text,
+        tags=request.get("tags", []) if isinstance(request.get("tags"), list) else [],
+        source_kind="pi_native_store",
+        source_ref=cwd,
+    )
+    store.write(record)
+    return {"ok": True, "replaced": True, "replaced_record_id": record_id, "record_id": record.id, "path": str(store.path)}
+
+
 def _approve_capture_candidate(request: dict, correlation_id: str) -> dict:
     candidate_data = request.get("candidate")
     if not isinstance(candidate_data, dict):
@@ -173,6 +223,10 @@ def handle_pi_request(request: dict) -> dict:
             result = _capture_candidate(request, correlation_id)
         elif action == "approve_capture":
             result = _approve_capture_candidate(request, correlation_id)
+        elif action in {"delete", "prune"}:
+            result = _prune_native_memory(request, correlation_id)
+        elif action == "replace":
+            result = _replace_native_memory(request, correlation_id)
         elif action == "session_capture":
             result = handle_session_capture(request)
         else:
@@ -188,7 +242,7 @@ def handle_pi_request(request: dict) -> dict:
             retrieval_request = MemoryRetrievalRequest(query=query, scope=scope, filters=filters)
             response = retrieve_memory(retrieval_request)
             limited = response.results[:max_results] if isinstance(max_results, int) and max_results >= 0 else response.results
-            items = [{"text": result.record.content, "source": result.record.source, "path": result.record.source_ref or result.record.source} for result in limited]
+            items = [{"text": result.record.content, "source": result.record.source, "path": result.record.source_ref or result.record.source, "record_id": result.record.id} for result in limited]
             result = {"items": items, "summary": _summary_for_count(len(items))}
 
         _debug_log({"correlation_id": correlation_id, "layer": "python_adapter", "action": action, "event": "complete", "outcome": "success", "duration_ms": int((time.monotonic() - start) * 1000), "metadata": {"result_count": len(result.get("items", [])) if isinstance(result, dict) else None, "has_summary": bool(result.get("summary")) if isinstance(result, dict) else None}})

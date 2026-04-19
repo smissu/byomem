@@ -62,6 +62,31 @@ describe('shared corpus slice', () => {
     expect(store.read('project:byomem:root:shared-corpus-tombstone')).toBeUndefined();
   });
 
+  it('normalizes string content rows into searchable records', () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const corpusDir = join(dir, 'native');
+    const corpusFile = join(corpusDir, 'records.jsonl');
+    mkdirSync(corpusDir, { recursive: true });
+    writeFileSync(
+      corpusFile,
+      JSON.stringify({
+        id: 'project:byomem:root:runtime-smoke-note',
+        scope: 'project',
+        identity: { namespace: 'byomem', leafName: 'runtime-smoke-note', parentContext: 'root' },
+        content: 'runtime smoke note',
+        provenance: { source: 'fixtures', adapter: 'jsonl' },
+      }) + '\n',
+      'utf8',
+    );
+
+    const store = openSharedCorpusStore({ baseDir: dir });
+    const results = searchIndex(store, { query: 'runtime smoke note', scope: 'project' });
+
+    expect(results.map((record) => record.id)).toEqual(['project:byomem:root:runtime-smoke-note']);
+    expect(results[0].content.text).toBe('runtime smoke note');
+  });
+
   it('excludes pruned records from active search results', () => {
     const dir = tempDir();
     dirs.push(dir);

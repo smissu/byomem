@@ -20,6 +20,24 @@ def test_pi_extension_registers_manual_byomem_search_tool():
     assert 'name: "byomem_search"' in text
     assert 'promptSnippet: "Search byomem memory for relevant project context"' in text
     assert 'promptGuidelines: ["Use this tool when the user asks for memory or project context from byomem."]' in text
+    assert 'record_id=' in text
+
+
+def test_pi_extension_registers_manual_byomem_prune_tool():
+    text = EXTENSION_PATH.read_text()
+    assert 'name: "byomem_prune"' in text
+    assert 'Prune a stale byomem memory by record id' in text
+    assert 'record_id is required' in text
+    assert 'action: "prune"' in text
+    assert 'normalizePruneInput' in text
+    assert 'record: Type.Optional(Type.Object({' in text
+
+
+def test_pi_extension_prune_tool_accepts_search_result_object_input():
+    text = EXTENSION_PATH.read_text()
+    assert 'params.record?.record_id' in text
+    assert 'params.record?.id' in text
+    assert 'normalized.record_id' in text
 
 
 def test_pi_extension_registers_before_agent_start_hook_for_auto_injection():
@@ -38,6 +56,20 @@ def test_pi_extension_registers_agent_end_session_capture_hook():
     assert 'idleFlushSeconds' in text
     assert 'largeTurnBytes' in text
     assert 'summaryOnly' in text
+
+
+def test_pi_extension_registers_verified_session_lifecycle_hooks_for_final_capture():
+    text = EXTENSION_PATH.read_text()
+    assert 'session_before_switch' in text
+    assert 'session_shutdown' in text
+    assert 'captureSessionForLifecycle' in text
+    assert 'final_flush: true' in text
+    assert 'scope: "new-session-switch"' in text
+    assert 'scope: "quit-shutdown"' in text
+    assert 'session_capture_lifecycle_bridge_start' in text
+    assert 'session_capture_lifecycle_bridge_success' in text
+    assert 'hook_name: eventName' in text
+    assert 'lifecycle:${eventName}' in text
 
 
 def test_pi_extension_normalizes_nested_config_and_legacy_auto_injection():
@@ -113,6 +145,17 @@ def test_pi_extension_contains_sprint9_runtime_gating_logic():
     assert 'allowStore' in text
     assert 'tool: "byomem_search"' in text
     assert 'tool: "byomem_store"' in text
+
+
+def test_pi_extension_session_capture_uses_type_grounded_final_detection():
+    text = EXTENSION_PATH.read_text()
+    assert 'turn_end' in text
+    assert 'captureSessionOnTurnEnd' in text
+    assert 'const final = ctx.final === true;' in text
+    assert 'ctx.idle === false' not in text
+    assert 'session_capture_bridge_start' in text
+    assert 'session_capture_bridge_success' in text
+    assert 'action: "session_capture"' in text
 
 
 def test_pi_extension_bridge_logs_and_times_out_diagnostics():

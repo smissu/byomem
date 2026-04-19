@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { enforceNoPythonDefaultPath } from '../src/no-python-hook.js';
-import { resolveRuntimeMode } from '../src/runtime-mode.js';
-import { openNativeAdapter } from '../src/adapter.js';
-import { openNativeStore } from '../src/store.js';
+import { enforceNoPythonDefaultPath } from '../src/no-python-hook.ts';
+import { resolveRuntimeMode } from '../src/runtime-mode.ts';
+import { openNativeAdapter } from '../src/adapter.ts';
+import { openNativeStore } from '../src/store.ts';
+import { assertNoPythonDefaultPath } from '../src/no-python-default-path.ts';
 
 describe('runtime mode', () => {
   it('defaults to ts-native and rejects python-default as a default path', () => {
@@ -17,5 +18,9 @@ describe('runtime mode', () => {
 
     expect(adapter.writePath.write).toBeTypeOf('function');
     expect(resolveRuntimeMode()).not.toBe('python-default');
+  });
+
+  it('rejects python-default through the direct TS-native guard path', () => {
+    expect(() => assertNoPythonDefaultPath('python-default')).toThrow('Python default runtime path is disabled by default');
   });
 });

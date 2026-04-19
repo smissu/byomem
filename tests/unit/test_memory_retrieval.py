@@ -149,7 +149,7 @@ def test_retrieval_semantic_only_recall_identifies_non_fts_path(tmp_path, mocker
     assert "semantic_available=true" in response.results[0].provenance
 
 
-def test_retrieval_merges_fts_and_semantic_candidates(tmp_path, mocker):
+def test_retrieval_lexical_score_prefers_stronger_fts_hit(tmp_path, mocker):
     from core.memory_identity import resolve_project_id
     from core.memory_retrieval import retrieve_memory
     from core.memory_store import reset_native_store
@@ -186,6 +186,26 @@ def test_retrieval_lexical_score_prefers_stronger_fts_hit(tmp_path, mocker):
     assert response.results[0].record.content == "alpha beta gamma"
     assert "lexical_score=" in response.results[0].provenance
     assert response.results[0].reason.startswith("fts lexical match")
+
+
+def test_retrieval_merges_fts_and_semantic_candidates(tmp_path, mocker):
+    from core.memory_identity import resolve_project_id
+    from core.memory_retrieval import retrieve_memory
+    from core.memory_store import reset_native_store
+
+    mocker.patch("core.native_memory_index._get_embedding", return_value=[0.8, 0.2])
+
+    store = reset_native_store(tmp_path / ".byomem" / "native")
+    cwd = tmp_path / "repo-a"
+    cwd.mkdir()
+    project_id = resolve_project_id(str(cwd))
+    store.write(MemoryRecord(id="h1", scope="project", scope_id=project_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="alpha beta shared", source_kind="pi_native_store"))
+
+    response = retrieve_memory(MemoryRetrievalRequest(query="alpha beta", scope="project", filters={"project": project_id, "lifecycle": ["active"]}))
+    assert response.results
+    assert len({result.record.id for result in response.results}) == len(response.results)
+    assert any(result.reason in {"hybrid lexical + semantic recall", "fts lexical match with semantic rerank"} for result in response.results)
+    assert all(result.record.content != "completely unrelated" for result in response.results)
 
 
 def test_retrieval_lexical_score_absent_for_semantic_only(tmp_path, mocker):
@@ -253,3 +273,27 @@ def test_retrieval_records_native_provenance_and_avoids_markdown_backing(tmp_pat
     assert response.results[0].record.source_kind == "session_capture_summary"
     assert response.results[0].record.source_ref == "session:sess-1:turn:t-1"
     assert ".md" not in response.results[0].provenance
+
+
+def test_retrieval_hydrates_identity_candidates_that_arrive_as_memory_records(tmp_path, monkeypatch):
+    from core.memory_identity import resolve_project_id
+    from core.memory_retrieval import fetch_candidates, retrieve_memory
+    from core.memory_store import reset_native_store
+    from core.native_memory_index import search_native_records
+
+    monkeypatch.setenv("BYOMEM_USER_ID", "alice")
+    monkeypatch.setattr("core.native_memory_index._get_embedding", lambda db, text, text_hash: None)
+
+    store = reset_native_store(tmp_path / ".byomem" / "native")
+    cwd = tmp_path / "repo-a"
+    cwd.mkdir()
+    project_id = resolve_project_id(str(cwd))
+    record = MemoryRecord(id="identity-1", scope="project", scope_id=project_id, created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", source="pi:store", content="identity hydration target", source_kind="pi_native_store")
+    store.write(record)
+
+    candidates = fetch_candidates(MemoryRetrievalRequest(query="identity hydration", scope="project", filters={"project": project_id, "lifecycle": ["active"]}))
+    assert candidates
+    assert any(isinstance(candidate, dict) and isinstance(candidate.get("record"), MemoryRecord) for candidate in candidates)
+    response = retrieve_memory(MemoryRetrievalRequest(query="identity hydration", scope="project", filters={"project": project_id, "lifecycle": ["active"]}))
+    assert response.results[0].record.id == "identity-1"
+    assert response.results[0].record.content == "identity hydration target"

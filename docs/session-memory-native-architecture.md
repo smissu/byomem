@@ -1,7 +1,7 @@
 # Native Session Memory Architecture for BYOMem
 
 ## Status
-Target architecture / recommended direction. This note describes the desired end state while acknowledging that some parts of the current system may still be transitional.
+Target architecture / recommended direction. This note describes the desired end state while acknowledging that some parts of the current system may still be transitional. Sprint 23 is the runtime cutover point: the TS-native path is the sole active/default steady-state path, and any Python surface is offline/dev-only or disabled by default.
 
 ## Goal
 Make session-derived knowledge first-class BYOMem data:
@@ -68,7 +68,7 @@ Recommended retrieval flow:
 3. Use transcript provenance only when a user needs traceability or reconstruction.
 4. Expose markdown exports only as a convenience view for humans or downstream tooling that explicitly wants Markdown.
 
-This keeps retrieval consistent, avoids parallel truth stores, and lets the same API/DB path serve all memory types.
+This keeps retrieval consistent, avoids parallel truth stores, and lets the same API/DB path serve all memory types. As of Sprint 23, this is the active/default runtime path; Python remains only as an explicit non-default compatibility or offline/dev surface.
 
 ## Rationale
 - **Single source of truth:** native records reduce duplication and drift.

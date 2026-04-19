@@ -34,3 +34,7 @@ export function openShadowAdapter(adapter: NativeAdapter, legacyRead: () => Memo
     },
   };
 }
+
+export function isShadowModeEnabled(mode?: string): boolean {
+  return mode === 'ts-native-shadow';
+}

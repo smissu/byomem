@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from core.config import get_config
-from core.native_memory_index import index_native_record, native_index_path_for_store
+from core.native_memory_index import index_native_record, native_index_path_for_store, remove_native_record
 from core.models import MemoryRecord
 
 
@@ -33,6 +33,42 @@ class NativeMemoryStore:
         index_native_record(record, native_index_path_for_store(self.root))
         return record
 
+    def tombstone(self, record_id: str, *, scope: str | None = None, scope_id: str | None = None, updated_at: str | None = None) -> MemoryRecord | None:
+        """Logically delete the latest live record version for record_id.
+
+        This appends a tombstone record; it does not physically erase prior history.
+        """
+        records = self.load()
+        for record in reversed(records):
+            if record.id != record_id:
+                continue
+            if scope is not None and record.scope != scope:
+                continue
+            if scope_id is not None and record.scope_id != scope_id:
+                continue
+            if record.lifecycle == "deleted":
+                return None
+            tombstone = MemoryRecord(
+                id=record.id,
+                scope=record.scope,
+                scope_id=record.scope_id,
+                created_at=record.created_at,
+                updated_at=updated_at or record.updated_at,
+                source=record.source,
+                content=record.content,
+                lifecycle="deleted",
+                expires_at=record.expires_at,
+                tags=record.tags,
+                source_kind=record.source_kind,
+                source_ref=record.source_ref,
+            )
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(tombstone.model_dump_json())
+                fh.write("\n")
+            remove_native_record(record_id, native_index_path_for_store(self.root))
+            return tombstone
+        return None
+
     def load(self) -> list[MemoryRecord]:
         if not self.path.exists():
             return []
@@ -45,10 +81,14 @@ class NativeMemoryStore:
         return records
 
     def retrieve(self, *, scope: str, scope_id: str) -> list[MemoryRecord]:
+        latest: dict[str, MemoryRecord] = {}
+        for record in self.load():
+            if record.scope == scope and record.scope_id == scope_id:
+                latest[record.id] = record
         return [
             record
-            for record in self.load()
-            if record.scope == scope and record.scope_id == scope_id and record.lifecycle not in {"deleted", "expired"}
+            for record in latest.values()
+            if record.lifecycle not in {"deleted", "expired"}
         ]
 
 

@@ -86,9 +86,12 @@ def _fetch_native_candidates(store, request: MemoryRetrievalRequest, scope_id: s
     )
 
 
-def _hydrate_identity_candidates(candidates: list[dict[str, object]], store_records: dict[str, MemoryRecord]) -> list[dict[str, object]]:
-    hydrated: list[dict[str, object]] = []
+def _hydrate_identity_candidates(candidates: list[dict[str, object] | MemoryRecord], store_records: dict[str, MemoryRecord]) -> list[dict[str, object] | MemoryRecord]:
+    hydrated: list[dict[str, object] | MemoryRecord] = []
     for candidate in candidates:
+        if isinstance(candidate, MemoryRecord):
+            hydrated.append(store_records.get(candidate.id, candidate))
+            continue
         record = candidate.get("record")
         if isinstance(record, MemoryRecord) and record.id in store_records:
             hydrated.append({**candidate, "record": store_records[record.id]})

@@ -37,6 +37,13 @@ function resolveCorpusFilePath(corpusPath: string): string {
   return resolve(corpusPath, 'records.jsonl');
 }
 
+function normalizeCorpusContent(content: CorpusRow['content']): MemoryRecord['content'] {
+  if (typeof content === 'string') {
+    return { text: content };
+  }
+  return content ?? {};
+}
+
 function parseRow(line: string): MemoryRecord | undefined {
   const trimmed = line.trim();
   if (!trimmed) return undefined;
@@ -55,7 +62,7 @@ function parseRow(line: string): MemoryRecord | undefined {
     scope,
     identity,
     provenance: parsed.provenance ?? { source: 'shared-corpus', adapter: 'jsonl' },
-    content: parsed.content ?? {},
+    content: normalizeCorpusContent(parsed.content),
     metadata: parsed.metadata,
   });
 }

@@ -91,6 +91,23 @@ def test_pi_adapter_hybrid_ranking_contract_unchanged(tmp_path, mocker):
     response = handle_pi_request({"query": "alpha beta", "cwd": str(cwd)})
     assert response["items"]
     assert isinstance(response["items"][0]["text"], str)
+    assert response["items"][0]["record_id"]
+
+
+def test_pi_adapter_empty_or_stopword_query_returns_empty(tmp_path):
+    from core.memory_store import reset_native_store
+    from core.pi_adapter import handle_pi_request
+
+    mocker.patch("core.native_memory_index._get_embedding", return_value=[0.8, 0.2])
+
+    reset_native_store(tmp_path / ".byomem" / "native")
+    cwd = tmp_path / "team-a" / "shared"
+    cwd.mkdir(parents=True)
+    handle_pi_request({"action": "store", "cwd": str(cwd), "text": "alpha beta shared", "scope": "project"})
+
+    response = handle_pi_request({"query": "alpha beta", "cwd": str(cwd)})
+    assert response["items"]
+    assert isinstance(response["items"][0]["text"], str)
 
 
 def test_pi_adapter_empty_or_stopword_query_returns_empty(tmp_path):
@@ -448,6 +465,30 @@ def test_pi_adapter_session_capture_records_are_retrievable_via_native_path(tmp_
     assert retrieval.results[0].record.source == "pi:session_capture"
     assert retrieval.results[0].record.content
     assert retrieval.results[0].record.id.startswith("session-capture:")
+
+
+def test_pi_adapter_prune_native_memory(tmp_path):
+    import json
+    import pytest
+
+    from core.memory_store import reset_native_store
+    from core.pi_adapter import handle_pi_request
+
+    reset_native_store(tmp_path / ".byomem" / "native")
+    cwd = tmp_path / "repo-a"
+    cwd.mkdir()
+
+    handle_pi_request({"action": "store", "cwd": str(cwd), "text": "stale note", "scope": "project"})
+    record_id = json.loads((tmp_path / ".byomem" / "native" / "records.jsonl").read_text().strip().splitlines()[0])["id"]
+
+    prune_response = handle_pi_request({"action": "prune", "cwd": str(cwd), "record_id": record_id, "scope": "project"})
+    assert prune_response["deleted"] is True
+
+    read_response = handle_pi_request({"query": "stale note", "cwd": str(cwd)})
+    assert read_response == {"items": [], "summary": "No matching memory items found"}
+
+    with pytest.raises(ValueError, match="already deleted"):
+        handle_pi_request({"action": "replace", "cwd": str(cwd), "record_id": record_id, "text": "fresh note", "scope": "project"})
 
 
 def test_pi_adapter_session_capture_logs_debug_details(tmp_path, monkeypatch):

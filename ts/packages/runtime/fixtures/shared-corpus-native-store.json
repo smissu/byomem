@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "records": [
+    {
+      "id": "project:byomem:root:shared-corpus-alpha",
+      "scope": "project",
+      "provenance": { "source": "fixtures", "adapter": "native-store", "fixture": "shared-corpus" },
+      "identity": { "namespace": "byomem", "leafName": "Shared Corpus Alpha", "parentContext": "Root" },
+      "content": { "text": "shared corpus alpha baseline" },
+      "metadata": { "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z", "sourcePath": "native/records.jsonl" }
+    },
+    {
+      "id": "project:byomem:root:shared-corpus-beta",
+      "scope": "project",
+      "provenance": { "source": "fixtures", "adapter": "native-store", "fixture": "shared-corpus" },
+      "identity": { "namespace": "byomem", "leafName": "Shared Corpus Beta", "parentContext": "Root" },
+      "content": { "text": "shared corpus beta baseline" },
+      "metadata": { "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z", "sourcePath": "native/records.jsonl" }
+    },
+    {
+      "id": "project:byomem:root:shared-corpus-tombstone",
+      "scope": "project",
+      "provenance": { "source": "fixtures", "adapter": "native-store", "fixture": "shared-corpus" },
+      "identity": { "namespace": "byomem", "leafName": "Shared Corpus Tombstone", "parentContext": "Root" },
+      "content": { "text": "shared corpus tombstone baseline" },
+      "metadata": { "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z", "sourcePath": "native/records.jsonl" },
+      "lifecycle": "deleted"
+    }
+  ]
+}

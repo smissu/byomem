@@ -130,6 +130,26 @@ def _upsert_embedding_sidecar(db: sqlite3.Connection, record: MemoryRecord, text
         pass
 
 
+def remove_native_record(record_id: str, db_path: Path | None = None) -> None:
+    db = get_native_index_db(db_path)
+    try:
+        row = db.execute("SELECT rowid FROM native_records WHERE id=?", (record_id,)).fetchone()
+        if not row:
+            return
+        db.execute("DELETE FROM native_records_fts WHERE rowid=?", (row[0],))
+        db.execute("DELETE FROM native_records WHERE id=?", (record_id,))
+        db.execute("DELETE FROM native_record_embeddings WHERE record_id=?", (record_id,))
+        try:
+            import sqlite_vec
+
+            db.execute("DELETE FROM native_record_vec WHERE rowid=?", (record_id,))
+        except Exception:
+            pass
+        db.commit()
+    finally:
+        db.close()
+
+
 def index_native_record(record: MemoryRecord, db_path: Path | None = None) -> None:
     db = get_native_index_db(db_path)
     try:
@@ -216,7 +236,7 @@ def search_native_records(scope: str, scope_id: str, query: str, lifecycle: list
                     record = candidate["record"]
                     if record.id in semantic_by_id:
                         semantic_candidate = semantic_by_id[record.id]
-                        merged.append({**semantic_candidate, **candidate, "candidate_source": "hybrid", "semantic_available": True, "semantic_rerank_applied": True, "semantic_score": semantic_candidate.get("semantic_score")})
+                        merged.append({**semantic_candidate, **candidate, "candidate_source": "hybrid", "semantic_available": True, "semantic_rerank_applied": True, "semantic_score": semantic_candidate["semantic_score"]})
                     else:
                         merged.append(candidate)
                 return merged[:10]
