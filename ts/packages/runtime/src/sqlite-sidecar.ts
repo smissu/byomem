@@ -114,8 +114,8 @@ export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar 
   ensureSchema(db);
   const selectRecord = db.prepare(`SELECT * FROM records WHERE id = ?`);
   const listRecordsStmt = db.prepare(`SELECT * FROM records ORDER BY id`);
-  const searchStmt = db.prepare(`SELECT r.* FROM records_fts f JOIN records r ON r.id = f.id WHERE records_fts MATCH ? AND r.scope = ? ORDER BY bm25(records_fts) LIMIT ?`);
-  const semanticCandidatesStmt = db.prepare(`SELECT r.*, re.embedding, re.dimension FROM record_embeddings re JOIN records r ON r.id = re.record_id WHERE r.scope = ?`);
+  const searchStmt = db.prepare(`SELECT r.* FROM records_fts f JOIN records r ON r.id = f.id WHERE records_fts MATCH ? AND (? IS NULL OR r.scope = ?) ORDER BY bm25(records_fts) LIMIT ?`);
+  const semanticCandidatesStmt = db.prepare(`SELECT r.*, re.embedding, re.dimension FROM record_embeddings re JOIN records r ON r.id = re.record_id WHERE (? IS NULL OR r.scope = ?)`);
   const upsertRecordStmt = db.prepare(`INSERT INTO records (id, scope, namespace, leaf_name, parent_context, provenance_source, provenance_timestamp, provenance_adapter, provenance_origin, content_text, content_structured, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET scope = excluded.scope, namespace = excluded.namespace, leaf_name = excluded.leaf_name, parent_context = excluded.parent_context, provenance_source = excluded.provenance_source, provenance_timestamp = excluded.provenance_timestamp, provenance_adapter = excluded.provenance_adapter, provenance_origin = excluded.provenance_origin, content_text = excluded.content_text, content_structured = excluded.content_structured, updated_at = excluded.updated_at`);
   const deleteFtsStmt = db.prepare(`DELETE FROM records_fts WHERE id = ?`);
   const deleteEmbeddingStmt = db.prepare(`DELETE FROM record_embeddings WHERE record_id = ?`);
@@ -147,37 +147,62 @@ export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar 
     return embeddingClient.embed(query);
   }
 
+  function lexicalMatches(rows: Array<{ id: string; scope: string; namespace: string; leaf_name: string; parent_context: string; provenance_source: string; provenance_timestamp: string | null; provenance_adapter: string | null; provenance_origin: string | null; content_text: string | null; content_structured: string | null; created_at: string; updated_at: string }>, query: string): MemoryRecord[] {
+    const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return rows
+      .map(loadRecord)
+      .filter((record) => {
+        if (!tokens.length) return true;
+        const haystack = [record.id, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? '', record.content.text ?? '', JSON.stringify(record.content.structured ?? {})].join(' ').toLowerCase();
+        const tokenHits = tokens.filter((token) => haystack.includes(token)).length;
+        return tokenHits >= Math.max(1, Math.ceil(tokens.length / 2));
+      });
+  }
+
   async function semanticSearch(query: string, scope: MemoryScope, limit: number): Promise<Array<{ record: MemoryRecord; score: number }>> {
     const queryVector = await semanticQueryVector(query);
     if (!queryVector?.length) return [];
-    const rows = semanticCandidatesStmt.all(scope) as Array<{ id: string; scope: string; namespace: string; leaf_name: string; parent_context: string; provenance_source: string; provenance_timestamp: string | null; provenance_adapter: string | null; provenance_origin: string | null; content_text: string | null; content_structured: string | null; created_at: string; updated_at: string; embedding: Buffer; dimension: number }>;
+    const rows = semanticCandidatesStmt.all(scope ?? null, scope ?? null) as Array<{ id: string; scope: string; namespace: string; leaf_name: string; parent_context: string; provenance_source: string; provenance_timestamp: string | null; provenance_adapter: string | null; provenance_origin: string | null; content_text: string | null; content_structured: string | null; created_at: string; updated_at: string; embedding: Buffer; dimension: number }>;
     return rows
-      .map((row) => {
-        const record = loadRecord(row);
-        const embedding = decodeEmbedding(row.embedding, row.dimension);
-        return { record, score: cosineSimilarity(queryVector, embedding) };
-      })
-      .filter((entry) => entry.score > 0.2)
+      .map((row) => ({ record: loadRecord(row), score: cosineSimilarity(queryVector, decodeEmbedding(row.embedding, row.dimension)) }))
+      .filter((entry) => entry.score >= 0.35)
       .sort((a, b) => b.score - a.score || a.record.id.localeCompare(b.record.id))
       .slice(0, limit);
   }
 
   async function hybridSearch(query: string, scope: MemoryScope, limit: number): Promise<MemoryRecord[]> {
     const normalizedQuery = query.trim().toLowerCase();
-    const lexical = (searchStmt.all(query, scope, limit * 2) as Array<{ id: string; scope: string; namespace: string; leaf_name: string; parent_context: string; provenance_source: string; provenance_timestamp: string | null; provenance_adapter: string | null; provenance_origin: string | null; content_text: string | null; content_structured: string | null; created_at: string; updated_at: string }>).map(loadRecord);
-    const semantic = await semanticSearch(query, scope, limit * 2);
-    const scored = new Map<string, { record: MemoryRecord; score: number }>();
-    for (const record of lexical) {
-      const lexicalScore = record.content.text?.toLowerCase().includes(normalizedQuery) || record.identity.leafName.includes(normalizedQuery.replace(/\s+/g, '-')) ? 1 : 0.5;
-      scored.set(record.id, { record, score: lexicalScore });
+    const lexicalRows = searchStmt.all(query, scope ?? null, scope ?? null, limit * 4) as Array<{ id: string; scope: string; namespace: string; leaf_name: string; parent_context: string; provenance_source: string; provenance_timestamp: string | null; provenance_adapter: string | null; provenance_origin: string | null; content_text: string | null; content_structured: string | null; created_at: string; updated_at: string }>;
+    const lexical = lexicalMatches(lexicalRows, query);
+
+    const lexicalRanked = lexical
+      .map((record) => {
+        const haystack = [record.id, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? '', record.content.text ?? '', JSON.stringify(record.content.structured ?? {})].join(' ').toLowerCase();
+        const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+        const tokenHits = tokens.filter((token) => haystack.includes(token)).length;
+        const lexicalScore = tokens.length ? (tokenHits / tokens.length) : 0;
+        return { record, score: lexicalScore };
+      })
+      .filter((entry) => entry.score >= 0.5)
+      .sort((a, b) => b.score - a.score || a.record.id.localeCompare(b.record.id))
+      .slice(0, limit);
+
+    if (lexicalRanked.length) {
+      const semantic = await semanticSearch(query, scope, limit * 4);
+      const semanticById = new Map(semantic.map((entry) => [entry.record.id, entry.score]));
+      return lexicalRanked
+        .map((entry) => ({
+          record: entry.record,
+          score: Math.min(1, (entry.score * 0.6) + ((semanticById.get(entry.record.id) ?? 0) * 0.4)),
+        }))
+        .filter((entry) => entry.score >= 0.35)
+        .sort((a, b) => b.score - a.score || a.record.id.localeCompare(b.record.id))
+        .slice(0, limit)
+        .map((entry) => entry.record);
     }
-    for (const { record, score } of semantic) {
-      const existing = scored.get(record.id);
-      const semanticScore = score;
-      const combined = existing ? (existing.score * 0.55 + semanticScore * 0.45) : semanticScore;
-      scored.set(record.id, { record, score: combined });
-    }
-    return [...scored.values()].sort((a, b) => b.score - a.score || a.record.id.localeCompare(b.record.id)).slice(0, limit).map((entry) => entry.record);
+
+    const semantic = await semanticSearch(query, scope, limit * 4);
+    return semantic.filter((entry) => entry.score >= 0.5).slice(0, limit).map((entry) => entry.record);
   }
 
   return {
@@ -224,7 +249,7 @@ export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar 
       const narrowedScope = scope ?? 'project';
       const hybridResults = await hybridSearch(query, narrowedScope, limit);
       if (hybridResults.length) return hybridResults;
-      return (searchStmt.all(query, narrowedScope, limit) as ReturnType<typeof loadRecord>[]).map((row) => loadRecord(row as never));
+      return (searchStmt.all(query, narrowedScope ?? null, narrowedScope ?? null, limit) as ReturnType<typeof loadRecord>[]).map((row) => loadRecord(row as never));
     },
     close(): void {
       db.close();
