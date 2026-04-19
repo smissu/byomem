@@ -9,9 +9,11 @@ export interface SearchQuery {
   limit?: number;
 }
 
-export function searchIndex(store: NativeStore, query: SearchQuery): MemoryRecord[] {
-  const mode = query.mode ?? 'hybrid';
+export async function searchIndex(store: NativeStore, query: SearchQuery): Promise<MemoryRecord[]> {
   const limit = query.limit ?? 10;
+  const sidecarResults = store.sidecar ? await store.sidecar.search(query.query, query.scope, limit) : [];
+  if (sidecarResults.length) return sidecarResults.slice(0, limit);
+  const mode = query.mode ?? 'hybrid';
   const records = store.list().filter((record) => (query.scope ? record.scope === query.scope : true));
   return rankRecords(records, query.query, mode).slice(0, limit).map((entry) => entry.record);
 }
