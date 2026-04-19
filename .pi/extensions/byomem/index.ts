@@ -53,10 +53,10 @@ export default function (pi: ExtensionAPI) {
     name: 'byomem_search',
     label: 'BYOMem Search',
     description: 'Search the repo-local BYOMem native store.',
-    parameters: { type: 'object', properties: { query: { type: 'string' }, scope: { type: 'string' } }, required: ['query'] },
+    parameters: { type: 'object', properties: { query: { type: 'string' }, scope: { type: 'string' }, limit: { type: 'number' } }, required: ['query'] },
     async execute(_toolCallId: string, params: unknown) {
-      const { query, scope } = (params ?? {}) as { query?: string; scope?: 'project' | 'dir' | 'user' | 'agent' };
-      const results = searchIndex(store, { query: query ?? '', scope });
+      const { query, scope, limit } = (params ?? {}) as { query?: string; scope?: 'project' | 'dir' | 'user' | 'agent'; limit?: number };
+      const results = searchIndex(store, { query: query ?? '', scope, limit });
       return { content: [{ type: 'text', text: safeJson({ results }) }], details: { results } };
     },
   });

@@ -78,9 +78,12 @@ export function rankRecord(record: MemoryRecord, query: string, mode: SearchMode
 }
 
 export function rankRecords(records: MemoryRecord[], query: string, mode: SearchMode = 'hybrid'): SearchScore[] {
+  const trimmedQuery = query.trim();
   const bestById = new Map<string, SearchScore>();
   for (const record of records) {
     const ranked = rankRecord(record, query, mode);
+    const hasRelevantSignal = trimmedQuery.length === 0 || ranked.signals.lexical > 0 || ranked.signals.semantic > 0;
+    if (!hasRelevantSignal) continue;
     const existing = bestById.get(record.id);
     if (!existing || ranked.score > existing.score || (ranked.score === existing.score && ranked.record.id.localeCompare(existing.record.id) < 0)) {
       bestById.set(record.id, ranked);
