@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from '@mariozechner/pi-coding-agent';
 import { openReadPath, openWritePath, openSharedCorpusStore, searchIndex, resolveRuntimeMode, enforceNoPythonDefaultPath, resolveCorpusPath } from '../../../ts/packages/runtime/src/index.ts';
 
-const runtimeBaseDir = new URL('../../..//.pi/extensions/byomem/', import.meta.url).pathname;
+const runtimeBaseDir = new URL('../../..//', import.meta.url).pathname;
 const sharedCorpusDir = resolveCorpusPath({ baseDir: runtimeBaseDir });
 const store = openSharedCorpusStore({ baseDir: runtimeBaseDir });
 const readPath = openReadPath(store);
@@ -26,6 +26,7 @@ export function byomem_runtime_status() {
     })(),
     packageSurface: 'ts/packages/runtime',
     storeBaseDir: sharedCorpusDir,
+    sharedCorpusPath: store.path,
   };
 }
 
