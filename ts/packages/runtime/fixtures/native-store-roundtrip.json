@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "records": [
+    {
+      "id": "project::byomem::::project-alpha",
+      "scope": "project",
+      "provenance": { "source": "fixtures" },
+      "identity": { "namespace": "byomem", "leafName": "project-alpha" },
+      "content": { "text": "round trip" },
+      "metadata": { "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" }
+    }
+  ]
+}
