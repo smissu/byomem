@@ -27,4 +27,6 @@ export * from './markdown-projection.js';
 export * from './write-path.js';
 export { normalizeIdentity, normalizeLeafName, normalizeStableKey, normalizeScope } from './identity.js';
 export * from './store.js';
+export * from './sqlite-sidecar.js';
+export * from './embedding-client.js';
 export { openSharedCorpusStore, resolveCorpusPath } from './shared-corpus.js';

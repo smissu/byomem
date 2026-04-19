@@ -19,12 +19,12 @@ describe('Sprint 20 native store write path', () => {
     }
   });
 
-  it('writes the request/response slice for project scope', () => {
+  it('writes the request/response slice for project scope', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });
 
-    const record = store.write(fixtures.projectWriteIntent);
+    const record = await store.write(fixtures.projectWriteIntent);
 
     expect(record).toMatchObject({
       scope: 'project',
@@ -41,12 +41,12 @@ describe('Sprint 20 native store write path', () => {
     expect(record.metadata?.updatedAt).toBeTruthy();
   });
 
-  it('writes the request/response slice for user scope', () => {
+  it('writes the request/response slice for user scope', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });
 
-    const record = store.write(fixtures.userWriteIntent);
+    const record = await store.write(fixtures.userWriteIntent);
 
     expect(record).toMatchObject({
       scope: 'user',
@@ -61,13 +61,13 @@ describe('Sprint 20 native store write path', () => {
     expect(record.id).toBe(normalizeStableKey('user', fixtures.userWriteIntent.identity));
   });
 
-  it('replaces an existing record in place for the same stable id', () => {
+  it('replaces an existing record in place for the same stable id', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });
 
-    const first = store.write(fixtures.replaceWriteIntent);
-    const second = store.write({
+    const first = await store.write(fixtures.replaceWriteIntent);
+    const second = await store.write({
       ...fixtures.replaceWriteIntent,
       content: { text: 'replacement content v2' },
     });
@@ -85,7 +85,7 @@ describe('Sprint 20 native store write path', () => {
     expect(second.metadata?.updatedAt).toBeTruthy();
   });
 
-  it('does not write when a candidate is not approved', () => {
+  it('does not write when a candidate is not approved', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });
@@ -98,7 +98,7 @@ describe('Sprint 20 native store write path', () => {
     expect(after).toHaveLength(0);
   });
 
-  it('preserves existing metadata fields while refreshing timestamps on write', () => {
+  it('preserves existing metadata fields while refreshing timestamps on write', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const seedPath = join(dir, 'native-store.json');
@@ -109,7 +109,7 @@ describe('Sprint 20 native store write path', () => {
     writeFileSync(seedPath, `${JSON.stringify(seeded, null, 2)}\n`, 'utf8');
 
     const seededStore = openNativeStore({ baseDir: dir });
-    const updated = seededStore.write({
+    const updated = await seededStore.write({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Sprint 20 Metadata Alpha', parentContext: 'root' },
       content: { text: 'updated' },

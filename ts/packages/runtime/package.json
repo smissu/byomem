@@ -12,5 +12,8 @@
   },
   "scripts": {
     "build": "tsc -p ./tsconfig.build.json"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0"
   }
 }

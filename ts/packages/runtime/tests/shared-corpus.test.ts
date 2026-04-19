@@ -17,7 +17,7 @@ describe('shared corpus slice', () => {
     }
   });
 
-  it('loads search-visible records from an existing records.jsonl corpus', () => {
+  it('loads search-visible records from an existing records.jsonl corpus', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const corpusDir = join(dir, 'native');
@@ -53,7 +53,7 @@ describe('shared corpus slice', () => {
     );
 
     const store = openSharedCorpusStore({ baseDir: dir });
-    const results = searchIndex(store, { query: 'shared corpus', scope: 'project' });
+    const results = await searchIndex(store, { query: 'shared corpus', scope: 'project' });
 
     expect(results.map((record) => record.id)).toEqual([
       'project:byomem:root:shared-corpus-alpha',
@@ -62,7 +62,7 @@ describe('shared corpus slice', () => {
     expect(store.read('project:byomem:root:shared-corpus-tombstone')).toBeUndefined();
   });
 
-  it('normalizes string content rows into searchable records', () => {
+  it('normalizes string content rows into searchable records', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const corpusDir = join(dir, 'native');
@@ -81,13 +81,13 @@ describe('shared corpus slice', () => {
     );
 
     const store = openSharedCorpusStore({ baseDir: dir });
-    const results = searchIndex(store, { query: 'runtime smoke note', scope: 'project' });
+    const results = await searchIndex(store, { query: 'runtime smoke note', scope: 'project' });
 
     expect(results.map((record) => record.id)).toEqual(['project:byomem:root:runtime-smoke-note']);
     expect(results[0].content.text).toBe('runtime smoke note');
   });
 
-  it('excludes pruned records from active search results', () => {
+  it('excludes pruned records from active search results', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const corpusDir = join(dir, 'native');
@@ -109,6 +109,6 @@ describe('shared corpus slice', () => {
     const removed = store.prune('project:byomem:root:shared-corpus-alpha');
 
     expect(removed?.id).toBe('project:byomem:root:shared-corpus-alpha');
-    expect(searchIndex(store, { query: 'shared corpus', scope: 'project' })).toHaveLength(0);
+    expect(await searchIndex(store, { query: 'shared corpus', scope: 'project' })).toHaveLength(0);
   });
 });

@@ -18,11 +18,11 @@ describe('retrieval baseline', () => {
     }
   });
 
-  it('returns identity hits by id with identity reason', () => {
+  it('returns identity hits by id with identity reason', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });
-    const record = store.write({
+    const record = await store.write({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Project Alpha', parentContext: 'Root' },
       content: { text: 'alpha' },
@@ -34,11 +34,11 @@ describe('retrieval baseline', () => {
     expect(results[0]).toMatchObject({ reason: 'identity', record: { id: record.id } });
   });
 
-  it('hydrates identity-style lookup and classifies baseline results deterministically', () => {
+  it('hydrates identity-style lookup and classifies baseline results deterministically', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });
-    const record = store.write({
+    const record = await store.write({
       scope: 'dir',
       identity: { namespace: 'byomem', leafName: 'Project Alpha', parentContext: 'Workspace/Docs' },
       content: { text: 'alpha dir' },

@@ -18,12 +18,12 @@ describe('native store', () => {
     }
   });
 
-  it('writes and reads a stable record id', () => {
+  it('writes and reads a stable record id', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });
 
-    const record = store.write({
+    const record = await store.write({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Project Alpha' },
       content: { text: 'hello' },
@@ -39,12 +39,12 @@ describe('native store', () => {
     });
   });
 
-  it('reopens snapshot-backed records from disk', () => {
+  it('reopens snapshot-backed records from disk', async () => {
     const dir = tempDir();
     dirs.push(dir);
 
     const first = openNativeStore({ baseDir: dir });
-    const record = first.write({
+    const record = await first.write({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Project Beta', parentContext: 'root' },
       content: { structured: { ok: true } },
@@ -65,26 +65,26 @@ describe('native store', () => {
     });
   });
 
-  it('keeps same logical records stable and scopes separated', () => {
+  it('keeps same logical records stable and scopes separated', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });
 
-    const projectRecord = store.write({
+    const projectRecord = await store.write({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Project Alpha', parentContext: 'root' },
       content: { text: 'one' },
       provenance: { source: 'docs' },
     });
 
-    const projectRecordAgain = store.write({
+    const projectRecordAgain = await store.write({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Project   Alpha', parentContext: 'root ' },
       content: { text: 'two' },
       provenance: { source: 'docs' },
     });
 
-    const dirRecord = store.write({
+    const dirRecord = await store.write({
       scope: 'dir',
       identity: { namespace: 'byomem', leafName: 'Project Alpha', parentContext: 'root' },
       content: { text: 'dir' },

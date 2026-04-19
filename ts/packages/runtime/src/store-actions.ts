@@ -13,14 +13,14 @@ function matchesIntent(record: MemoryRecord, intent: WriteIntent): boolean {
   return record.scope === intent.scope && record.identity.stableKey === intent.identity.stableKey && record.identity.namespace === intent.identity.namespace;
 }
 
-export function writeRecord(store: NativeStore, intent: WriteIntent): StoreActionResult {
-  return { kind: 'write', record: store.write(intent) };
+export async function writeRecord(store: NativeStore, intent: WriteIntent): Promise<StoreActionResult> {
+  return { kind: 'write', record: await store.write(intent) };
 }
 
-export function replaceRecord(store: NativeStore, intent: WriteIntent): StoreActionResult {
+export async function replaceRecord(store: NativeStore, intent: WriteIntent): Promise<StoreActionResult> {
   const existing = store.list().find((record) => matchesIntent(record, intent));
   const removed = existing ? [existing] : [];
-  const record = store.write(intent);
+  const record = await store.write(intent);
   return { kind: 'replace', record, removed };
 }
 

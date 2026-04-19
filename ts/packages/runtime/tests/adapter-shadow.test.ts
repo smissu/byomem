@@ -9,7 +9,7 @@ function legacyRead(record: MemoryRecord): () => MemoryRecord {
 }
 
 describe('shadow adapter', () => {
-  it('returns legacy output while capturing native diffs', () => {
+  it('returns legacy output while capturing native diffs', async () => {
     const store = openNativeStore({ baseDir: '/tmp/byomem-shadow-adapter' });
     const adapter = openNativeAdapter(store);
     const intent: WriteIntent = {
@@ -29,7 +29,7 @@ describe('shadow adapter', () => {
     } satisfies MemoryRecord;
 
     const shadow = openShadowAdapter(adapter, legacyRead(legacy));
-    const result = shadow.write(intent);
+    const result = await shadow.write(intent);
 
     expect(result.legacy?.id).toBe(legacy.id);
     expect(result.native?.id).toBe('project:byomem:root:shadow-adapter');

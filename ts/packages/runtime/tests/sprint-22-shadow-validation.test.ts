@@ -41,7 +41,7 @@ describe('Sprint 22 shadow validation slice', () => {
     expect(diffed.map((entry) => entry.path)).toEqual(['content.text']);
   });
 
-  it('returns legacy output while native output is diffed in the shadow adapter', () => {
+  it('returns legacy output while native output is diffed in the shadow adapter', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });
@@ -49,7 +49,7 @@ describe('Sprint 22 shadow validation slice', () => {
     const legacyRead = () => ({ ...writeLegacy, provenance: { ...writeLegacy.provenance, adapter: 'legacy' } });
     const shadow = openShadowAdapter(adapter, legacyRead);
 
-    const result = shadow.write({
+    const result = await shadow.write({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Sprint 22 Write Alpha', parentContext: 'root' },
       content: { text: 'write shadow' },
@@ -63,7 +63,7 @@ describe('Sprint 22 shadow validation slice', () => {
     ]);
   });
 
-  it('keeps store and read parity slices stable for the comparison harness', () => {
+  it('keeps store and read parity slices stable for the comparison harness', async () => {
     expect(diffRecords(storeNative, { ...storeNative, provenance: { ...storeNative.provenance, adapter: 'legacy' } })).toEqual([]);
     expect(diffRecords(readExpected, readActual)).toEqual([]);
     expect(sessionLegacy.content).toEqual(sessionNative.content);
@@ -76,14 +76,14 @@ describe('Sprint 22 shadow validation slice', () => {
     });
   });
 
-  it('executes the shadow harness and preserves legacy authority', () => {
+  it('executes the shadow harness and preserves legacy authority', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });
     const legacy = () => writeLegacy;
     const harness = openShadowHarness(store, legacy);
 
-    const result = harness.replace({
+    const result = await harness.replace({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Sprint 22 Write Alpha', parentContext: 'root' },
       content: { text: 'write shadow' },

@@ -16,18 +16,18 @@ describe('adapter-facing write actions', () => {
     while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
   });
 
-  it('routes write replace prune through the adapter surface', () => {
+  it('routes write replace prune through the adapter surface', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const adapter = openNativeAdapter(openNativeStore({ baseDir: dir }));
 
-    const written = adaptWrite(adapter, {
+    const written = await adaptWrite(adapter, {
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Adapter Path', parentContext: 'Root' },
       content: { text: 'one' },
       provenance: { source: 'fixtures' },
     });
-    const replaced = adaptReplace(adapter, {
+    const replaced = await adaptReplace(adapter, {
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Adapter Path', parentContext: 'Root' },
       content: { text: 'two' },

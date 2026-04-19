@@ -4,18 +4,25 @@ import { randomUUID } from 'node:crypto';
 import type { MemoryIdentity, MemoryRecord, MemoryScope, WriteIntent } from './contracts.js';
 import { normalizeRecord, normalizeWriteIntent } from './normalizers.js';
 import { normalizeIdentity, normalizeStableKey } from './identity.js';
+import { openSqliteSidecar, type SqliteSidecar } from './sqlite-sidecar.js';
 
 export interface NativeStoreOptions {
   baseDir: string;
   storeFile?: string;
+  sidecarFile?: string;
+  embeddingBaseUrl?: string;
+  embeddingModel?: string;
+  embeddingDimension?: number;
+  embeddingTimeoutMs?: number;
 }
 
 export interface NativeStore {
-  write(intent: WriteIntent): MemoryRecord;
+  write(intent: WriteIntent): Promise<MemoryRecord>;
   read(id: string): MemoryRecord | undefined;
   list(): MemoryRecord[];
   prune(id: string): MemoryRecord | undefined;
   close(): void;
+  sidecar?: SqliteSidecar;
 }
 
 interface StoreSnapshot {
@@ -50,11 +57,13 @@ function persistSnapshot(filePath: string, snapshot: StoreSnapshot): void {
 
 export function openNativeStore(options: NativeStoreOptions): NativeStore {
   const filePath = resolve(options.baseDir, options.storeFile ?? 'native-store.json');
+  const sidecar = openSqliteSidecar(options);
   const snapshot = loadSnapshot(filePath);
   const recordsById = new Map<string, MemoryRecord>(snapshot.records.map((record) => [record.id, normalizeRecord(record)]));
 
   return {
-    write(intent: WriteIntent): MemoryRecord {
+    sidecar,
+    async write(intent: WriteIntent): Promise<MemoryRecord> {
       const normalized = normalizeWriteIntent(intent);
       const id = stableIdFromIntent(normalized) || buildRecordId(normalized.identity, normalized.scope);
       const record: MemoryRecord = normalizeRecord({
@@ -69,6 +78,7 @@ export function openNativeStore(options: NativeStoreOptions): NativeStore {
         },
       });
       recordsById.set(record.id, record);
+      await sidecar.syncWrite(normalized);
       persistSnapshot(filePath, { version: 1, records: [...recordsById.values()] });
       return record;
     },
@@ -82,10 +92,12 @@ export function openNativeStore(options: NativeStoreOptions): NativeStore {
       const removed = recordsById.get(id);
       if (!removed) return undefined;
       recordsById.delete(id);
+      sidecar.syncPrune(id);
       persistSnapshot(filePath, { version: 1, records: [...recordsById.values()] });
       return removed;
     },
     close(): void {
+      sidecar.close();
       persistSnapshot(filePath, { version: 1, records: [...recordsById.values()] });
     },
   };

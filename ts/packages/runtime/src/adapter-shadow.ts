@@ -10,20 +10,20 @@ export interface ShadowResult {
 }
 
 export interface ShadowAdapter {
-  write(intent: WriteIntent): ShadowResult;
-  replace(intent: WriteIntent): ShadowResult;
+  write(intent: WriteIntent): Promise<ShadowResult>;
+  replace(intent: WriteIntent): Promise<ShadowResult>;
   prune(intent: Pick<WriteIntent, 'identity' | 'scope'>): ShadowResult;
 }
 
 export function openShadowAdapter(adapter: NativeAdapter, legacyRead: () => MemoryRecord | undefined): ShadowAdapter {
   return {
-    write(intent: WriteIntent): ShadowResult {
-      const native = adaptWrite(adapter, intent).record;
+    async write(intent: WriteIntent): Promise<ShadowResult> {
+      const native = (await adaptWrite(adapter, intent)).record;
       const legacy = legacyRead();
       return { legacy, native, diffs: legacy && native ? diffRecords(legacy, native) : [] };
     },
-    replace(intent: WriteIntent): ShadowResult {
-      const native = adaptReplace(adapter, intent).record;
+    async replace(intent: WriteIntent): Promise<ShadowResult> {
+      const native = (await adaptReplace(adapter, intent)).record;
       const legacy = legacyRead();
       return { legacy, native, diffs: legacy && native ? diffRecords(legacy, native) : [] };
     },

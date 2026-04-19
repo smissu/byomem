@@ -3,7 +3,7 @@ import { openNativeStore } from '../src/store.js';
 import { searchIndex } from '../src/search-index.js';
 
 describe('search index limiting and relevance filtering', () => {
-  it('defaults to a small top-N result set', () => {
+  it('defaults to a small top-N result set', async () => {
     const store = openNativeStore({ baseDir: '/tmp/byomem-search-limit-default' });
 
     for (let index = 0; index < 12; index += 1) {
@@ -15,11 +15,11 @@ describe('search index limiting and relevance filtering', () => {
       });
     }
 
-    const results = searchIndex(store, { query: 'alpha' });
+    const results = await searchIndex(store, { query: 'alpha' });
     expect(results).toHaveLength(10);
   });
 
-  it('suppresses irrelevant records for non-empty queries', () => {
+  it('suppresses irrelevant records for non-empty queries', async () => {
     const store = openNativeStore({ baseDir: '/tmp/byomem-search-relevance' });
 
     store.write({
@@ -35,7 +35,7 @@ describe('search index limiting and relevance filtering', () => {
       provenance: { source: 'fixtures', adapter: 'native-store', origin: 'search-test' },
     });
 
-    const results = searchIndex(store, { query: 'alpha' });
+    const results = await searchIndex(store, { query: 'alpha' });
     expect(results.map((record) => record.identity.leafName)).toEqual(['relevant-alpha']);
   });
 });

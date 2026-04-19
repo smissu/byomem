@@ -4,8 +4,8 @@ import { openNativeAdapter } from './adapter.js';
 import { openShadowAdapter, type ShadowResult } from './adapter-shadow.js';
 
 export interface ShadowHarness {
-  write(intent: WriteIntent): ShadowResult;
-  replace(intent: WriteIntent): ShadowResult;
+  write(intent: WriteIntent): Promise<ShadowResult>;
+  replace(intent: WriteIntent): Promise<ShadowResult>;
   prune(intent: Pick<WriteIntent, 'identity' | 'scope'>): ShadowResult;
 }
 
@@ -13,10 +13,10 @@ export function openShadowHarness(store: NativeStore, legacyRead: () => ReturnTy
   const adapter = openNativeAdapter(store);
   const shadow = openShadowAdapter(adapter, legacyRead);
   return {
-    write(intent: WriteIntent): ShadowResult {
+    async write(intent: WriteIntent): Promise<ShadowResult> {
       return shadow.write(intent);
     },
-    replace(intent: WriteIntent): ShadowResult {
+    async replace(intent: WriteIntent): Promise<ShadowResult> {
       return shadow.replace(intent);
     },
     prune(intent: Pick<WriteIntent, 'identity' | 'scope'>): ShadowResult {

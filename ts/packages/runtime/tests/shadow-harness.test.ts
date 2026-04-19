@@ -17,7 +17,7 @@ describe('shadow harness', () => {
     while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
   });
 
-  it('returns the legacy result while keeping native diffs available', () => {
+  it('returns the legacy result while keeping native diffs available', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });
@@ -31,7 +31,7 @@ describe('shadow harness', () => {
     } satisfies MemoryRecord;
     const harness = openShadowHarness(store, () => legacy);
 
-    const result = harness.write({
+    const result = await harness.write({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Shadow Harness', parentContext: 'root' },
       content: { text: 'shadow harness' },

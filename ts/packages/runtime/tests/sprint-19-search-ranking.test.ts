@@ -12,7 +12,7 @@ function createStore(): { list: () => MemoryRecord[] } {
 }
 
 describe('Sprint 19 search/ranking parity slice', () => {
-  it('keeps lexical-only ordering stable', () => {
+  it('keeps lexical-only ordering stable', async () => {
     const ranked = rankRecords(records, 'alpha lexical only', 'lexical');
     const ids = ranked.map((entry) => entry.record.id);
 
@@ -21,29 +21,29 @@ describe('Sprint 19 search/ranking parity slice', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it('allows semantic rerank to lift structured matches or hybrid merge to retain lexical coverage', () => {
+  it('allows semantic rerank to lift structured matches or hybrid merge to retain lexical coverage', async () => {
     const semantic = rankRecords(records, 'alpha semantic rerank', 'semantic');
     expect(semantic[0].record.id).toBe('project:byomem:root:alpha-semantic');
     expect(semantic.map((entry) => entry.record.id)).toContain('dir:byomem:root:alpha-duplicate');
 
-    const hybrid = searchIndex(createStore(), { query: 'alpha semantic rerank', mode: 'hybrid' });
+    const hybrid = await searchIndex(createStore(), { query: 'alpha semantic rerank', mode: 'hybrid' });
     expect(hybrid[0].id).toBe('project:byomem:root:alpha-semantic');
     expect(hybrid.map((record) => record.id)).toContain('project:byomem:root:alpha-lexical');
   });
 
-  it('suppresses duplicates by stable identity ordering when lexical content collides', () => {
+  it('suppresses duplicates by stable identity ordering when lexical content collides', async () => {
     const lexical = rankRecords(records, 'alpha lexical only', 'lexical');
     expect(new Set(lexical.map((entry) => entry.record.id)).size).toBe(lexical.length);
     expect(lexical.map((entry) => entry.record.id)).toContain('project:byomem:root:alpha-lexical');
     expect(lexical.map((entry) => entry.record.id)).toContain('project:byomem:root:alpha-semantic');
   });
 
-  it('keeps scope isolation across search slices', () => {
-    expect(searchIndex(createStore(), { query: 'alpha lexical only', scope: 'project', mode: 'lexical' }).every((record) => record.scope === 'project')).toBe(true);
-    expect(searchIndex(createStore(), { query: 'alpha lexical only', scope: 'dir', mode: 'lexical' }).every((record) => record.scope === 'dir')).toBe(true);
+  it('keeps scope isolation across search slices', async () => {
+    expect((await searchIndex(createStore(), { query: 'alpha lexical only', scope: 'project', mode: 'lexical' })).every((record) => record.scope === 'project')).toBe(true);
+    expect((await searchIndex(createStore(), { query: 'alpha lexical only', scope: 'dir', mode: 'lexical' })).every((record) => record.scope === 'dir')).toBe(true);
   });
 
-  it('compares observable fields for parity without overfitting internal metadata', () => {
+  it('compares observable fields for parity without overfitting internal metadata', async () => {
     const expected: MemoryRecord = {
       ...records[0],
       metadata: { ...records[0].metadata, sourcePath: 'fixtures/sprint-19-search-ranking-fixtures.json' },

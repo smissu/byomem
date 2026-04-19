@@ -19,19 +19,19 @@ describe('Sprint 20 write path', () => {
     while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
   });
 
-  it('writes, replaces, and prunes through the public write-path surface', () => {
+  it('writes, replaces, and prunes through the public write-path surface', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });
     const writePath = openWritePath(store);
 
-    const written = writePath.write({
+    const written = await writePath.write({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Write Path', parentContext: 'Root' },
       content: { text: 'one' },
       provenance: { source: 'fixtures' },
     });
-    const replaced = writePath.replace({
+    const replaced = await writePath.replace({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Write Path', parentContext: 'Root' },
       content: { text: 'two' },
@@ -50,30 +50,31 @@ describe('Sprint 20 write path', () => {
     expect(store.list()).toHaveLength(0);
   });
 
-  it('rejects invalid mutation intents', () => {
+  it('rejects invalid mutation intents', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });
     const writePath = openWritePath(store);
 
-    expect(() => writePath.write({ scope: 'project', identity: { namespace: '', leafName: '' }, content: { text: 'x' } } as never)).toThrow('Invalid write intent');
+    await expect(writePath.write({ scope: 'project', identity: { namespace: '', leafName: '' }, content: { text: 'x' } } as never)).rejects.toThrow('Invalid write intent');
     expect(() => writePath.prune({ scope: 'project', identity: { namespace: '', leafName: '' } } as never)).toThrow('Invalid prune intent');
   });
 
-  it('integrates write -> read/search consistency through public surfaces', () => {
+  it('integrates write -> read/search consistency through public surfaces', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });
     const writePath = openWritePath(store);
 
-    const record = writePath.write({
+    const result = await writePath.write({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Integrated Path', parentContext: 'Root' },
       content: { text: 'integrated path baseline' },
       provenance: { source: 'fixtures', origin: 'write-path' },
-    }).record!;
+    });
 
+    const record = result.record!;
     expect(openReadPath(store).retrieve({ id: record.id, scope: 'project' })[0]?.record.id).toBe(record.id);
-    expect(searchIndex(store, { query: 'integrated path baseline', mode: 'lexical' })[0]?.id).toBe(record.id);
+    expect((await searchIndex(store, { query: 'integrated path baseline', mode: 'lexical' }))[0]?.id).toBe(record.id);
   });
 });

@@ -18,8 +18,8 @@ export function openSessionCapture(store: NativeStore, options: SessionCaptureOp
   return { runtime, emitted };
 }
 
-export function emitSessionRecord(store: NativeStore, intent: WriteIntent, event: QueueEvent): MemoryRecord {
-  const record = store.write(intent);
+export async function emitSessionRecord(store: NativeStore, intent: WriteIntent, event: QueueEvent): Promise<MemoryRecord> {
+  const record = await store.write(intent);
   return {
     ...record,
     provenance: { ...record.provenance, origin: event.kind },

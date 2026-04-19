@@ -17,18 +17,18 @@ describe('native store retrieval baseline', () => {
     }
   });
 
-  it('keeps project and dir scope records isolated on readback', () => {
+  it('keeps project and dir scope records isolated on readback', async () => {
     const dir = tempDir();
     dirs.push(dir);
 
     const store = openNativeStore({ baseDir: dir });
-    const project = store.write({
+    const project = await store.write({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Project Alpha', parentContext: 'Root' },
       content: { text: 'project alpha baseline' },
       provenance: { source: 'fixtures', adapter: 'native-store' },
     });
-    const dirRecord = store.write({
+    const dirRecord = await store.write({
       scope: 'dir',
       identity: { namespace: 'byomem', leafName: 'Project Alpha', parentContext: 'Root' },
       content: { structured: { scope: 'dir' } },
@@ -58,12 +58,12 @@ describe('native store retrieval baseline', () => {
     expect(project.id).not.toBe(dirRecord.id);
   });
 
-  it('reloads records from disk without losing retrieval shape', () => {
+  it('reloads records from disk without losing retrieval shape', async () => {
     const dir = tempDir();
     dirs.push(dir);
 
     const first = openNativeStore({ baseDir: dir });
-    const written = first.write({
+    const written = await first.write({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Project Alpha', parentContext: 'Root' },
       content: { text: 'project alpha baseline' },
@@ -85,12 +85,12 @@ describe('native store retrieval baseline', () => {
     });
   });
 
-  it('hydrates identity-style lookups into normalized stable records', () => {
+  it('hydrates identity-style lookups into normalized stable records', async () => {
     const dir = tempDir();
     dirs.push(dir);
 
     const store = openNativeStore({ baseDir: dir });
-    const record = store.write({
+    const record = await store.write({
       scope: 'project',
       identity: { namespace: ' BYOMEM ', leafName: 'Project Alpha', parentContext: ' Root ' },
       content: { text: 'project alpha baseline' },
@@ -107,12 +107,12 @@ describe('native store retrieval baseline', () => {
     });
   });
 
-  it('keeps lexical fallback-style retrieval available when semantic support is absent', () => {
+  it('keeps lexical fallback-style retrieval available when semantic support is absent', async () => {
     const dir = tempDir();
     dirs.push(dir);
 
     const store = openNativeStore({ baseDir: dir });
-    const record = store.write({
+    const record = await store.write({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Lexical Fallback', parentContext: 'Root' },
       content: { text: 'lexical fallback baseline' },
@@ -127,12 +127,12 @@ describe('native store retrieval baseline', () => {
     });
   });
 
-  it('preserves response reason and provenance shape on readback', () => {
+  it('preserves response reason and provenance shape on readback', async () => {
     const dir = tempDir();
     dirs.push(dir);
 
     const store = openNativeStore({ baseDir: dir });
-    const record = store.write({
+    const record = await store.write({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Reasoned Response', parentContext: 'Root' },
       content: { structured: { answer: 'baseline' } },
