@@ -1,0 +1,28 @@
+{
+  "records": [
+    {
+      "id": "project:byomem:root:alpha-lexical",
+      "scope": "project",
+      "provenance": { "source": "fixtures", "adapter": "native-store" },
+      "identity": { "namespace": "byomem", "leafName": "Alpha Lexical", "parentContext": "Root" },
+      "content": { "text": "alpha lexical only" },
+      "metadata": { "sourcePath": "fixtures/sprint-19-search-ranking-fixtures.json" }
+    },
+    {
+      "id": "project:byomem:root:alpha-semantic",
+      "scope": "project",
+      "provenance": { "source": "fixtures", "adapter": "native-store" },
+      "identity": { "namespace": "byomem", "leafName": "Alpha Semantic", "parentContext": "Root" },
+      "content": { "structured": { "summary": "alpha semantic rerank" } },
+      "metadata": { "sourcePath": "fixtures/sprint-19-search-ranking-fixtures.json" }
+    },
+    {
+      "id": "dir:byomem:root:alpha-duplicate",
+      "scope": "dir",
+      "provenance": { "source": "fixtures", "adapter": "native-store" },
+      "identity": { "namespace": "byomem", "leafName": "Alpha Duplicate", "parentContext": "Root" },
+      "content": { "text": "alpha lexical only" },
+      "metadata": { "sourcePath": "fixtures/sprint-19-search-ranking-fixtures.json" }
+    }
+  ]
+}
