@@ -1,0 +1,133 @@
+{
+  "queue": {
+    "sessionId": "sprint-21-session-alpha",
+    "enqueue": [
+      {
+        "eventId": "evt-capture-1",
+        "sessionId": "sprint-21-session-alpha",
+        "recordId": "project:byomem:root:sprint-21-alpha",
+        "kind": "capture",
+        "createdAt": "2026-02-01T00:00:00.000Z",
+        "payload": {
+          "offset": 0
+        }
+      },
+      {
+        "eventId": "evt-flush-1",
+        "sessionId": "sprint-21-session-alpha",
+        "recordId": "project:byomem:root:sprint-21-alpha",
+        "kind": "flush",
+        "createdAt": "2026-02-01T00:00:01.000Z",
+        "payload": {
+          "checkpoint": 1
+        }
+      },
+      {
+        "eventId": "evt-write-1",
+        "sessionId": "sprint-21-session-alpha",
+        "recordId": "project:byomem:root:sprint-21-alpha",
+        "kind": "write",
+        "createdAt": "2026-02-01T00:00:02.000Z",
+        "payload": {
+          "stableKey": "project:byomem:root:sprint-21-alpha"
+        }
+      },
+      {
+        "eventId": "evt-replay-1",
+        "sessionId": "sprint-21-session-alpha",
+        "recordId": "project:byomem:root:sprint-21-alpha",
+        "kind": "replay",
+        "createdAt": "2026-02-01T00:00:03.000Z",
+        "payload": {
+          "idempotent": true
+        }
+      }
+    ],
+    "claims": [
+      {
+        "eventId": "evt-capture-1",
+        "claimed": true,
+        "locked": true,
+        "offset": 0
+      },
+      {
+        "eventId": "evt-flush-1",
+        "claimed": true,
+        "locked": true,
+        "offset": 1
+      }
+    ],
+    "completions": [
+      {
+        "eventId": "evt-capture-1",
+        "completed": true,
+        "retries": 0
+      },
+      {
+        "eventId": "evt-flush-1",
+        "completed": true,
+        "retries": 1
+      }
+    ],
+    "retries": [
+      {
+        "eventId": "evt-flush-1",
+        "retryCount": 1,
+        "nextOffset": 2
+      }
+    ]
+  },
+  "sessionCapture": {
+    "sessionId": "sprint-21-session-alpha",
+    "checkpoint": {
+      "offset": 1,
+      "lastEventId": "evt-flush-1"
+    },
+    "flush": {
+      "offset": 2,
+      "lastEventId": "evt-write-1"
+    },
+    "replay": {
+      "eventId": "evt-replay-1",
+      "idempotent": true,
+      "emittedIds": [
+        "project:byomem:root:sprint-21-alpha"
+      ]
+    },
+    "nativeSessionRecord": {
+      "id": "session:byomem:root:sprint-21-session-alpha",
+      "scope": "project",
+      "provenance": {
+        "source": "fixtures",
+        "adapter": "native-store",
+        "origin": "session-capture"
+      },
+      "identity": {
+        "namespace": "byomem",
+        "leafName": "sprint-21-session-alpha",
+        "parentContext": "root",
+        "stableKey": "session:byomem:root:sprint-21-session-alpha"
+      },
+      "content": {
+        "structured": {
+          "sessionId": "sprint-21-session-alpha",
+          "checkpointOffset": 1,
+          "flushedOffset": 2,
+          "markdownEnabled": false,
+          "replayed": true
+        }
+      },
+      "metadata": {
+        "createdAt": "2026-02-01T00:00:00.000Z",
+        "updatedAt": "2026-02-01T00:00:03.000Z"
+      }
+    }
+  },
+  "markdownDisabled": {
+    "enabled": false,
+    "compatibility": {
+      "acceptsStructuredOnly": true,
+      "skipsMarkdownRender": true
+    }
+  }
+}
