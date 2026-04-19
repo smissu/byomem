@@ -65,5 +65,17 @@ pytest -q tests/unit/test_memory_retrieval.py::test_retrieval_prefers_stable_ide
 pytest -q tests/unit/test_pi_adapter.py::test_pi_adapter_project_store_and_ranked_read_round_trip tests/unit/test_pi_adapter.py::test_pi_adapter_exposes_lexical_only_semantic_unavailable tests/unit/test_pi_adapter.py::test_pi_adapter_hybrid_ranking_contract_unchanged tests/unit/test_pi_adapter.py::test_pi_adapter_project_identity_does_not_collide_across_same_leaf_names tests/unit/test_pi_adapter.py::test_pi_adapter_does_not_depend_on_claude_memory_md
 ```
 
+### Stabilization smoke checklist
+Use this for a quick live/integration sanity pass when the native path or session-capture bridge changes.
+
+1. Run the native retrieval/integration slice:
+   ```bash
+   pytest -q tests/unit/test_memory_retrieval.py tests/unit/test_pi_adapter.py
+   ```
+2. Run a minimal live Pi session-capture repro with the current operator command pattern, then inspect the emitted transcript/log path.
+3. Verify the bridge success payload is present and that `native_written_count` increments as expected.
+4. Confirm a new native record appears in `records.jsonl` and is retrievable after the flush/reload path.
+5. Do not require markdown artifacts for success; markdown/main.md/MEMORY.md may remain absent or stale.
+
 ### Normalized golden outputs
 Parity fixtures should compare normalized outputs, not raw filesystem-dependent values. In practice that means store responses should canonicalize paths to the current BYOMem root placeholder before comparison so the same fixture can replay across temp directories and local environments.
