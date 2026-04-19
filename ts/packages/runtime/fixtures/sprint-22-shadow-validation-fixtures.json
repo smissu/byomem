@@ -1,0 +1,246 @@
+{
+  "shadowMode": {
+    "runtimeMode": "ts-native-shadow",
+    "legacyReturnAuthority": true,
+    "nativeIsDiffed": true
+  },
+  "diffBaseline": {
+    "record": {
+      "id": "project:byomem:root:sprint-22-shadow-alpha",
+      "scope": "project",
+      "provenance": {
+        "source": "fixtures",
+        "adapter": "legacy",
+        "origin": "store"
+      },
+      "identity": {
+        "namespace": "byomem",
+        "leafName": "sprint-22-shadow-alpha",
+        "parentContext": "root",
+        "stableKey": "project:byomem:root:sprint-22-shadow-alpha"
+      },
+      "content": {
+        "text": "shadow baseline"
+      },
+      "metadata": {
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "sourcePath": "/tmp/legacy.json"
+      }
+    }
+  },
+  "flows": {
+    "store": {
+      "intent": {
+        "scope": "project",
+        "identity": {
+          "namespace": "byomem",
+          "leafName": "Sprint 22 Store Alpha",
+          "parentContext": "root"
+        },
+        "content": {
+          "text": "store shadow"
+        },
+        "provenance": {
+          "source": "fixtures",
+          "adapter": "legacy"
+        }
+      },
+      "nativeRecord": {
+        "id": "project:byomem:root:sprint-22-store-alpha",
+        "scope": "project",
+        "provenance": {
+          "source": "fixtures",
+          "adapter": "native-store"
+        },
+        "identity": {
+          "namespace": "byomem",
+          "leafName": "sprint-22-store-alpha",
+          "parentContext": "root",
+          "stableKey": "project:byomem:root:sprint-22-store-alpha"
+        },
+        "content": {
+          "text": "store shadow"
+        },
+        "metadata": {
+          "createdAt": "2026-03-01T00:00:00.000Z",
+          "updatedAt": "2026-03-01T00:00:01.000Z"
+        }
+      },
+      "legacyReturnedRecord": {
+        "id": "project:byomem:root:sprint-22-store-alpha",
+        "scope": "project",
+        "provenance": {
+          "source": "fixtures",
+          "adapter": "legacy"
+        },
+        "identity": {
+          "namespace": "byomem",
+          "leafName": "sprint-22-store-alpha",
+          "parentContext": "root",
+          "stableKey": "project:byomem:root:sprint-22-store-alpha"
+        },
+        "content": {
+          "text": "store shadow"
+        },
+        "metadata": {
+          "createdAt": "2026-03-01T00:00:00.000Z",
+          "updatedAt": "2026-03-01T00:00:00.000Z"
+        }
+      }
+    },
+    "read": {
+      "expected": {
+        "id": "project:byomem:root:sprint-22-read-alpha",
+        "scope": "project",
+        "provenance": {
+          "source": "fixtures",
+          "adapter": "legacy"
+        },
+        "identity": {
+          "namespace": "byomem",
+          "leafName": "sprint-22-read-alpha",
+          "parentContext": "root",
+          "stableKey": "project:byomem:root:sprint-22-read-alpha"
+        },
+        "content": {
+          "text": "read shadow"
+        }
+      },
+      "actual": {
+        "id": "project:byomem:root:sprint-22-read-alpha",
+        "scope": "project",
+        "provenance": {
+          "source": "fixtures",
+          "adapter": "native-store"
+        },
+        "identity": {
+          "namespace": "byomem",
+          "leafName": "sprint-22-read-alpha",
+          "parentContext": "root",
+          "stableKey": "project:byomem:root:sprint-22-read-alpha"
+        },
+        "content": {
+          "text": "read shadow"
+        }
+      }
+    },
+    "search": {
+      "query": "shadow parity",
+      "legacyMatches": ["project:byomem:root:sprint-22-search-alpha"],
+      "nativeMatches": ["project:byomem:root:sprint-22-search-alpha"]
+    },
+    "write": {
+      "legacyReturnedRecord": {
+        "id": "project:byomem:root:sprint-22-write-alpha",
+        "scope": "project",
+        "provenance": {
+          "source": "fixtures",
+          "adapter": "legacy"
+        },
+        "identity": {
+          "namespace": "byomem",
+          "leafName": "sprint-22-write-alpha",
+          "parentContext": "root",
+          "stableKey": "project:byomem:root:sprint-22-write-alpha"
+        },
+        "content": {
+          "text": "write shadow"
+        }
+      },
+      "nativeRecord": {
+        "id": "project:byomem:root:sprint-22-write-alpha",
+        "scope": "project",
+        "provenance": {
+          "source": "fixtures",
+          "adapter": "native-store"
+        },
+        "identity": {
+          "namespace": "byomem",
+          "leafName": "sprint-22-write-alpha",
+          "parentContext": "root",
+          "stableKey": "project:byomem:root:sprint-22-write-alpha"
+        },
+        "content": {
+          "text": "write shadow"
+        },
+        "metadata": {
+          "createdAt": "2026-03-01T00:00:00.000Z",
+          "updatedAt": "2026-03-01T00:00:01.000Z"
+        }
+      }
+    },
+    "session": {
+      "legacyReturnedRecord": {
+        "id": "session:byomem:root:sprint-22-session-alpha",
+        "scope": "project",
+        "provenance": {
+          "source": "fixtures",
+          "adapter": "legacy",
+          "origin": "session-capture"
+        },
+        "identity": {
+          "namespace": "byomem",
+          "leafName": "sprint-22-session-alpha",
+          "parentContext": "root",
+          "stableKey": "session:byomem:root:sprint-22-session-alpha"
+        },
+        "content": {
+          "structured": {
+            "sessionId": "sprint-22-session-alpha",
+            "checkpointOffset": 3,
+            "flushedOffset": 4,
+            "replayed": true
+          }
+        }
+      },
+      "nativeRecord": {
+        "id": "session:byomem:root:sprint-22-session-alpha",
+        "scope": "project",
+        "provenance": {
+          "source": "fixtures",
+          "adapter": "native-store",
+          "origin": "session-capture"
+        },
+        "identity": {
+          "namespace": "byomem",
+          "leafName": "sprint-22-session-alpha",
+          "parentContext": "root",
+          "stableKey": "session:byomem:root:sprint-22-session-alpha"
+        },
+        "content": {
+          "structured": {
+            "sessionId": "sprint-22-session-alpha",
+            "checkpointOffset": 3,
+            "flushedOffset": 4,
+            "replayed": true
+          }
+        }
+      }
+    },
+    "queue": {
+      "events": [
+        {
+          "eventId": "evt-shadow-1",
+          "sessionId": "sprint-22-session-alpha",
+          "recordId": "project:byomem:root:sprint-22-session-alpha",
+          "kind": "capture",
+          "createdAt": "2026-03-01T00:00:00.000Z",
+          "payload": {
+            "offset": 3
+          }
+        },
+        {
+          "eventId": "evt-shadow-2",
+          "sessionId": "sprint-22-session-alpha",
+          "recordId": "project:byomem:root:sprint-22-session-alpha",
+          "kind": "flush",
+          "createdAt": "2026-03-01T00:00:01.000Z",
+          "payload": {
+            "offset": 4
+          }
+        }
+      ]
+    }
+  }
+}
