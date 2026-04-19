@@ -6,6 +6,8 @@ export * from './adapter.js';
 export * from './adapter-shadow.js';
 export * from './capture-candidate.js';
 export * from './fixture-shadow.js';
+export * from './no-python-default-path.js';
+export * from './no-python-hook.js';
 export * from './ranking.js';
 export * from './read.js';
 export * from './search-index.js';

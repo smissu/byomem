@@ -91,7 +91,7 @@ Memories move through a simple state model:
 - [Sprint 20: TS Native Write Path and Adapter Store Actions](./sprint-20-ts-native-write-path-and-adapter-store-actions.md) — native write path and adapter store actions.
 - [Sprint 21: TS Session Capture and Queue Runtime Migration](./sprint-21-ts-session-capture-and-queue-runtime-migration.md) — session capture and queue runtime migration.
 - [Sprint 22: TS Adapter Integration and Shadow Validation](./sprint-22-ts-adapter-integration-and-shadow-validation.md) — adapter integration and shadow validation.
-- [Sprint 23: TS Runtime Cutover, Legacy Retirement, and Documentation Closure](./sprint-23-ts-runtime-cutover-legacy-retirement-and-documentation-closure.md) — cutover, retirement, and docs closure.
-- Follow the Sprint 16–23 sequence for the TS-native closeout path.
+- [Sprint 23: TS Runtime Cutover, Legacy Retirement, and Documentation Closure](./sprint-23-ts-runtime-cutover-legacy-retirement-and-documentation-closure.md) — completed TS-native cutover, runtime default, and documentation closure.
+- Sprint 23 is the completed state: TS-native is the sole active/default runtime path, and Python is only an explicit disabled-by-default compatibility escape hatch or offline/dev-only surface.
 - [Pi memory first implementation tranche](./pi-memory-first-implementation-tranche.md)
 - [Pi memory implementation backlog](./pi-memory-implementation-backlog.md)
