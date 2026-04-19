@@ -84,6 +84,14 @@ Memories move through a simple state model:
 - [Sprint 13: TS Native Write Path and Migration](./sprint-13-ts-native-write-path-and-migration.md)
 - [Sprint 14: TS Native Retrieval and Ranking](./sprint-14-ts-native-retrieval-and-ranking.md)
 - [Sprint 15: TS Doc Cleanup and Legacy Retirement](./sprint-15-ts-doc-cleanup-and-legacy-retirement.md)
-- Older sprint notes above remain historical; follow the Sprint 11–15 sequence for the native-first closeout path.
+- [Sprint 16: TS Runtime Foundation and Core Contracts](./sprint-16-ts-runtime-foundation-and-core-contracts.md) — starts the actual TS runtime foundation; Python remains the default runtime for now.
+- [Sprint 17: TS Native Store and Stable Identity](./sprint-17-ts-native-store-and-stable-identity.md) — native store and stable identity.
+- [Sprint 18: TS Native Read Path and Retrieval Baseline](./sprint-18-ts-native-read-path-and-retrieval-baseline.md) — native read path and retrieval baseline.
+- [Sprint 19: TS Native Search and Ranking Baseline](./sprint-19-ts-native-search-and-ranking-baseline.md) — native search and ranking baseline.
+- [Sprint 20: TS Native Write Path and Adapter Store Actions](./sprint-20-ts-native-write-path-and-adapter-store-actions.md) — native write path and adapter store actions.
+- [Sprint 21: TS Session Capture and Queue Runtime Migration](./sprint-21-ts-session-capture-and-queue-runtime-migration.md) — session capture and queue runtime migration.
+- [Sprint 22: TS Adapter Integration and Shadow Validation](./sprint-22-ts-adapter-integration-and-shadow-validation.md) — adapter integration and shadow validation.
+- [Sprint 23: TS Runtime Cutover, Legacy Retirement, and Documentation Closure](./sprint-23-ts-runtime-cutover-legacy-retirement-and-documentation-closure.md) — cutover, retirement, and docs closure.
+- Follow the Sprint 16–23 sequence for the TS-native closeout path.
 - [Pi memory first implementation tranche](./pi-memory-first-implementation-tranche.md)
 - [Pi memory implementation backlog](./pi-memory-implementation-backlog.md)

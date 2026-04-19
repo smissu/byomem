@@ -2,7 +2,8 @@
 
 A minimal, self-hosted memory layer for Claude Code.
 Implements the **Git Context Controller** methodology from the GCC paper —
-file-based memory that persists across sessions, with two access paths:
+file-based memory that persists across sessions, with two access paths.
+Sprint 16 begins the actual TypeScript runtime foundation for BYOMem, while Python remains the current default runtime for now:
 
 - **Push** — Stop hook captures sessions automatically after every response
 - **Pull** — MCP server lets Claude query memory on demand during a session
@@ -15,7 +16,7 @@ file-based memory that persists across sessions, with two access paths:
 
 Claude Code's effective context window is ~120–200k tokens despite models supporting 1M+.
 Agents get "dumber" on long tasks — repeating mistakes, forgetting earlier work.
-The built-in `MEMORY.md` is manual, flat, Claude-specific, and has a 200-line limit.
+The built-in `MEMORY.md` remains the current compatibility surface: manual, flat, Claude-specific, and limited. Sprint 16 is laying the TypeScript foundation for the future native-store path without changing the current Python-default runtime.
 
 ## The Methodology (Git Context Controller)
 

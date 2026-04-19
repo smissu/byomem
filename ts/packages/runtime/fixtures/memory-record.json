@@ -1,0 +1,15 @@
+{
+  "id": "mem_project_alpha",
+  "scope": "project",
+  "provenance": {
+    "source": "docs"
+  },
+  "identity": {
+    "namespace": "byomem",
+    "leafName": "Project Alpha",
+    "parentContext": "root"
+  },
+  "content": {
+    "text": "Alpha note"
+  }
+}
