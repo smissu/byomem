@@ -39,13 +39,14 @@ describe('Sprint 20 write path', () => {
     });
     const pruned = writePath.prune({
       scope: 'project',
-      identity: { namespace: 'byomem', leafName: 'Write Path', parentContext: 'Root', stableKey: written.record?.id },
-    } as never);
+      identity: { namespace: 'byomem', leafName: 'Write Path', parentContext: 'Root', stableKey: 'project:wrong:manual:wrong-key' },
+    });
 
     expect(written.record?.id).toBe(replaced.record?.id);
     expect(replaced.kind).toBe('replace');
     expect(pruned.kind).toBe('prune');
     expect(pruned.removed).toHaveLength(1);
+    expect(pruned.removed?.[0]?.id).toBe(replaced.record?.id);
     expect(store.list()).toHaveLength(0);
   });
 

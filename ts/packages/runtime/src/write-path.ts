@@ -1,6 +1,7 @@
 import type { WriteIntent } from './contracts.js';
 import type { NativeStore } from './store.js';
 import { normalizeWriteIntent } from './normalizers.js';
+import { normalizeStableKey } from './identity.js';
 import { writeRecord, replaceRecord, pruneRecords, type StoreActionResult } from './store-actions.js';
 
 export interface WritePath {
@@ -25,10 +26,16 @@ export function openWritePath(store: NativeStore): WritePath {
       return replaceRecord(store, normalizeWriteIntent(ensureIntent(intent)));
     },
     prune(intent: Pick<WriteIntent, 'identity' | 'scope'>): StoreActionResult {
-      if (!intent.identity?.stableKey || !intent.scope) {
+      if (!intent.identity?.namespace || !intent.identity?.leafName || !intent.scope) {
         throw new Error('Invalid prune intent');
       }
-      return pruneRecords(store, intent);
+      return pruneRecords(store, {
+        scope: intent.scope,
+        identity: {
+          ...intent.identity,
+          stableKey: normalizeStableKey(intent.scope, intent.identity),
+        },
+      });
     },
   };
 }
