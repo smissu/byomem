@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "records": [
+    {
+      "id": "project:byomem:root:project-alpha",
+      "scope": "project",
+      "provenance": { "source": "fixtures", "adapter": "native-store" },
+      "identity": { "namespace": "byomem", "leafName": "Project Alpha", "parentContext": "Root" },
+      "content": { "text": "project alpha baseline" },
+      "metadata": { "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z", "sourcePath": "fixtures/native-store-retrieval-baseline.json" }
+    },
+    {
+      "id": "dir:byomem:root:project-alpha",
+      "scope": "dir",
+      "provenance": { "source": "fixtures", "adapter": "native-store" },
+      "identity": { "namespace": "byomem", "leafName": "Project Alpha", "parentContext": "Root" },
+      "content": { "structured": { "scope": "dir" } },
+      "metadata": { "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z", "sourcePath": "fixtures/native-store-retrieval-baseline.json" }
+    }
+  ]
+}
