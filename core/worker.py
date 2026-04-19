@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from core.config import get_config
+from core.memory_identity import resolve_project_name
 from core.models import QueueJob
 from core.queue import (
     acquire_worker_lock,
@@ -54,23 +55,6 @@ def _get_current_sha(source_root: Path) -> str | None:
 _history_lock = threading.Lock()
 
 
-def _resolve_project_name(cwd: str) -> str:
-    """Derive project name from cwd by walking up to the git root.
-
-    Looks for .git directory starting from cwd and walking up.
-    Falls back to the leaf directory name if no git root is found.
-    """
-    if not cwd:
-        return "unknown"
-    path = Path(cwd)
-    for parent in [path, *path.parents]:
-        if (parent / ".git").exists():
-            return parent.name
-        if parent == parent.parent:
-            break
-    return path.name
-
-
 def process_job(
     job: QueueJob,
     *,
@@ -94,7 +78,7 @@ def process_job(
         get_or_create_branch,
         update_metadata,
     )
-    from core.memory_writer import maybe_update_main, maybe_update_project_memory
+    from core.memory_writer import write_main_projection, write_project_memory_projection
     from core.parser import parse_new_turns
     from core.search_index import index_file
     from core.summarizer import summarize_batch
@@ -105,7 +89,7 @@ def process_job(
         logger.warning("Transcript not found: %s", job.transcript_path)
         return None
 
-    project = _resolve_project_name(job.cwd)
+    project = resolve_project_name(job.cwd)
     branch = get_or_create_branch(project, job.session_id)
 
     # File lock to prevent concurrent corruption of this branch
@@ -175,8 +159,8 @@ def process_job(
                 index_file(branch.commit_md, project)
 
             if summary_dict.get("important"):
-                maybe_update_main(project, summary_dict, turn_id=tid)
-                maybe_update_project_memory(job.cwd, summary_dict)
+                write_main_projection(project, summary_dict, turn_id=tid)
+                write_project_memory_projection(job.cwd, summary_dict)
                 main_path = cfg.byomem / project / "main.md"
                 if main_path.exists():
                     index_file(main_path, project)

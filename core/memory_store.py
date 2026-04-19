@@ -16,6 +16,16 @@ class NativeMemoryStore:
         self.path = self.root / "records.jsonl"
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
+    def has_record_id(self, record_id: str) -> bool:
+        if not self.path.exists():
+            return False
+        with self.path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line and MemoryRecord.model_validate_json(line).id == record_id:
+                    return True
+        return False
+
     def write(self, record: MemoryRecord) -> MemoryRecord:
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(record.model_dump_json())

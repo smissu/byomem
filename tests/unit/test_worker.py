@@ -185,8 +185,8 @@ def test_index_mode_indexes_log(
 
 
 def test_resolve_project_name_git_root(tmp_path):
-    """_resolve_project_name walks up to git root."""
-    from core.worker import _resolve_project_name
+    """resolve_project_name walks up to git root."""
+    from core.memory_identity import resolve_project_name
 
     # Create a fake project with .git dir and a subdirectory
     project_root = tmp_path / "myproject"
@@ -195,25 +195,25 @@ def test_resolve_project_name_git_root(tmp_path):
     subdir = project_root / "frontend" / "src"
     subdir.mkdir(parents=True)
 
-    assert _resolve_project_name(str(subdir)) == "myproject"
-    assert _resolve_project_name(str(project_root / "frontend")) == "myproject"
-    assert _resolve_project_name(str(project_root)) == "myproject"
+    assert resolve_project_name(str(subdir)) == "myproject"
+    assert resolve_project_name(str(project_root / "frontend")) == "myproject"
+    assert resolve_project_name(str(project_root)) == "myproject"
 
 
 def test_resolve_project_name_no_git(tmp_path):
-    """_resolve_project_name falls back to leaf dir name without .git."""
-    from core.worker import _resolve_project_name
+    """resolve_project_name falls back to leaf dir name without .git."""
+    from core.memory_identity import resolve_project_name
 
     subdir = tmp_path / "somedir" / "subdir"
     subdir.mkdir(parents=True)
-    assert _resolve_project_name(str(subdir)) == "subdir"
+    assert resolve_project_name(str(subdir)) == "subdir"
 
 
 def test_resolve_project_name_empty():
-    """_resolve_project_name returns 'unknown' for empty cwd."""
-    from core.worker import _resolve_project_name
+    """resolve_project_name returns 'unknown' for empty cwd."""
+    from core.memory_identity import resolve_project_name
 
-    assert _resolve_project_name("") == "unknown"
+    assert resolve_project_name("") == "unknown"
 
 
 def test_run_worker_empty_queue(tmp_byomem):

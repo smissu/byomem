@@ -1,4 +1,4 @@
-"""Write summarized session data to optional markdown compatibility/projection files.
+"""Write summarized session data to optional markdown projection files.
 
 Native records remain the source of truth; main.md and project MEMORY.md are
 compatibility/export surfaces only.
@@ -10,7 +10,7 @@ from pathlib import Path
 from core.config import get_config
 
 
-def maybe_update_main(project: str, summary: dict, turn_id: str | None = None):
+def write_main_projection(project: str, summary: dict, turn_id: str | None = None):
     cfg = get_config()
     main = cfg.byomem / project / "main.md"
     if not main.exists():
@@ -29,7 +29,7 @@ def maybe_update_main(project: str, summary: dict, turn_id: str | None = None):
     main.write_text(content + entry)
 
 
-def maybe_update_project_memory(cwd: str, summary: dict):
+def write_project_memory_projection(cwd: str, summary: dict):
     path = claude_project_memory_path(cwd)
     content = path.read_text() if path.exists() else ""
     entry = f"\n- [{date.today()}] {summary['title']}: {summary['summary']}"
@@ -47,3 +47,8 @@ def claude_project_memory_path(cwd: str) -> Path:
 
 def _cc_memory_path(cwd: str) -> Path:
     return claude_project_memory_path(cwd)
+
+
+# Backward-compatible aliases for existing callers.
+maybe_update_main = write_main_projection
+maybe_update_project_memory = write_project_memory_projection

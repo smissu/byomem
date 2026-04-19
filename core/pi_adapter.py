@@ -19,7 +19,7 @@ from core.memory_capture import candidate_to_memory_record, generate_capture_can
 from core.memory_retrieval import retrieve_memory
 from core.memory_store import get_native_store
 from core.models import MemoryRecord, MemoryRetrievalRequest, MemoryStoreRequest, MemoryStoreResponse
-from core.session_capture import handle_session_capture
+from core.session_capture import DEBUG_LOG_FILE as SESSION_CAPTURE_DEBUG_LOG_FILE, handle_session_capture
 
 _debug_lock = threading.Lock()
 
@@ -32,7 +32,7 @@ def _debug_enabled() -> bool:
 
 
 def _debug_path() -> Path:
-    return get_config().queue_path / "byomem_adapter_debug.jsonl"
+    return get_config().queue_path / SESSION_CAPTURE_DEBUG_LOG_FILE
 
 
 def _project_from_cwd(cwd: str) -> str:
@@ -77,6 +77,12 @@ def _debug_log(entry: dict) -> None:
     with _debug_lock:
         with open(debug_path, "a") as f:
             f.write(json.dumps(entry) + "\n")
+
+
+def _write_debug_entry(file_name: str, entry: dict) -> None:
+    if file_name != SESSION_CAPTURE_DEBUG_LOG_FILE:
+        return
+    _debug_log(entry)
 
 
 def _store_native_memory(request: dict, correlation_id: str) -> dict:

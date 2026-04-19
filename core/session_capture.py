@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Literal
 
 from core.config import get_config
-from core.memory_identity import resolve_project_id
+from core.memory_identity import resolve_project_id, resolve_project_name
 from core.memory_store import get_native_store
-from core.memory_writer import maybe_update_main, maybe_update_project_memory
+from core.memory_writer import write_main_projection, write_project_memory_projection
 from core.models import MemoryRecord, SessionCaptureRequest, SessionCaptureResponse, Turn, TurnSummary
 from core.parser import parse_new_turns
 from core.queue import get_session_offset, save_session_offset
@@ -36,12 +36,9 @@ class SessionCaptureState:
 
 
 def _write_debug_entry(file_name: str, entry: dict) -> None:
-    try:
-        from core.pi_adapter import _write_debug_entry as adapter_write_debug_entry
+    from core.pi_adapter import _write_debug_entry as adapter_write_debug_entry
 
-        adapter_write_debug_entry(file_name, entry)
-    except Exception:
-        pass
+    adapter_write_debug_entry(file_name, entry)
 
 
 def _state_path() -> Path:
@@ -90,18 +87,6 @@ def _clear_state(session_id: str) -> None:
         _save_all_state(data)
 
 
-def _resolve_project_name(cwd: str) -> str:
-    if not cwd:
-        return "unknown"
-    path = Path(cwd)
-    for parent in [path, *path.parents]:
-        if (parent / ".git").exists():
-            return parent.name
-        if parent == parent.parent:
-            break
-    return path.name or "unknown"
-
-
 def _resolve_scope_id(cwd: str) -> str:
     return resolve_project_id(cwd)
 
@@ -124,10 +109,7 @@ def _write_native_session_record(*, cwd: str, session_id: str, turn: Turn, summa
         tags=[tag for tag in ["session_capture", agent or "", model or "", event or ""] if tag],
     )
     store = get_native_store()
-    existing = []
-    if store.path.exists():
-        existing = [record.id for record in store.load()]
-    duplicate = record.id in existing
+    duplicate = store.has_record_id(record.id)
     _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "native_write_attempt", "metadata": {"session_id": session_id, "turn_id": turn.id, "record_id": record.id, "scope_id": record.scope_id, "source_ref": record.source_ref, "store_path": str(store.path), "duplicate": duplicate}})
     metadata = {"session_id": session_id, "turn_id": turn.id, "record_id": record.id, "scope_id": record.scope_id, "source_ref": record.source_ref, "duplicate": duplicate}
     if duplicate:
@@ -179,7 +161,7 @@ def _flush_session_rollup(
     event: str | None,
     summary_only: bool,
 ) -> tuple[int, int, int, list[str]]:
-    project = _resolve_project_name(cwd)
+    project = resolve_project_name(cwd)
     _write_debug_entry(DEBUG_LOG_FILE, {"layer": "python_adapter", "action": "session_capture", "event": "flush_start", "metadata": {"session_id": session_id, "cwd": cwd, "pending_turns": len(pending_turns), "agent": agent, "model": model, "transcript_path": transcript_path, "event_name": event, "summary_only": summary_only, "project": project}})
     summaries = summarize_batch(pending_turns)
     flushed = 0
@@ -208,9 +190,9 @@ def _flush_session_rollup(
         native_skipped += int(skipped_native)
         native_record_ids.append(str(native_metadata.get("record_id", "")))
         if write_markdown:
-            maybe_update_main(project, summary_dict, turn_id=turn.id)
+            write_main_projection(project, summary_dict, turn_id=turn.id)
             if summary_only:
-                maybe_update_project_memory(cwd, summary_dict)
+                write_project_memory_projection(cwd, summary_dict)
         flushed += 1
     return flushed, native_written, native_skipped, native_record_ids
 
@@ -385,7 +367,7 @@ def handle_session_capture(request: dict) -> dict:
     _clear_state(capture_request.session_id)
     response.result = "flushed"
     response.reason = reason
-    response.project = _resolve_project_name(capture_request.cwd)
+    response.project = resolve_project_name(capture_request.cwd)
     response.flushed_count = flushed
     response.native_written_count = native_written
     response.native_skipped_count = native_skipped

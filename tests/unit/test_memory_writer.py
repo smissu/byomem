@@ -6,26 +6,28 @@ from core.memory_writer import (
     _cc_memory_path,
     maybe_update_main,
     maybe_update_project_memory,
+    write_main_projection,
+    write_project_memory_projection,
 )
 
 
 def test_update_main_creates_file(tmp_byomem, sample_summary):
-    maybe_update_main("myproject", sample_summary)
+    write_main_projection("myproject", sample_summary)
     main = tmp_byomem / "myproject" / "main.md"
     assert main.exists()
 
 
 def test_update_main_appends(tmp_byomem, sample_summary):
-    maybe_update_main("myproject", sample_summary)
+    write_main_projection("myproject", sample_summary)
     summary2 = {**sample_summary, "title": "Add retry logic"}
-    maybe_update_main("myproject", summary2)
+    write_main_projection("myproject", summary2)
     content = (tmp_byomem / "myproject" / "main.md").read_text()
     assert "Fix stop price" in content
     assert "Add retry logic" in content
 
 
 def test_update_main_entry_format(tmp_byomem, sample_summary):
-    maybe_update_main("myproject", sample_summary)
+    write_main_projection("myproject", sample_summary)
     content = (tmp_byomem / "myproject" / "main.md").read_text()
     today = date.today().isoformat()
     expected = f"- [{today}] [FIX] {sample_summary['title']}: {sample_summary['summary']}"
@@ -36,22 +38,22 @@ def test_update_main_adds_section_if_missing(tmp_byomem, sample_summary):
     main = tmp_byomem / "myproject" / "main.md"
     main.parent.mkdir(parents=True, exist_ok=True)
     main.write_text("# myproject\n")
-    maybe_update_main("myproject", sample_summary)
+    write_main_projection("myproject", sample_summary)
     content = main.read_text()
     assert "## Key Decisions & Fixes" in content
 
 
 def test_update_main_with_turn_id(tmp_byomem, sample_summary):
-    """maybe_update_main with turn_id embeds anchor."""
-    maybe_update_main("myproject", sample_summary, turn_id="uuid-abc-123")
+    """write_main_projection with turn_id embeds anchor."""
+    write_main_projection("myproject", sample_summary, turn_id="uuid-abc-123")
     content = (tmp_byomem / "myproject" / "main.md").read_text()
     assert "<!-- turn: uuid-abc-123 -->" in content
     assert sample_summary["title"] in content
 
 
 def test_update_main_without_turn_id_no_anchor(tmp_byomem, sample_summary):
-    """maybe_update_main without turn_id has no anchor."""
-    maybe_update_main("myproject", sample_summary)
+    """write_main_projection without turn_id has no anchor."""
+    write_main_projection("myproject", sample_summary)
     content = (tmp_byomem / "myproject" / "main.md").read_text()
     assert "<!-- turn:" not in content
     assert sample_summary["title"] in content
@@ -59,16 +61,16 @@ def test_update_main_without_turn_id_no_anchor(tmp_byomem, sample_summary):
 
 def test_update_project_memory_creates_file(tmp_byomem, sample_summary, tmp_path, monkeypatch):
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-    maybe_update_project_memory("/Users/x/myproject", sample_summary)
+    write_project_memory_projection("/Users/x/myproject", sample_summary)
     path = tmp_path / ".claude" / "projects" / "-Users-x-myproject" / "memory" / "MEMORY.md"
     assert path.exists()
 
 
 def test_update_project_memory_appends(tmp_byomem, sample_summary, tmp_path, monkeypatch):
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-    maybe_update_project_memory("/Users/x/myproject", sample_summary)
+    write_project_memory_projection("/Users/x/myproject", sample_summary)
     summary2 = {**sample_summary, "title": "Add retry logic"}
-    maybe_update_project_memory("/Users/x/myproject", summary2)
+    write_project_memory_projection("/Users/x/myproject", summary2)
     path = tmp_path / ".claude" / "projects" / "-Users-x-myproject" / "memory" / "MEMORY.md"
     content = path.read_text()
     assert "Fix stop price" in content
