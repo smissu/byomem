@@ -5,6 +5,7 @@ export interface EmbeddingClientOptions {
   model?: string;
   dimension?: number;
   timeoutMs?: number;
+  requireRemote?: boolean;
 }
 
 export interface EmbeddingClient {
@@ -44,12 +45,18 @@ export function openEmbeddingClient(options: EmbeddingClientOptions = {}): Embed
     },
     async embed(text: string): Promise<number[] | undefined> {
       if (!text.trim()) return undefined;
-      if (!options.baseUrl) return fallbackEmbedding(text, options.dimension);
+      if (!options.baseUrl) {
+        if (options.requireRemote) throw new Error('Remote embedding provider is required but no embedding base URL is configured');
+        return fallbackEmbedding(text, options.dimension);
+      }
       try {
         const url = new URL('/api/embeddings', options.baseUrl).toString();
         const vector = await remoteEmbedding(url, options.model ?? 'nomic-embed-text', text, options.timeoutMs);
-        return vector ?? fallbackEmbedding(text, options.dimension);
-      } catch {
+        if (vector) return vector;
+        if (options.requireRemote) throw new Error(`Remote embedding request returned no embedding for model ${options.model ?? 'nomic-embed-text'}`);
+        return fallbackEmbedding(text, options.dimension);
+      } catch (error) {
+        if (options.requireRemote) throw error;
         return fallbackEmbedding(text, options.dimension);
       }
     },

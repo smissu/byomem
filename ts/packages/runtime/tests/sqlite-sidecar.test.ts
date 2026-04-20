@@ -123,6 +123,25 @@ describe('sqlite-backed parity slice', () => {
     }
   });
 
+  it('fails closed when remote embeddings are required but unavailable', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const store = openNativeStore({ baseDir: dir, embeddingRequireRemote: true });
+
+    await expect(store.write({
+      scope: 'project',
+      identity: { namespace: 'byomem', leafName: 'Require Remote', parentContext: 'Root' },
+      content: { text: 'must use remote embeddings' },
+      provenance: { source: 'fixtures' },
+    })).rejects.toThrow(/Remote embedding provider is required/);
+
+    const recordCount = store.sidecar?.db.prepare('SELECT COUNT(*) AS count FROM records').get() as { count: number } | undefined;
+    const embeddingCount = store.sidecar?.db.prepare('SELECT COUNT(*) AS count FROM record_embeddings').get() as { count: number } | undefined;
+    expect(recordCount?.count).toBe(0);
+    expect(embeddingCount?.count).toBe(0);
+    expect(store.list()).toHaveLength(0);
+  });
+
   it('returns semantic results for embedding-matched queries', async () => {
     const dir = tempDir();
     dirs.push(dir);

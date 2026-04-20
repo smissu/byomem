@@ -14,6 +14,7 @@ export interface NativeStoreOptions {
   embeddingModel?: string;
   embeddingDimension?: number;
   embeddingTimeoutMs?: number;
+  embeddingRequireRemote?: boolean;
 }
 
 export interface NativeStore {
@@ -77,8 +78,8 @@ export function openNativeStore(options: NativeStoreOptions): NativeStore {
           updatedAt: new Date().toISOString(),
         },
       });
-      recordsById.set(record.id, record);
       await sidecar.syncWrite(normalized);
+      recordsById.set(record.id, record);
       persistSnapshot(filePath, { version: 1, records: [...recordsById.values()] });
       return record;
     },

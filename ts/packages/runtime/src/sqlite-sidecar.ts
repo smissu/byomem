@@ -14,6 +14,7 @@ export interface SqliteSidecarOptions {
   embeddingModel?: string;
   embeddingDimension?: number;
   embeddingTimeoutMs?: number;
+  embeddingRequireRemote?: boolean;
 }
 
 export interface SqliteSidecar {
@@ -110,6 +111,7 @@ export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar 
     model: options.embeddingModel,
     dimension: options.embeddingDimension ?? DEFAULT_DIMENSION,
     timeoutMs: options.embeddingTimeoutMs,
+    requireRemote: options.embeddingRequireRemote,
   });
   ensureSchema(db);
   const selectRecord = db.prepare(`SELECT * FROM records WHERE id = ?`);
@@ -125,22 +127,25 @@ export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar 
   const recordEmbeddingUpsertStmt = db.prepare(`INSERT OR REPLACE INTO record_embeddings (record_id, text_hash, embedding, model, dimension, updated_at) VALUES (?, ?, ?, ?, ?, ?) `);
   const upsertFtsStmt = db.prepare(`INSERT INTO records_fts (id, scope, namespace, leaf_name, parent_context, content_text, content_structured) VALUES (?, ?, ?, ?, ?, ?, ?)`);
 
-  async function persistEmbedding(record: MemoryRecord, text: string): Promise<void> {
+  async function resolveEmbeddingData(text: string): Promise<{ textHash: string; embedding: Buffer; model: string; dimension: number; updatedAt: string; cacheMiss: boolean } | undefined> {
     const textHash = embeddingClient.hashText(text);
     const cached = cacheSelectStmt.get(textHash) as { embedding: Buffer; model: string; dimension: number } | undefined;
     const now = new Date().toISOString();
     if (cached) {
       const vector = decodeEmbedding(cached.embedding, cached.dimension);
-      if (!vector.length) return;
-      recordEmbeddingUpsertStmt.run(record.id, textHash, cached.embedding, cached.model, cached.dimension, now);
-      return;
+      if (!vector.length) return undefined;
+      return { textHash, embedding: cached.embedding, model: cached.model, dimension: cached.dimension, updatedAt: now, cacheMiss: false };
     }
     const vector = await embeddingClient.embed(text);
-    if (!vector?.length) return;
-    const model = options.embeddingModel ?? 'nomic-embed-text';
-    const encoded = encodeEmbedding(vector);
-    cacheUpsertStmt.run(textHash, encoded, model, vector.length, now);
-    recordEmbeddingUpsertStmt.run(record.id, textHash, encoded, model, vector.length, now);
+    if (!vector?.length) return undefined;
+    return {
+      textHash,
+      embedding: encodeEmbedding(vector),
+      model: options.embeddingModel ?? 'nomic-embed-text',
+      dimension: vector.length,
+      updatedAt: now,
+      cacheMiss: true,
+    };
   }
 
   function semanticQueryVector(query: string): Promise<number[] | undefined> {
@@ -220,12 +225,16 @@ export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar 
         metadata: { createdAt: (selectRecord.get(id) as { created_at: string } | undefined)?.created_at ?? new Date().toISOString(), updatedAt: new Date().toISOString() },
       });
       const text = recordText(record);
+      const embedding = await resolveEmbeddingData(text);
       db.transaction(() => {
         upsertRecordStmt.run(record.id, record.scope, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? 'root', record.provenance.source, record.provenance.timestamp ?? null, record.provenance.adapter ?? null, record.provenance.origin ?? null, record.content.text ?? null, JSON.stringify(record.content.structured ?? {}), record.metadata?.createdAt ?? new Date().toISOString(), record.metadata?.updatedAt ?? new Date().toISOString());
         deleteFtsStmt.run(record.id);
         upsertFtsStmt.run(record.id, record.scope, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? 'root', record.content.text ?? '', JSON.stringify(record.content.structured ?? {}));
+        if (embedding) {
+          if (embedding.cacheMiss) cacheUpsertStmt.run(embedding.textHash, embedding.embedding, embedding.model, embedding.dimension, embedding.updatedAt);
+          recordEmbeddingUpsertStmt.run(record.id, embedding.textHash, embedding.embedding, embedding.model, embedding.dimension, embedding.updatedAt);
+        }
       })();
-      await persistEmbedding(record, text);
       return record;
     },
     syncPrune(id: string): MemoryRecord | undefined {
