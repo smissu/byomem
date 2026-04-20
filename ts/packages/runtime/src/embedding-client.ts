@@ -13,11 +13,30 @@ export interface EmbeddingClient {
   hashText(text: string): string;
 }
 
+type EmbeddingPayload = {
+  embedding?: unknown;
+  embeddings?: unknown;
+  data?: Array<{ embedding?: unknown }> ;
+};
+
 function fallbackEmbedding(text: string, dimension = 1536): number[] {
   const seed = createHash('sha256').update(text).digest();
   const vector = new Array<number>(dimension).fill(0);
   for (let i = 0; i < dimension; i += 1) vector[i] = (seed[i % seed.length] ?? 0) / 255;
   return vector;
+}
+
+function asEmbeddingVector(value: unknown): number[] | undefined {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'number') ? value : undefined;
+}
+
+function extractEmbedding(payload: EmbeddingPayload): number[] | undefined {
+  const directEmbeddings = asEmbeddingVector(payload.embeddings);
+  const nestedEmbeddings = Array.isArray(payload.embeddings) ? asEmbeddingVector(payload.embeddings[0]) : undefined;
+  return asEmbeddingVector(payload.embedding)
+    ?? asEmbeddingVector(payload.data?.[0]?.embedding)
+    ?? nestedEmbeddings
+    ?? directEmbeddings;
 }
 
 async function remoteEmbedding(url: string, model: string, text: string, timeoutMs?: number): Promise<number[] | undefined> {
@@ -31,8 +50,8 @@ async function remoteEmbedding(url: string, model: string, text: string, timeout
       signal: controller?.signal,
     });
     if (!response.ok) return undefined;
-    const payload = await response.json() as { embedding?: number[] };
-    return Array.isArray(payload.embedding) ? payload.embedding : undefined;
+    const payload = await response.json() as EmbeddingPayload;
+    return extractEmbedding(payload);
   } finally {
     if (timeout) clearTimeout(timeout);
   }

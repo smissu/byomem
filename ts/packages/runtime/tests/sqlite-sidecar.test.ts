@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openNativeStore } from '../src/store.js';
+import { EMBEDDING_TEXT_MAX_CHARS } from '../src/sqlite-sidecar.js';
 import { searchIndex } from '../src/search-index.js';
 
 function tempDir(): string {
@@ -116,6 +117,85 @@ describe('sqlite-backed parity slice', () => {
       });
       const row = store.sidecar?.db.prepare('SELECT * FROM record_embeddings WHERE record_id = ?').get(record.id) as { embedding: Buffer; dimension: number } | undefined;
       expect(calls.length).toBeGreaterThan(0);
+      expect(row?.embedding.length).toBeGreaterThan(0);
+      expect(row?.dimension).toBe(3);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('accepts OpenAI-style remote embedding responses', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3] }] }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+
+    try {
+      const store = openNativeStore({ baseDir: dir, embeddingBaseUrl: 'http://localhost:11434', embeddingModel: 'text-embedding-3-small' });
+      const record = await store.write({
+        scope: 'project',
+        identity: { namespace: 'byomem', leafName: 'OpenAI Shape', parentContext: 'Root' },
+        content: { text: 'openai embedding body' },
+        provenance: { source: 'fixtures' },
+      });
+      const row = store.sidecar?.db.prepare('SELECT * FROM record_embeddings WHERE record_id = ?').get(record.id) as { embedding: Buffer; dimension: number } | undefined;
+      expect(row?.embedding.length).toBeGreaterThan(0);
+      expect(row?.dimension).toBe(3);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('accepts plural embeddings remote responses', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ embeddings: [[0.4, 0.5, 0.6]] }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+
+    try {
+      const store = openNativeStore({ baseDir: dir, embeddingBaseUrl: 'http://localhost:11434', embeddingModel: 'nomic-embed-text' });
+      const record = await store.write({
+        scope: 'project',
+        identity: { namespace: 'byomem', leafName: 'Plural Embeddings Shape', parentContext: 'Root' },
+        content: { text: 'plural embeddings body' },
+        provenance: { source: 'fixtures' },
+      });
+      const row = store.sidecar?.db.prepare('SELECT * FROM record_embeddings WHERE record_id = ?').get(record.id) as { embedding: Buffer; dimension: number } | undefined;
+      expect(row?.embedding.length).toBeGreaterThan(0);
+      expect(row?.dimension).toBe(3);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('truncates oversized record text before requesting embeddings', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const prompts: string[] = [];
+    const oversizedText = `hook-prefix ${'x'.repeat(EMBEDDING_TEXT_MAX_CHARS * 2)} hook-suffix`;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { prompt?: string };
+      prompts.push(body.prompt ?? '');
+      return new Response(JSON.stringify({ embedding: [0.2, 0.4, 0.6] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    try {
+      const store = openNativeStore({ baseDir: dir, embeddingBaseUrl: 'http://localhost:11434', embeddingModel: 'nomic-embed-text', embeddingRequireRemote: true });
+      const record = await store.write({
+        scope: 'project',
+        identity: { namespace: 'byomem-session', leafName: 'Oversized Session', parentContext: 'Root' },
+        content: { text: oversizedText, structured: { transcriptPreview: [oversizedText] } },
+        provenance: { source: 'fixtures' },
+      });
+      const row = store.sidecar?.db.prepare('SELECT * FROM record_embeddings WHERE record_id = ?').get(record.id) as { embedding: Buffer; dimension: number } | undefined;
+      const persisted = store.sidecar?.read(record.id);
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]?.length).toBeLessThanOrEqual(EMBEDDING_TEXT_MAX_CHARS);
+      expect(prompts[0]).toContain('hook-prefix');
+      expect(prompts[0]).toContain('hook-suffix');
+      expect(prompts[0]).toContain('[truncated for embedding]');
+      expect(persisted?.content.text).toBe(oversizedText);
       expect(row?.embedding.length).toBeGreaterThan(0);
       expect(row?.dimension).toBe(3);
     } finally {

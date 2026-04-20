@@ -29,6 +29,8 @@ export interface SqliteSidecar {
 }
 
 const DEFAULT_DIMENSION = 1536;
+export const EMBEDDING_TEXT_MAX_CHARS = 4000;
+const EMBEDDING_TEXT_TRUNCATION_MARKER = ' …[truncated for embedding]… ';
 
 function resolveDbPath(options: SqliteSidecarOptions): string {
   return resolve(options.baseDir, options.dbFile ?? 'byomem-index.sqlite');
@@ -61,6 +63,14 @@ function ensureSchema(db: BetterSqliteDatabase): void {
 
 function recordText(record: MemoryRecord): string {
   return [record.id, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? '', record.content.text ?? '', JSON.stringify(record.content.structured ?? {})].join(' ');
+}
+
+function truncateEmbeddingText(text: string, maxChars = EMBEDDING_TEXT_MAX_CHARS): string {
+  if (text.length <= maxChars) return text;
+  const budget = Math.max(0, maxChars - EMBEDDING_TEXT_TRUNCATION_MARKER.length);
+  const head = Math.ceil(budget * 0.7);
+  const tail = Math.max(0, budget - head);
+  return `${text.slice(0, head)}${EMBEDDING_TEXT_TRUNCATION_MARKER}${tail > 0 ? text.slice(-tail) : ''}`;
 }
 
 function encodeEmbedding(embedding: number[]): Buffer {
@@ -128,7 +138,8 @@ export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar 
   const upsertFtsStmt = db.prepare(`INSERT INTO records_fts (id, scope, namespace, leaf_name, parent_context, content_text, content_structured) VALUES (?, ?, ?, ?, ?, ?, ?)`);
 
   async function resolveEmbeddingData(text: string): Promise<{ textHash: string; embedding: Buffer; model: string; dimension: number; updatedAt: string; cacheMiss: boolean } | undefined> {
-    const textHash = embeddingClient.hashText(text);
+    const embeddingText = truncateEmbeddingText(text);
+    const textHash = embeddingClient.hashText(embeddingText);
     const cached = cacheSelectStmt.get(textHash) as { embedding: Buffer; model: string; dimension: number } | undefined;
     const now = new Date().toISOString();
     if (cached) {
@@ -136,7 +147,7 @@ export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar 
       if (!vector.length) return undefined;
       return { textHash, embedding: cached.embedding, model: cached.model, dimension: cached.dimension, updatedAt: now, cacheMiss: false };
     }
-    const vector = await embeddingClient.embed(text);
+    const vector = await embeddingClient.embed(embeddingText);
     if (!vector?.length) return undefined;
     return {
       textHash,
@@ -149,7 +160,7 @@ export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar 
   }
 
   function semanticQueryVector(query: string): Promise<number[] | undefined> {
-    return embeddingClient.embed(query);
+    return embeddingClient.embed(truncateEmbeddingText(query));
   }
 
   function lexicalMatches(rows: Array<{ id: string; scope: string; namespace: string; leaf_name: string; parent_context: string; provenance_source: string; provenance_timestamp: string | null; provenance_adapter: string | null; provenance_origin: string | null; content_text: string | null; content_structured: string | null; created_at: string; updated_at: string }>, query: string): MemoryRecord[] {

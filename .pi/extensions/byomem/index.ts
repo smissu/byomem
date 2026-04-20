@@ -1,11 +1,13 @@
 import type { ExtensionAPI } from '@mariozechner/pi-coding-agent';
-import { existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { openNativeStore, openReadPath, openWritePath, searchIndex, resolveRuntimeMode, enforceNoPythonDefaultPath, captureSessionCheckpoint, type SessionCaptureInput } from '../../../ts/packages/runtime/src/index.ts';
 
 const runtimeBaseDir = process.env.BYOMEM_RUNTIME_BASE_DIR ?? new URL('../../..//', import.meta.url).pathname;
 const embeddingConfig = resolveEmbeddingConfig();
+const sessionCaptureConfig = resolveSessionCaptureConfig();
+const summarizerConfig = resolveSummarizerConfig();
 const nativeStore = openNativeStore({
   baseDir: runtimeBaseDir,
   embeddingBaseUrl: embeddingConfig.embeddingBaseUrl,
@@ -15,6 +17,35 @@ const nativeStore = openNativeStore({
 });
 const readPath = openReadPath(nativeStore);
 const writePath = openWritePath(nativeStore);
+const debugLogPath = join(runtimeBaseDir, 'queue', 'debug', 'byomem-turn-end.jsonl');
+
+function logTurnEndDebug(entry: Record<string, unknown>): void {
+  try {
+    mkdirSync(join(runtimeBaseDir, 'queue', 'debug'), { recursive: true });
+    appendFileSync(debugLogPath, `${JSON.stringify({ ts: new Date().toISOString(), ...entry })}\n`, 'utf8');
+  } catch {
+    // best-effort diagnostics only
+  }
+}
+
+
+export interface ByomemSummarizerConfig {
+  source: 'config' | 'env' | 'default';
+  configPath?: string;
+  generationBaseUrl?: string;
+  generationModel?: string;
+  generationTimeoutMs?: number;
+}
+
+export interface ByomemSessionCaptureConfig {
+  source: 'config' | 'default';
+  configPath?: string;
+  enabled: boolean;
+  thresholdTurns?: number;
+  largeTurnChars?: number;
+  idleFlushSeconds?: number;
+  minTurns?: number;
+}
 
 export interface ByomemEmbeddingConfig {
   source: 'config' | 'env' | 'default';
@@ -105,14 +136,72 @@ function normalizePruneIntent(params: unknown) {
   throw new Error('Invalid byomem_prune intent');
 }
 
-function parseConfigYaml(content: string): { embeddings?: { base_url?: string; model?: string; request_timeout?: number } } {
-  const embeddingsMatch = content.match(/embeddings:\s*([\s\S]*?)(?:\n\S|$)/);
-  if (!embeddingsMatch) return {};
-  const block = embeddingsMatch[1] ?? '';
-  const baseUrl = block.match(/base_url:\s*(.+)/)?.[1]?.trim();
-  const model = block.match(/model:\s*(.+)/)?.[1]?.trim();
-  const requestTimeout = block.match(/request_timeout:\s*(\d+)/)?.[1];
-  return { embeddings: { base_url: baseUrl, model, request_timeout: requestTimeout ? Number(requestTimeout) : undefined } };
+function extractYamlBlock(content: string, key: string): string | undefined {
+  const match = content.match(new RegExp(`${key}:\\s*([\\s\\S]*?)(?:\\n\\S|$)`));
+  return match?.[1] ?? undefined;
+}
+
+function parseConfigYaml(content: string): { embeddings?: { base_url?: string; model?: string; request_timeout?: number }; summarizer?: { base_url?: string; model?: string; max_tokens?: number }; session_capture?: { enabled?: boolean; threshold_turns?: number; large_turn_chars?: number; idle_flush_seconds?: number; min_turns?: number } } {
+  const embeddingsBlock = extractYamlBlock(content, 'embeddings') ?? '';
+  const summarizerBlock = extractYamlBlock(content, 'summarizer') ?? '';
+  const sessionCaptureBlock = extractYamlBlock(content, 'session_capture') ?? '';
+  const parseBool = (value: string | undefined) => value?.trim() === 'true' ? true : value?.trim() === 'false' ? false : undefined;
+  return {
+    embeddings: {
+      base_url: embeddingsBlock.match(/base_url:\s*(.+)/)?.[1]?.trim(),
+      model: embeddingsBlock.match(/model:\s*(.+)/)?.[1]?.trim(),
+      request_timeout: (() => { const value = embeddingsBlock.match(/request_timeout:\s*(\d+)/)?.[1]; return value ? Number(value) : undefined; })(),
+    },
+    summarizer: {
+      base_url: summarizerBlock.match(/base_url:\s*(.+)/)?.[1]?.trim(),
+      model: summarizerBlock.match(/model:\s*(.+)/)?.[1]?.trim(),
+      max_tokens: (() => { const value = summarizerBlock.match(/max_tokens:\s*(\d+)/)?.[1]; return value ? Number(value) : undefined; })(),
+    },
+    session_capture: {
+      enabled: parseBool(sessionCaptureBlock.match(/enabled:\s*(.+)/)?.[1]),
+      threshold_turns: (() => { const value = sessionCaptureBlock.match(/threshold_turns:\s*(\d+)/)?.[1]; return value ? Number(value) : undefined; })(),
+      large_turn_chars: (() => { const value = sessionCaptureBlock.match(/large_turn_chars:\s*(\d+)/)?.[1]; return value ? Number(value) : undefined; })(),
+      idle_flush_seconds: (() => { const value = sessionCaptureBlock.match(/idle_flush_seconds:\s*(\d+)/)?.[1]; return value ? Number(value) : undefined; })(),
+      min_turns: (() => { const value = sessionCaptureBlock.match(/min_turns:\s*(\d+)/)?.[1]; return value ? Number(value) : undefined; })(),
+    },
+  };
+}
+
+
+function resolveConfigPath(): string {
+  return process.env.BYOMEM_CONFIG_PATH ?? resolve(homedir(), '.byomem', 'config.yaml');
+}
+
+function resolveSummarizerConfig(): ByomemSummarizerConfig {
+  const configPath = resolveConfigPath();
+  if (existsSync(configPath)) {
+    const parsed = parseConfigYaml(readFileSync(configPath, 'utf8'));
+    return {
+      source: 'config',
+      configPath,
+      generationBaseUrl: parsed.summarizer?.base_url,
+      generationModel: parsed.summarizer?.model,
+      generationTimeoutMs: undefined,
+    };
+  }
+  return { source: 'default' };
+}
+
+function resolveSessionCaptureConfig(): ByomemSessionCaptureConfig {
+  const configPath = resolveConfigPath();
+  if (existsSync(configPath)) {
+    const parsed = parseConfigYaml(readFileSync(configPath, 'utf8'));
+    return {
+      source: 'config',
+      configPath,
+      enabled: parsed.session_capture?.enabled ?? true,
+      thresholdTurns: parsed.session_capture?.threshold_turns,
+      largeTurnChars: parsed.session_capture?.large_turn_chars,
+      idleFlushSeconds: parsed.session_capture?.idle_flush_seconds,
+      minTurns: parsed.session_capture?.min_turns,
+    };
+  }
+  return { source: 'default', enabled: true };
 }
 
 function resolveEmbeddingConfig(): ByomemEmbeddingConfig {
@@ -128,7 +217,7 @@ function resolveEmbeddingConfig(): ByomemEmbeddingConfig {
     };
   }
 
-  const configPath = process.env.BYOMEM_CONFIG_PATH ?? resolve(homedir(), '.byomem', 'config.yaml');
+  const configPath = resolveConfigPath();
   if (existsSync(configPath)) {
     const parsed = parseConfigYaml(readFileSync(configPath, 'utf8'));
     return {
@@ -210,11 +299,41 @@ function resolveSessionCaptureInput(ctx: Record<string, unknown>, eventName: str
 }
 
 async function captureSessionFromHook(eventName: string, ctx: Record<string, unknown>, event: TurnEndEvent): Promise<void> {
+  logTurnEndDebug({ hook: eventName, phase: 'entered' });
   const input = resolveSessionCaptureInput(ctx, eventName, event);
-  if (!input) return;
+  logTurnEndDebug({
+    hook: eventName,
+    phase: 'session_capture_input_resolved',
+    resolved: Boolean(input),
+    sessionId: input?.sessionId,
+    transcriptPath: input?.transcriptPath,
+  });
+  if (!input) {
+    logTurnEndDebug({ hook: eventName, phase: 'capture_skipped', success: false, reason: 'missing_session_capture_input' });
+    return;
+  }
   try {
-    await captureSessionCheckpoint(nativeStore, { baseDir: runtimeBaseDir }, input);
-  } catch {
+    if (!sessionCaptureConfig.enabled) return;
+    await captureSessionCheckpoint(nativeStore, {
+      baseDir: runtimeBaseDir,
+      thresholdTurns: sessionCaptureConfig.thresholdTurns,
+      largeTurnChars: sessionCaptureConfig.largeTurnChars,
+      idleFlushSeconds: sessionCaptureConfig.idleFlushSeconds,
+      minTurns: sessionCaptureConfig.minTurns,
+      generation: {
+        baseUrl: summarizerConfig.generationBaseUrl,
+        model: summarizerConfig.generationModel,
+        timeoutMs: summarizerConfig.generationTimeoutMs,
+      },
+    }, input);
+    logTurnEndDebug({ hook: eventName, phase: 'capture_completed', success: true });
+  } catch (error) {
+    logTurnEndDebug({
+      hook: eventName,
+      phase: 'capture_failed',
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return;
   }
 }
@@ -241,6 +360,16 @@ export function byomem_runtime_status() {
     embeddingModel: embeddingConfig.embeddingModel,
     embeddingTimeoutMs: embeddingConfig.embeddingTimeoutMs,
     embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
+    summarizerConfigSource: summarizerConfig.source,
+    summarizerConfigPath: summarizerConfig.configPath,
+    summarizerBaseUrl: summarizerConfig.generationBaseUrl,
+    summarizerModel: summarizerConfig.generationModel,
+    sessionCaptureConfigSource: sessionCaptureConfig.source,
+    sessionCaptureEnabled: sessionCaptureConfig.enabled,
+    sessionCaptureThresholdTurns: sessionCaptureConfig.thresholdTurns,
+    sessionCaptureLargeTurnChars: sessionCaptureConfig.largeTurnChars,
+    sessionCaptureIdleFlushSeconds: sessionCaptureConfig.idleFlushSeconds,
+    sessionCaptureMinTurns: sessionCaptureConfig.minTurns,
   };
 }
 

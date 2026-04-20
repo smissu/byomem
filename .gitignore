@@ -19,6 +19,7 @@ byomem-index.sqlite
 byomem-index.sqlite-shm
 byomem-index.sqlite-wal
 native-store.json
+node_modules/
 google-styleguide/
 mcp-context-forge/
 opencode_repo/

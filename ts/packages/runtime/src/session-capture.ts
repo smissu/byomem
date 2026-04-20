@@ -1,10 +1,45 @@
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { MemoryRecord, QueueEvent, WriteIntent } from './contracts.js';
-import type { NativeStore } from './store.js';
+import { openGenerationClient, type GenerationClientOptions } from './generation-client.js';
 import { openQueueRuntime, type QueueRuntime } from './queue-runtime.js';
+import type { NativeStore } from './store.js';
 
 export interface SessionCaptureOptions {
   baseDir: string;
+  thresholdTurns?: number;
+  largeTurnChars?: number;
+  idleFlushSeconds?: number;
+  minTurns?: number;
+  summarizeOnBeforeSwitch?: boolean;
+  generation?: GenerationClientOptions;
+  userMessageMax?: number;
+  assistantMessageMax?: number;
+}
+
+interface SessionTurn {
+  id: string;
+  timestamp: string;
+  user: string;
+  assistant: string;
+}
+
+interface SessionCaptureState {
+  offset: number;
+  pendingTurns: SessionTurn[];
+  lastTranscriptPath?: string;
+  lastAgent?: string;
+  lastModel?: string;
+  lastActivityAt?: string;
+}
+
+interface SessionCaptureSummaryRequest {
+  sessionId: string;
+  turns: SessionTurn[];
+  agent?: string;
+  model?: string;
+  event?: string;
 }
 
 export interface SessionCaptureResult {
@@ -24,10 +59,285 @@ export interface SessionCaptureInput {
   transcriptBytes?: number;
 }
 
+export type SessionCaptureReason = 'checkpointed' | 'threshold' | 'large-turn' | 'idle' | 'final' | 'switch' | 'no-pending-turns';
+
 export interface SessionCaptureWriteResult {
   checkpoint: QueueEvent[];
   record: MemoryRecord;
   rollup?: MemoryRecord;
+  pendingTurns: number;
+  checkpointOffset: number;
+  reason: SessionCaptureReason;
+}
+
+const SESSION_CAPTURE_STATE_FILE = 'session-capture-state.json';
+const DEFAULT_THRESHOLD_TURNS = 3;
+const DEFAULT_MIN_TURNS = 2;
+const DEFAULT_LARGE_TURN_CHARS = 4096;
+const DEFAULT_USER_MESSAGE_MAX = 2000;
+const DEFAULT_ASSISTANT_MESSAGE_MAX = 3000;
+const ROLLUP_SYSTEM_PROMPT = [
+  'You write compact memory rollups for coding sessions.',
+  'Summarize only the provided pending turns.',
+  'Return 2-4 short bullet points and one final sentence.',
+  'Keep concrete facts: files, functions, models, errors, decisions, and next steps.',
+  'Do not add markdown headings or code fences.',
+].join(' ');
+
+function statePath(baseDir: string): string {
+  return resolve(baseDir, 'queue', SESSION_CAPTURE_STATE_FILE);
+}
+
+function loadAllState(baseDir: string): Record<string, SessionCaptureState> {
+  const path = statePath(baseDir);
+  if (!existsSync(path)) return {};
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as Record<string, SessionCaptureState>;
+  } catch {
+    return {};
+  }
+}
+
+function saveAllState(baseDir: string, state: Record<string, SessionCaptureState>): void {
+  const path = statePath(baseDir);
+  mkdirSync(resolve(baseDir, 'queue'), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+}
+
+function loadSessionState(baseDir: string, sessionId: string): SessionCaptureState {
+  return loadAllState(baseDir)[sessionId] ?? { offset: 0, pendingTurns: [] };
+}
+
+function saveSessionState(baseDir: string, sessionId: string, state: SessionCaptureState): void {
+  const all = loadAllState(baseDir);
+  all[sessionId] = state;
+  saveAllState(baseDir, all);
+}
+
+function clearSessionState(baseDir: string, sessionId: string): void {
+  const all = loadAllState(baseDir);
+  if (!(sessionId in all)) return;
+  delete all[sessionId];
+  saveAllState(baseDir, all);
+}
+
+function clampThreshold(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && (value as number) > 0 ? Math.max(1, Math.floor(value as number)) : fallback;
+}
+
+function hashTurn(turn: SessionTurn): string {
+  return createHash('sha256').update(JSON.stringify(turn)).digest('hex').slice(0, 16);
+}
+
+function hashFlushKey(sessionId: string, checkpointOffset: number, turns: SessionTurn[]): string {
+  return createHash('sha256').update(`${sessionId}:${checkpointOffset}:${turns.map((turn) => turn.id).join('|')}`).digest('hex').slice(0, 12);
+}
+
+function eventMessage(msg: Record<string, unknown>): Record<string, unknown> {
+  return msg.message && typeof msg.message === 'object' ? (msg.message as Record<string, unknown>) : {};
+}
+
+function eventMessageRole(msg: Record<string, unknown>): string | undefined {
+  const message = eventMessage(msg);
+  return typeof message.role === 'string' ? message.role : undefined;
+}
+
+function eventMessageUuid(msg: Record<string, unknown>): string | undefined {
+  const message = eventMessage(msg);
+  const value = message.uuid ?? message.id ?? msg.uuid ?? msg.id;
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function eventParentUuid(msg: Record<string, unknown>): string | undefined {
+  const message = eventMessage(msg);
+  const value = message.parentUUID ?? message.parentUuid ?? message.parentId ?? msg.parentUUID ?? msg.parentUuid ?? msg.parentId;
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function eventMessageTimestamp(msg: Record<string, unknown>): string {
+  const message = eventMessage(msg);
+  const value = message.timestamp ?? msg.timestamp;
+  return value === undefined || value === null ? '' : String(value);
+}
+
+function eventText(msg: Record<string, unknown>): string {
+  const message = eventMessage(msg);
+  const content = message.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((item) => item && typeof item === 'object' && (item as Record<string, unknown>).type === 'text')
+      .map((item) => String((item as Record<string, unknown>).text ?? ''))
+      .join(' ');
+  }
+  return '';
+}
+
+function joinAssistant(messages: Array<Record<string, unknown>>, maxLen: number): string {
+  return messages
+    .map((message) => eventText(message).trim())
+    .filter(Boolean)
+    .join('\n\n')
+    .slice(0, maxLen);
+}
+
+function parseEventTranscriptTurns(messages: Array<Record<string, unknown>>, options: SessionCaptureOptions): SessionTurn[] {
+  const turns: SessionTurn[] = [];
+  const userMessageMax = clampThreshold(options.userMessageMax, DEFAULT_USER_MESSAGE_MAX);
+  const assistantMessageMax = clampThreshold(options.assistantMessageMax, DEFAULT_ASSISTANT_MESSAGE_MAX);
+  const messageById = new Map<string, Record<string, unknown>>();
+  const childrenByParent = new Map<string, Array<Record<string, unknown>>>();
+  const userMessages = messages.filter((message) => eventMessageRole(message) === 'user');
+
+  for (const message of messages) {
+    const id = eventMessageUuid(message);
+    if (id) messageById.set(id, message);
+    const parent = eventParentUuid(message);
+    if (parent) {
+      const existing = childrenByParent.get(parent) ?? [];
+      existing.push(message);
+      childrenByParent.set(parent, existing);
+    }
+  }
+
+  for (const userMessage of userMessages) {
+    const userId = eventMessageUuid(userMessage);
+    if (!userId) continue;
+    const queue = [...(childrenByParent.get(userId) ?? [])];
+    const visited = new Set<string>([userId]);
+    const assistantMessages: Array<Record<string, unknown>> = [];
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const currentId = eventMessageUuid(current);
+      if (currentId) {
+        if (visited.has(currentId)) continue;
+        visited.add(currentId);
+      }
+      const role = eventMessageRole(current);
+      if (role === 'assistant') {
+        assistantMessages.push(current);
+      }
+      if ((role === 'assistant' || role === 'toolResult') && currentId) {
+        queue.push(...(childrenByParent.get(currentId) ?? []));
+      }
+    }
+
+    const assistant = joinAssistant(assistantMessages, assistantMessageMax);
+    if (!assistant.trim()) continue;
+    const user = eventText(userMessage).slice(0, userMessageMax).trim();
+    if (!user) continue;
+    turns.push({
+      id: userId,
+      timestamp: eventMessageTimestamp(userMessage),
+      user,
+      assistant,
+    });
+  }
+
+  return turns;
+}
+
+function parseSimpleTranscriptTurns(text: string): SessionTurn[] {
+  const turns: SessionTurn[] = [];
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  let activeUser: string | undefined;
+  const assistantParts: string[] = [];
+
+  const flush = () => {
+    if (!activeUser) return;
+    const assistant = assistantParts.join('\n').trim();
+    if (assistant) {
+      const turn: SessionTurn = { id: hashTurn({ id: '', timestamp: '', user: activeUser, assistant }), timestamp: '', user: activeUser, assistant };
+      turns.push(turn);
+    }
+    activeUser = undefined;
+    assistantParts.length = 0;
+  };
+
+  for (const line of lines) {
+    if (line.startsWith('user:')) {
+      flush();
+      activeUser = line.slice('user:'.length).trim();
+      continue;
+    }
+    if (line.startsWith('assistant:')) {
+      assistantParts.push(line.slice('assistant:'.length).trim());
+    }
+  }
+  flush();
+
+  return turns;
+}
+
+function parseTurnsFromTranscriptBuffer(buffer: Buffer, startOffset: number, options: SessionCaptureOptions): { turns: SessionTurn[]; endOffset: number } {
+  const endOffset = buffer.length;
+  if (startOffset >= endOffset) return { turns: [], endOffset };
+  const slice = buffer.toString('utf8', startOffset);
+  const lines = slice.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const messages: Array<Record<string, unknown>> = [];
+
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      messages.push(parsed);
+    } catch {
+      // non-JSON line; handled by fallback parser below
+    }
+  }
+
+  const looksLikeEventTranscript = messages.some((message) => message.type === 'message' && message.message && typeof message.message === 'object');
+  if (looksLikeEventTranscript) {
+    return { turns: parseEventTranscriptTurns(messages, options), endOffset };
+  }
+  return { turns: parseSimpleTranscriptTurns(slice), endOffset };
+}
+
+function isLargeTurn(turn: SessionTurn, threshold: number): boolean {
+  return threshold > 0 && (turn.user.length + turn.assistant.length) >= threshold;
+}
+
+function summarizeTurnsPrompt(request: SessionCaptureSummaryRequest): string {
+  const body = request.turns.map((turn, index) => [
+    `Turn ${index + 1} (${turn.id}):`,
+    `User: ${turn.user}`,
+    `Assistant: ${turn.assistant}`,
+  ].join('\n')).join('\n\n');
+
+  return [
+    'Summarize the pending Pi session turns into a compact memory rollup.',
+    request.sessionId ? `Session: ${request.sessionId}` : undefined,
+    request.agent ? `Agent: ${request.agent}` : undefined,
+    request.model ? `Conversation model: ${request.model}` : undefined,
+    request.event ? `Flush trigger: ${request.event}` : undefined,
+    '',
+    body,
+  ].filter(Boolean).join('\n');
+}
+
+async function generateRollupSummary(options: SessionCaptureOptions, request: SessionCaptureSummaryRequest): Promise<string> {
+  const client = openGenerationClient(options.generation ?? {});
+  const summary = await client.generate({
+    prompt: summarizeTurnsPrompt(request),
+    system: ROLLUP_SYSTEM_PROMPT,
+  });
+  return summary.trim();
+}
+
+function summarizeFallback(turns: SessionTurn[]): string {
+  return turns.map((turn, index) => `- ${index + 1}. ${turn.user} => ${turn.assistant}`).join('\n').slice(0, 1600);
+}
+
+function determineFlushReason(input: SessionCaptureInput, pendingTurns: SessionTurn[], options: SessionCaptureOptions): SessionCaptureReason | undefined {
+  if (pendingTurns.length === 0) return 'no-pending-turns';
+  if (input.final) return 'final';
+  if (input.idle) return 'idle';
+  if (options.summarizeOnBeforeSwitch === true && input.event === 'session_before_switch') return 'switch';
+  const thresholdTurns = clampThreshold(options.thresholdTurns, DEFAULT_THRESHOLD_TURNS);
+  if (pendingTurns.length >= thresholdTurns) return 'threshold';
+  const largeTurnChars = clampThreshold(options.largeTurnChars, DEFAULT_LARGE_TURN_CHARS);
+  if (pendingTurns.some((turn) => isLargeTurn(turn, largeTurnChars))) return 'large-turn';
+  return undefined;
 }
 
 function deriveLeafName(sessionId: string): string {
@@ -35,7 +345,7 @@ function deriveLeafName(sessionId: string): string {
   return trimmed.length ? trimmed : 'session-capture';
 }
 
-function buildSessionIntent(input: SessionCaptureInput, transcriptText: string): WriteIntent {
+function buildSessionIntent(input: SessionCaptureInput, transcriptText: string, pendingTurns: SessionTurn[], checkpointOffset: number): WriteIntent {
   const lines = transcriptText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   return {
     scope: 'project',
@@ -59,6 +369,8 @@ function buildSessionIntent(input: SessionCaptureInput, transcriptText: string):
         transcriptBytes: input.transcriptBytes ?? Buffer.byteLength(transcriptText, 'utf8'),
         messageCount: input.messageCount ?? lines.length,
         transcriptPreview: lines.slice(-5),
+        checkpointOffset,
+        pendingTurns: pendingTurns.length,
       },
     },
     provenance: {
@@ -69,31 +381,33 @@ function buildSessionIntent(input: SessionCaptureInput, transcriptText: string):
   };
 }
 
-function buildSessionRollupIntent(input: SessionCaptureInput, transcriptText: string): WriteIntent {
-  const lines = transcriptText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+function buildSessionRollupIntent(input: SessionCaptureInput, summary: string, turns: SessionTurn[], checkpointOffset: number, reason: SessionCaptureReason): WriteIntent {
+  const rollupKey = hashFlushKey(input.sessionId, checkpointOffset, turns);
+  const sessionLeaf = deriveLeafName(input.sessionId);
   return {
     scope: 'project',
     identity: {
       namespace: 'byomem-session',
-      leafName: deriveLeafName(input.sessionId),
+      leafName: `${sessionLeaf}-rollup-${rollupKey}`,
       parentContext: 'root',
-      stableKey: `project:byomem-session:root:${deriveLeafName(input.sessionId)}:rollup`,
+      stableKey: `project:byomem-session:root:${sessionLeaf}:rollup:${rollupKey}`,
     },
     content: {
-      text: `Session ${input.sessionId} distilled rollup from ${input.event ?? 'turn_end'}`,
+      text: summary,
       structured: {
         kind: 'rollup',
         sessionId: input.sessionId,
         event: input.event ?? 'turn_end',
         final: input.final ?? false,
         idle: input.idle ?? false,
+        flushReason: reason,
         agent: input.agent ?? null,
         model: input.model ?? null,
         transcriptPath: input.transcriptPath,
-        transcriptBytes: input.transcriptBytes ?? Buffer.byteLength(transcriptText, 'utf8'),
-        messageCount: input.messageCount ?? lines.length,
-        transcriptPreview: lines.slice(-8),
-        sourceStableKey: `project:byomem-session:root:${deriveLeafName(input.sessionId)}`,
+        checkpointOffset,
+        pendingTurns: turns.length,
+        pendingTurnIds: turns.map((turn) => turn.id),
+        sourceStableKey: `project:byomem-session:root:${sessionLeaf}`,
       },
     },
     provenance: {
@@ -119,10 +433,59 @@ export async function emitSessionRecord(store: NativeStore, intent: WriteIntent,
   };
 }
 
-export async function captureSessionCheckpoint(store: NativeStore, _options: SessionCaptureOptions, input: SessionCaptureInput): Promise<SessionCaptureWriteResult> {
-  const transcriptText = readFileSync(input.transcriptPath, 'utf8');
-  const record = await store.write(buildSessionIntent(input, transcriptText));
-  const shouldRollup = Boolean(input.final || input.idle);
-  const rollup = shouldRollup ? await store.write(buildSessionRollupIntent(input, transcriptText)) : undefined;
-  return { checkpoint: [], record, rollup };
+export async function captureSessionCheckpoint(store: NativeStore, options: SessionCaptureOptions, input: SessionCaptureInput): Promise<SessionCaptureWriteResult> {
+  const transcriptBuffer = readFileSync(input.transcriptPath);
+  const transcriptText = transcriptBuffer.toString('utf8');
+  const state = loadSessionState(options.baseDir, input.sessionId);
+  const { turns: newTurns, endOffset } = parseTurnsFromTranscriptBuffer(transcriptBuffer, state.offset || 0, options);
+  const pendingTurns = [...(state.pendingTurns ?? []), ...newTurns];
+  const record = await store.write(buildSessionIntent(input, transcriptText, pendingTurns, endOffset));
+  const reason = determineFlushReason(input, pendingTurns, options);
+
+  if (reason === 'no-pending-turns') {
+    saveSessionState(options.baseDir, input.sessionId, {
+      offset: endOffset,
+      pendingTurns: [],
+      lastTranscriptPath: input.transcriptPath,
+      lastAgent: input.agent,
+      lastModel: input.model,
+      lastActivityAt: new Date().toISOString(),
+    });
+    return { checkpoint: [], record, rollup: undefined, pendingTurns: 0, checkpointOffset: endOffset, reason };
+  }
+
+  const nextState: SessionCaptureState = {
+    offset: endOffset,
+    pendingTurns,
+    lastTranscriptPath: input.transcriptPath,
+    lastAgent: input.agent,
+    lastModel: input.model,
+    lastActivityAt: new Date().toISOString(),
+  };
+
+  const minTurns = clampThreshold(options.minTurns, DEFAULT_MIN_TURNS);
+  const forceFlush = reason === 'final' || reason === 'idle' || reason === 'switch';
+  if (!reason || (!forceFlush && pendingTurns.length < minTurns)) {
+    saveSessionState(options.baseDir, input.sessionId, nextState);
+    return { checkpoint: [], record, rollup: undefined, pendingTurns: pendingTurns.length, checkpointOffset: endOffset, reason: 'checkpointed' };
+  }
+
+  const summary = (await generateRollupSummary(options, {
+    sessionId: input.sessionId,
+    turns: pendingTurns,
+    agent: input.agent,
+    model: input.model,
+    event: input.event,
+  }).catch(() => summarizeFallback(pendingTurns))) || summarizeFallback(pendingTurns);
+
+  const rollup = await store.write(buildSessionRollupIntent(input, summary, pendingTurns, endOffset, reason));
+  saveSessionState(options.baseDir, input.sessionId, {
+    offset: endOffset,
+    pendingTurns: [],
+    lastTranscriptPath: input.transcriptPath,
+    lastAgent: input.agent,
+    lastModel: input.model,
+    lastActivityAt: new Date().toISOString(),
+  });
+  return { checkpoint: [], record, rollup, pendingTurns: 0, checkpointOffset: endOffset, reason };
 }
