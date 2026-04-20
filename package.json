@@ -5,7 +5,8 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "build": "tsc -p tsconfig.build.json && npm --prefix ts/packages/runtime run build"
+    "build": "tsc -p tsconfig.build.json && npm --prefix ts/packages/runtime run build",
+    "byomem:cli": "node ts/packages/runtime/dist/cli.js"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

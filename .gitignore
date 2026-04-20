@@ -15,6 +15,10 @@ queue/
 tmp/
 watch_*
 tmp_ollama_descripterizer_results.json
+byomem-index.sqlite
+byomem-index.sqlite-shm
+byomem-index.sqlite-wal
+native-store.json
 google-styleguide/
 mcp-context-forge/
 opencode_repo/
