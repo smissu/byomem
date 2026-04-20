@@ -12,6 +12,7 @@ type CliOptions = {
   embeddingBaseUrl?: string;
   embeddingModel?: string;
   embeddingTimeoutMs?: number;
+  embeddingRequireRemote?: boolean;
   generationBaseUrl?: string;
   generationModel?: string;
   generationTimeoutMs?: number;
@@ -87,7 +88,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   const isGenerationCommand = GENERATION_COMMANDS.has(command);
-  const store = isGenerationCommand ? undefined : openNativeStore(options);
+  const store = isGenerationCommand ? undefined : openNativeStore({ ...options, embeddingRequireRemote: true });
   try {
     if (command === 'store') {
       if (!store) throw new Error('Missing native store');
