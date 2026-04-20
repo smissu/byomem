@@ -2,9 +2,9 @@ import type { ExtensionAPI } from '@mariozechner/pi-coding-agent';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
-import { openNativeStore, openReadPath, openWritePath, searchIndex, resolveRuntimeMode, enforceNoPythonDefaultPath } from '../../../ts/packages/runtime/src/index.ts';
+import { openNativeStore, openReadPath, openWritePath, searchIndex, resolveRuntimeMode, enforceNoPythonDefaultPath, captureSessionCheckpoint, type SessionCaptureInput } from '../../../ts/packages/runtime/src/index.ts';
 
-const runtimeBaseDir = new URL('../../..//', import.meta.url).pathname;
+const runtimeBaseDir = process.env.BYOMEM_RUNTIME_BASE_DIR ?? new URL('../../..//', import.meta.url).pathname;
 const embeddingConfig = resolveEmbeddingConfig();
 const nativeStore = openNativeStore({
   baseDir: runtimeBaseDir,
@@ -143,6 +143,82 @@ function resolveEmbeddingConfig(): ByomemEmbeddingConfig {
   return { source: 'default' };
 }
 
+function resolveSessionManagerDetails(sessionManager: unknown) {
+  const details = sessionManager as { getSessionId?: () => unknown; getSessionFile?: () => unknown; getEntries?: () => unknown } | undefined;
+  const sessionId = typeof details?.getSessionId === 'function' ? details.getSessionId() : undefined;
+  const sessionFile = typeof details?.getSessionFile === 'function' ? details.getSessionFile() : undefined;
+  const entries = typeof details?.getEntries === 'function' ? details.getEntries() : undefined;
+  return {
+    sessionId: typeof sessionId === 'string' ? sessionId : undefined,
+    sessionFile: typeof sessionFile === 'string'
+      ? sessionFile
+      : sessionFile && typeof sessionFile === 'object' && 'path' in (sessionFile as Record<string, unknown>) && typeof (sessionFile as Record<string, unknown>).path === 'string'
+        ? (sessionFile as Record<string, unknown>).path as string
+        : undefined,
+    entryCount: Array.isArray(entries) ? entries.length : undefined,
+  };
+}
+
+type TurnEndEvent = { type?: unknown; message?: unknown; toolResults?: unknown; messages?: unknown[]; sessionId?: unknown; transcriptPath?: unknown };
+
+function resolveSessionCaptureInput(ctx: Record<string, unknown>, eventName: string, event: TurnEndEvent): SessionCaptureInput | null {
+  const sessionManagerDetails = resolveSessionManagerDetails(ctx.sessionManager);
+  const sessionId = sessionManagerDetails.sessionId
+    ?? (typeof ctx.session_id === 'string' ? ctx.session_id : undefined)
+    ?? (typeof ctx.sessionId === 'string' ? ctx.sessionId : undefined)
+    ?? (typeof event.sessionId === 'string' ? event.sessionId : undefined);
+  const transcriptPath = sessionManagerDetails.sessionFile
+    ?? (typeof ctx.transcript_path === 'string' ? ctx.transcript_path : undefined)
+    ?? (typeof ctx.transcriptPath === 'string' ? ctx.transcriptPath : undefined)
+    ?? (typeof event.transcriptPath === 'string' ? event.transcriptPath : undefined);
+  if (!sessionId || !transcriptPath) return null;
+  const messageCount = typeof ctx.message_count === 'number'
+    ? ctx.message_count
+    : typeof ctx.messageCount === 'number'
+      ? ctx.messageCount
+      : Array.isArray(event.messages)
+        ? event.messages.length
+        : sessionManagerDetails.entryCount;
+  const transcriptBytes = typeof ctx.transcript_bytes === 'number'
+    ? ctx.transcript_bytes
+    : typeof ctx.transcriptBytes === 'number'
+      ? ctx.transcriptBytes
+      : undefined;
+  const agent = typeof ctx.agent_name === 'string'
+    ? ctx.agent_name
+    : typeof ctx.name === 'string'
+      ? ctx.name
+      : typeof (ctx.agent as { name?: string } | undefined)?.name === 'string'
+        ? (ctx.agent as { name?: string }).name
+        : undefined;
+  const model = typeof ctx.model === 'string'
+    ? ctx.model
+    : typeof ctx.model_name === 'string'
+      ? ctx.model_name
+      : undefined;
+  return {
+    sessionId,
+    transcriptPath,
+    event: eventName,
+    final: typeof ctx.final === 'boolean' ? ctx.final : eventName === 'session_shutdown',
+    idle: typeof ctx.idle === 'boolean' ? ctx.idle : false,
+    agent,
+    model,
+    messageCount,
+    transcriptBytes,
+  };
+}
+
+async function captureSessionFromHook(eventName: string, ctx: Record<string, unknown>, event: TurnEndEvent): Promise<void> {
+  const input = resolveSessionCaptureInput(ctx, eventName, event);
+  if (!input) return;
+  try {
+    await captureSessionCheckpoint(nativeStore, { baseDir: runtimeBaseDir }, input);
+  } catch {
+    return;
+  }
+}
+
 export function byomem_runtime_status() {
   const mode = resolveRuntimeMode();
   return {
@@ -170,7 +246,16 @@ export function byomem_runtime_status() {
 
 export default function (pi: ExtensionAPI) {
   pi.on('session_start', async (_event, ctx) => {
-    ctx.ui.notify('BYOMem TS runtime loaded', 'info');
+    ctx.ui?.notify?.('BYOMem TS runtime loaded', 'info');
+  });
+  pi.on('turn_end', async (event, ctx) => {
+    await captureSessionFromHook('turn_end', ctx as Record<string, unknown>, event as TurnEndEvent);
+  });
+  pi.on('session_before_switch', async (event, ctx) => {
+    await captureSessionFromHook('session_before_switch', ctx as Record<string, unknown>, event as TurnEndEvent);
+  });
+  pi.on('session_shutdown', async (event, ctx) => {
+    await captureSessionFromHook('session_shutdown', ctx as Record<string, unknown>, event as TurnEndEvent);
   });
 
   pi.registerTool({

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,11 +16,16 @@ type RegisteredTool = {
 function makeMockPi() {
   const tools: RegisteredTool[] = [];
   const commands: Record<string, { description: string; handler: (...args: any[]) => Promise<void> }> = {};
+  const events: Record<string, Array<(...args: any[]) => any>> = {};
   return {
     tools,
     commands,
+    events,
     api: {
-      on: () => undefined,
+      on(name: string, handler: (...args: any[]) => any) {
+        events[name] ??= [];
+        events[name].push(handler);
+      },
       registerTool(tool: RegisteredTool) {
         tools.push(tool);
       },
@@ -128,6 +134,152 @@ describe('byomem extension wiring', () => {
       pythonDefaultDisabled: true,
     });
     expect(byomem_runtime_status().pythonDefaultDisabled).toBe(true);
+  });
+
+
+
+  it('registers Milestone A session capture hooks for active extension wiring', async () => {
+    vi.resetModules();
+
+    const mod = await import('../../../../.pi/extensions/byomem/index.ts');
+    const localMock = makeMockPi();
+    mod.default(localMock.api as never);
+
+    expect(localMock.events.session_start).toHaveLength(1);
+    expect(localMock.events.turn_end).toHaveLength(1);
+    expect(localMock.events.session_before_switch).toHaveLength(1);
+    expect(localMock.events.session_shutdown).toHaveLength(1);
+  });
+
+  it('persists a resolved turn_end hook payload to the TS-native store without python bridge assumptions', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const transcriptPath = join(dir, 'session.jsonl');
+    writeFileSync(transcriptPath, ['user: hello', 'assistant: hi there'].join('\n'), 'utf8');
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
+    vi.resetModules();
+
+    const mod = await import('../../../../.pi/extensions/byomem/index.ts');
+    const localMock = makeMockPi();
+    mod.default(localMock.api as never);
+
+    const turnEndHandler = localMock.events.turn_end?.[0];
+    expect(turnEndHandler).toBeTypeOf('function');
+
+    await turnEndHandler?.(
+      { messages: [{ role: 'user', content: 'hello' }, { role: 'assistant', content: 'hi there' }] },
+      {
+        sessionManager: {
+          getSessionId: () => 'milestone-a-session',
+          getSessionFile: () => transcriptPath,
+          getEntries: () => [{}, {}],
+        },
+        ui: { notify() {} },
+      },
+    );
+
+    const storePath = join(dir, 'native-store.json');
+    expect(existsSync(storePath)).toBe(true);
+    const snapshot = JSON.parse(readFileSync(storePath, 'utf8')) as { version: number; records: Array<any> };
+    expect(snapshot.records).toHaveLength(1);
+    expect(snapshot.records[0]).toMatchObject({
+      scope: 'project',
+      identity: {
+        namespace: 'byomem-session',
+        leafName: 'milestone-a-session',
+        parentContext: 'root',
+      },
+      provenance: {
+        source: 'session-capture',
+        adapter: 'native-store',
+        origin: 'session-capture',
+      },
+      content: {
+        text: 'Session milestone-a-session checkpoint from turn_end',
+        structured: {
+          sessionId: 'milestone-a-session',
+          event: 'turn_end',
+          final: false,
+          messageCount: 2,
+          transcriptPath,
+          transcriptPreview: ['user: hello', 'assistant: hi there'],
+        },
+      },
+    });
+  });
+
+  it('does not write anything when session info is incomplete', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
+    vi.resetModules();
+
+    const mod = await import('../../../../.pi/extensions/byomem/index.ts');
+    const localMock = makeMockPi();
+    mod.default(localMock.api as never);
+
+    const turnEndHandler = localMock.events.turn_end?.[0];
+    await turnEndHandler?.(
+      { messages: [{ role: 'user', content: 'hello' }] },
+      { ui: { notify() {} } },
+    );
+
+    expect(existsSync(join(dir, 'native-store.json'))).toBe(false);
+  });
+
+  it('fails soft when transcript path is missing or unreadable', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
+    vi.resetModules();
+
+    const mod = await import('../../../../.pi/extensions/byomem/index.ts');
+    const localMock = makeMockPi();
+    mod.default(localMock.api as never);
+
+    const turnEndHandler = localMock.events.turn_end?.[0];
+    await expect(turnEndHandler?.(
+      { messages: [{ role: 'user', content: 'hello' }] },
+      {
+        sessionManager: {
+          getSessionId: () => 'missing-session',
+          getSessionFile: () => join(dir, 'missing.jsonl'),
+          getEntries: () => [{}],
+        },
+        ui: { notify() {} },
+      },
+    )).resolves.toBeUndefined();
+
+    expect(existsSync(join(dir, 'native-store.json'))).toBe(false);
+  });
+
+  it('persists lifecycle hook payloads with expected final semantics', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const transcriptPath = join(dir, 'session.jsonl');
+    writeFileSync(transcriptPath, ['user: hello', 'assistant: hi there'].join('\n'), 'utf8');
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
+    vi.resetModules();
+
+    const mod = await import('../../../../.pi/extensions/byomem/index.ts');
+    const localMock = makeMockPi();
+    mod.default(localMock.api as never);
+
+    await localMock.events.session_before_switch?.[0]?.(
+      {},
+      { sessionId: 'milestone-a-session', transcriptPath, ui: { notify() {} } },
+    );
+    let snapshot = JSON.parse(readFileSync(join(dir, 'native-store.json'), 'utf8')) as { records: Array<any> };
+    expect(snapshot.records).toHaveLength(1);
+    expect(snapshot.records[0].content.structured).toMatchObject({ event: 'session_before_switch', final: false });
+
+    await localMock.events.session_shutdown?.[0]?.(
+      {},
+      { sessionId: 'milestone-a-session', transcriptPath, ui: { notify() {} } },
+    );
+    snapshot = JSON.parse(readFileSync(join(dir, 'native-store.json'), 'utf8')) as { records: Array<any> };
+    expect(snapshot.records).toHaveLength(1);
+    expect(snapshot.records[0].content.structured).toMatchObject({ event: 'session_shutdown', final: true });
   });
 
   it('reports config-driven embedding settings in runtime status', async () => {
