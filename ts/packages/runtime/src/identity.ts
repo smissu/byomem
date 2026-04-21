@@ -1,4 +1,5 @@
 import type { MemoryIdentity, MemoryScope } from './contracts.js';
+import { resolveProjectContext, type ProjectContext } from './project-context.js';
 
 const canonicalScopeOrder: MemoryScope[] = ['project', 'dir', 'user', 'agent'];
 
@@ -28,4 +29,8 @@ export function normalizeIdentity(scope: MemoryScope, identity: MemoryIdentity):
     parentContext: identity.parentContext?.trim().toLowerCase() || undefined,
     stableKey: normalizeStableKey(scope, identity),
   };
+}
+
+export function resolveActiveProjectContext(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): ProjectContext {
+  return resolveProjectContext(env, cwd);
 }

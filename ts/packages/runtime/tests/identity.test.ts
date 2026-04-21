@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { normalizeIdentity, normalizeStableKey } from '../src/identity.js';
+import { describe, expect, it, vi } from 'vitest';
+import { normalizeIdentity, normalizeStableKey, resolveActiveProjectContext } from '../src/identity.js';
 import { stableIdentityFixtures } from '../src/identity-fixtures.js';
 
 describe('identity normalization', () => {
@@ -30,5 +30,13 @@ describe('identity normalization', () => {
     const c = normalizeStableKey('dir', { namespace: 'byomem', leafName: 'Project Alpha', parentContext: 'root' });
     expect(a).toBe(b);
     expect(c).not.toBe(a);
+  });
+
+  it('resolves project context from env override before git or cwd', () => {
+    vi.stubEnv('BYOMEM_PROJECT_KEY', '  Alpha Repo  ');
+    const ctx = resolveActiveProjectContext({ BYOMEM_PROJECT_KEY: '  Alpha Repo  ' } as NodeJS.ProcessEnv, '/tmp/workspace');
+    expect(ctx.projectKey).toBe('alpha-repo');
+    expect(ctx.activeProjectMetadata.source).toBe('env');
+    expect(ctx.activeProjectMetadata.normalizedLeafName).toBe('alpha-repo');
   });
 });

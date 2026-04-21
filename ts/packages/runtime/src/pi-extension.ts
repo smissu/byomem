@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { openNativeStore, openReadPath, openWritePath, searchIndex, resolveRuntimeMode, enforceNoPythonDefaultPath, captureSessionCheckpoint, type SessionCaptureInput } from './index.ts';
+import { resolveActiveProjectContext } from './identity.js';
 
 function resolveDefaultRuntimeBaseDir(): string {
   let currentDir = resolve(process.cwd());
@@ -417,6 +418,7 @@ async function buildInitialByomemContext(prompt: string): Promise<string | null>
 
 export function byomem_runtime_status() {
   const mode = resolveRuntimeMode();
+  const activeProject = resolveActiveProjectContext(process.env, runtimeBaseDir);
   return {
     runtimeMode: mode,
     pythonDefaultDisabled: true,
@@ -431,6 +433,8 @@ export function byomem_runtime_status() {
     packageSurface: 'ts/packages/runtime',
     storeBaseDir: runtimeBaseDir,
     nativeStorePath: nativeStore.path,
+    activeProject,
+    projectKey: activeProject.projectKey,
     embeddingConfigSource: embeddingConfig.source,
     embeddingConfigPath: embeddingConfig.configPath,
     embeddingBaseUrl: embeddingConfig.embeddingBaseUrl,

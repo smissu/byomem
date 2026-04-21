@@ -461,7 +461,7 @@ describe('byomem extension wiring', () => {
 
     const statusTool = localMock.tools.find((tool) => tool.name === 'byomem_runtime_status');
     const status = JSON.parse((await statusTool!.execute('status', {})).content[0].text) as Record<string, unknown>;
-    expect(status).toMatchObject({ summarizerModel: 'qwen3:8b', summarizerFallbackModel: 'qwen3.5:4b' });
+    expect(status).toMatchObject({ summarizerModel: 'qwen3:8b', summarizerFallbackModel: 'qwen3.5:4b', activeProject: expect.any(Object), projectKey: expect.any(String) });
 
     const snapshot = JSON.parse(readFileSync(join(dir, 'native-store.json'), 'utf8')) as { records: Array<any> };
     expect(snapshot.records.filter((record) => record.provenance.origin === 'session-rollup')).toHaveLength(1);
