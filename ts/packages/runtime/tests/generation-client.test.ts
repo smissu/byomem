@@ -57,6 +57,27 @@ describe('generation client', () => {
     await expect(client.generate({ prompt: '   ' })).rejects.toThrow('Missing generation input');
   });
 
+  it('tries fallback model before local fallback when the primary remote request fails', async () => {
+    const calls: Array<{ url: string; body: any }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? '{}')) });
+      if (calls.length === 1) return new Response('nope', { status: 500, headers: { 'content-type': 'text/plain' } });
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'fallback answer' } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    try {
+      const client = openGenerationClient({ baseUrl: 'http://localhost:11434', model: 'qwen3:8b', fallbackModel: 'qwen3.5:4b' });
+      const result = await client.generate({ prompt: 'hello world' });
+      expect(result).toBe('fallback answer');
+      expect(calls).toHaveLength(2);
+      expect(calls[0]?.body).toMatchObject({ model: 'qwen3:8b' });
+      expect(calls[1]?.body).toMatchObject({ model: 'qwen3.5:4b' });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('falls back to normalized text when remote generation is unavailable', async () => {
     const client = openGenerationClient();
     const result = await client.generate({ prompt: '   fallback text   ' });

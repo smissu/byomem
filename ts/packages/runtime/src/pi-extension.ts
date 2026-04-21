@@ -45,6 +45,7 @@ export interface ByomemSummarizerConfig {
   configPath?: string;
   generationBaseUrl?: string;
   generationModel?: string;
+  generationFallbackModel?: string;
   generationTimeoutMs?: number;
   generationTransport?: 'openai-chat-completions' | 'ollama-native-chat';
   ollamaNumCtx?: number;
@@ -154,7 +155,7 @@ function extractYamlBlock(content: string, key: string): string | undefined {
   return match?.[1] ?? undefined;
 }
 
-function parseConfigYaml(content: string): { embeddings?: { base_url?: string; model?: string; request_timeout?: number }; summarizer?: { base_url?: string; model?: string; max_tokens?: number; ollama_num_ctx?: number }; session_capture?: { enabled?: boolean; threshold_turns?: number; large_turn_chars?: number; idle_flush_seconds?: number; min_turns?: number } } {
+function parseConfigYaml(content: string): { embeddings?: { base_url?: string; model?: string; request_timeout?: number }; summarizer?: { base_url?: string; model?: string; fallback_model?: string; max_tokens?: number; ollama_num_ctx?: number }; session_capture?: { enabled?: boolean; threshold_turns?: number; large_turn_chars?: number; idle_flush_seconds?: number; min_turns?: number } } {
   const embeddingsBlock = extractYamlBlock(content, 'embeddings') ?? '';
   const summarizerBlock = extractYamlBlock(content, 'summarizer') ?? '';
   const sessionCaptureBlock = extractYamlBlock(content, 'session_capture') ?? '';
@@ -168,6 +169,7 @@ function parseConfigYaml(content: string): { embeddings?: { base_url?: string; m
     summarizer: {
       base_url: summarizerBlock.match(/base_url:\s*(.+)/)?.[1]?.trim(),
       model: summarizerBlock.match(/model:\s*(.+)/)?.[1]?.trim(),
+      fallback_model: summarizerBlock.match(/fallback_model:\s*(.+)/)?.[1]?.trim(),
       max_tokens: (() => { const value = summarizerBlock.match(/max_tokens:\s*(\d+)/)?.[1]; return value ? Number(value) : undefined; })(),
       ollama_num_ctx: (() => { const value = summarizerBlock.match(/ollama_num_ctx:\s*(\d+)/)?.[1]; return value ? Number(value) : undefined; })(),
     },
@@ -209,6 +211,7 @@ function resolveSummarizerConfig(): ByomemSummarizerConfig {
       configPath,
       generationBaseUrl: parsed.summarizer?.base_url,
       generationModel: parsed.summarizer?.model,
+      generationFallbackModel: parsed.summarizer?.fallback_model,
       generationTimeoutMs: undefined,
       generationTransport: inferSummarizerTransport(parsed.summarizer?.base_url),
       ollamaNumCtx: parsed.summarizer?.ollama_num_ctx,
@@ -353,6 +356,7 @@ async function captureSessionFromHook(eventName: string, ctx: Record<string, unk
       generation: {
         baseUrl: summarizerConfig.generationBaseUrl,
         model: summarizerConfig.generationModel,
+        fallbackModel: summarizerConfig.generationFallbackModel,
         timeoutMs: summarizerConfig.generationTimeoutMs,
         transport: summarizerConfig.generationTransport,
         requestOptions: summarizerConfig.ollamaNumCtx ? { options: { num_ctx: summarizerConfig.ollamaNumCtx } } : undefined,
@@ -437,6 +441,7 @@ export function byomem_runtime_status() {
     summarizerConfigPath: summarizerConfig.configPath,
     summarizerBaseUrl: summarizerConfig.generationBaseUrl,
     summarizerModel: summarizerConfig.generationModel,
+    summarizerFallbackModel: summarizerConfig.generationFallbackModel,
     summarizerOllamaNumCtx: summarizerConfig.ollamaNumCtx,
     sessionCaptureConfigSource: sessionCaptureConfig.source,
     sessionCaptureEnabled: sessionCaptureConfig.enabled,

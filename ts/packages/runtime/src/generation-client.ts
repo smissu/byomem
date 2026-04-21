@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 export interface GenerationClientOptions {
   baseUrl?: string;
   model?: string;
+  fallbackModel?: string;
   timeoutMs?: number;
   requestOptions?: Record<string, unknown>;
   transport?: 'openai-chat-completions' | 'ollama-native-chat';
@@ -83,6 +84,15 @@ async function remoteOllamaNativeChat(url: string, model: string, input: Generat
 }
 
 export function openGenerationClient(options: GenerationClientOptions = {}): GenerationClient {
+  async function generateWithModel(model: string, input: GenerationRequest): Promise<string | undefined> {
+    if (options.transport === 'ollama-native-chat') {
+      const url = new URL('/api/chat', options.baseUrl!).toString();
+      return remoteOllamaNativeChat(url, model, input, options.timeoutMs, options.requestOptions);
+    }
+    const url = new URL('/v1/chat/completions', options.baseUrl!).toString();
+    return remoteChatCompletion(url, model, input, options.timeoutMs, options.requestOptions);
+  }
+
   return {
     hashText(text: string): string {
       return createHash('sha256').update(text).digest('hex');
@@ -91,14 +101,25 @@ export function openGenerationClient(options: GenerationClientOptions = {}): Gen
       validateGenerationInput(input);
       const fallback = fallbackGeneration(input);
       if (!options.baseUrl) return fallback;
+      const primaryModel = options.model ?? 'gpt-4o-mini';
+      const fallbackModel = options.fallbackModel;
       try {
-        if (options.transport === 'ollama-native-chat') {
-          const url = new URL('/api/chat', options.baseUrl).toString();
-          return (await remoteOllamaNativeChat(url, options.model ?? 'gpt-4o-mini', input, options.timeoutMs, options.requestOptions)) ?? fallback;
+        const primary = await generateWithModel(primaryModel, input);
+        if (primary) return primary;
+        if (fallbackModel && fallbackModel !== primaryModel) {
+          const secondary = await generateWithModel(fallbackModel, input);
+          if (secondary) return secondary;
         }
-        const url = new URL('/v1/chat/completions', options.baseUrl).toString();
-        return (await remoteChatCompletion(url, options.model ?? 'gpt-4o-mini', input, options.timeoutMs, options.requestOptions)) ?? fallback;
-      } catch {
+        return fallback;
+      } catch (primaryError) {
+        if (fallbackModel && fallbackModel !== primaryModel) {
+          try {
+            const secondary = await generateWithModel(fallbackModel, input);
+            if (secondary) return secondary;
+          } catch {
+            // fall through to existing local fallback
+          }
+        }
         return fallback;
       }
     },

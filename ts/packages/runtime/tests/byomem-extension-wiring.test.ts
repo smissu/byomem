@@ -404,6 +404,7 @@ describe('byomem extension wiring', () => {
       'summarizer:',
       '  base_url: http://localhost:11434/v1',
       '  model: qwen3:8b',
+      '  fallback_model: qwen3.5:4b',
       '  ollama_num_ctx: 16384',
       'session_capture:',
       '  enabled: true',
@@ -457,6 +458,10 @@ describe('byomem extension wiring', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toContain('/api/chat');
     expect(calls[0]?.body).toMatchObject({ model: 'qwen3:8b', stream: false, options: { num_ctx: 16384 } });
+
+    const statusTool = localMock.tools.find((tool) => tool.name === 'byomem_runtime_status');
+    const status = JSON.parse((await statusTool!.execute('status', {})).content[0].text) as Record<string, unknown>;
+    expect(status).toMatchObject({ summarizerModel: 'qwen3:8b', summarizerFallbackModel: 'qwen3.5:4b' });
 
     const snapshot = JSON.parse(readFileSync(join(dir, 'native-store.json'), 'utf8')) as { records: Array<any> };
     expect(snapshot.records.filter((record) => record.provenance.origin === 'session-rollup')).toHaveLength(1);
