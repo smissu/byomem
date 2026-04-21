@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-EXTENSION_PATH = Path('.pi/extensions/byomem/index.ts').resolve()
+EXTENSION_PATH = Path('ts/packages/runtime/src/pi-extension.ts').resolve()
 
 
 def test_pi_extension_registers_manual_byomem_store_tool():

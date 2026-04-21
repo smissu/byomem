@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import extensionModule, { byomem_runtime_status } from '../../../../.pi/extensions/byomem/index.ts';
+import extensionModule, { byomem_runtime_status } from '../src/pi-extension.ts';
 
 type RegisteredTool = {
   name: string;
@@ -180,7 +180,7 @@ describe('byomem extension wiring', () => {
   it('registers the active session capture hooks', async () => {
     vi.resetModules();
 
-    const mod = await import('../../../../.pi/extensions/byomem/index.ts');
+    const mod = await import('../src/pi-extension.ts');
     const localMock = makeMockPi();
     mod.default(localMock.api as never);
 
@@ -206,7 +206,7 @@ describe('byomem extension wiring', () => {
     vi.stubEnv('BYOMEM_CONFIG_PATH', configPath);
     vi.resetModules();
 
-    const mod = await import('../../../../.pi/extensions/byomem/index.ts');
+    const mod = await import('../src/pi-extension.ts');
     const localMock = makeMockPi();
     mod.default(localMock.api as never);
 
@@ -271,7 +271,7 @@ describe('byomem extension wiring', () => {
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
     vi.resetModules();
 
-    const mod = await import('../../../../.pi/extensions/byomem/index.ts');
+    const mod = await import('../src/pi-extension.ts');
     const localMock = makeMockPi();
     mod.default(localMock.api as never);
 
@@ -290,7 +290,7 @@ describe('byomem extension wiring', () => {
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
     vi.resetModules();
 
-    const mod = await import('../../../../.pi/extensions/byomem/index.ts');
+    const mod = await import('../src/pi-extension.ts');
     const localMock = makeMockPi();
     mod.default(localMock.api as never);
 
@@ -326,7 +326,7 @@ describe('byomem extension wiring', () => {
     vi.stubEnv('BYOMEM_CONFIG_PATH', configPath);
     vi.resetModules();
 
-    const mod = await import('../../../../.pi/extensions/byomem/index.ts');
+    const mod = await import('../src/pi-extension.ts');
     const localMock = makeMockPi();
     mod.default(localMock.api as never);
 
@@ -376,7 +376,7 @@ describe('byomem extension wiring', () => {
     vi.stubEnv('BYOMEM_CONFIG_PATH', configPath);
     vi.resetModules();
 
-    const mod = await import('../../../../.pi/extensions/byomem/index.ts');
+    const mod = await import('../src/pi-extension.ts');
     const localMock = makeMockPi();
     mod.default(localMock.api as never);
 
@@ -452,7 +452,7 @@ describe('byomem extension wiring', () => {
     vi.stubEnv('BYOMEM_CONFIG_PATH', configPath);
     vi.resetModules();
 
-    const { byomem_runtime_status: statusFn } = await import('../../../../.pi/extensions/byomem/index.ts');
+    const { byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts');
     expect(statusFn()).toMatchObject({
       embeddingConfigSource: 'config',
       embeddingConfigPath: configPath,

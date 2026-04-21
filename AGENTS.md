@@ -25,3 +25,8 @@
 - For repo work: check project memory first, then user memory if needed.
 - Keep memory retrieval separate from code search/indexing.
 - Use canonical native BYOMem records as the source of truth.
+
+## BYOMem extension policy
+- This repo should use the global Pi BYOMem extension from `~/.pi/agent/extensions/byomem/` when available.
+- Do not keep a second active BYOMem runtime under `.pi/extensions/`, because Pi auto-discovers both project and global extensions and duplicate BYOMem tools/hooks can conflict.
+- Keep repo-local BYOMem implementation code in canonical shared source files, not as a second auto-loaded project extension runtime.

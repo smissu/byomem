@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-EXTENSION_FILE = Path(__file__).resolve().parents[2] / '.pi' / 'extensions' / 'byomem' / 'index.ts'
+EXTENSION_FILE = Path(__file__).resolve().parents[2] / 'ts' / 'packages' / 'runtime' / 'src' / 'pi-extension.ts'
 
 
 def _extract_function_block(text: str, name: str) -> str:

@@ -2,9 +2,19 @@ import type { ExtensionAPI } from '@mariozechner/pi-coding-agent';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { openNativeStore, openReadPath, openWritePath, searchIndex, resolveRuntimeMode, enforceNoPythonDefaultPath, captureSessionCheckpoint, type SessionCaptureInput } from '../../../ts/packages/runtime/src/index.ts';
+import { openNativeStore, openReadPath, openWritePath, searchIndex, resolveRuntimeMode, enforceNoPythonDefaultPath, captureSessionCheckpoint, type SessionCaptureInput } from './index.ts';
 
-const runtimeBaseDir = process.env.BYOMEM_RUNTIME_BASE_DIR ?? new URL('../../..//', import.meta.url).pathname;
+function resolveDefaultRuntimeBaseDir(): string {
+  let currentDir = resolve(process.cwd());
+  while (true) {
+    if (existsSync(join(currentDir, '.git'))) return currentDir;
+    const parentDir = resolve(currentDir, '..');
+    if (parentDir === currentDir) return currentDir;
+    currentDir = parentDir;
+  }
+}
+
+const runtimeBaseDir = process.env.BYOMEM_RUNTIME_BASE_DIR ?? resolveDefaultRuntimeBaseDir();
 const embeddingConfig = resolveEmbeddingConfig();
 const sessionCaptureConfig = resolveSessionCaptureConfig();
 const summarizerConfig = resolveSummarizerConfig();
