@@ -96,6 +96,26 @@ describe('sqlite-backed parity slice', () => {
     expect(results[0]?.content.text).toContain('lexical sqlite search path');
   });
 
+  it('treats hyphenated tokens as literals in sqlite-backed search', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const store = openNativeStore({ baseDir: dir });
+
+    const record = await store.write({
+      scope: 'project',
+      identity: { namespace: 'live-verification', leafName: 'byomem-global-tools-smoke', parentContext: 'root' },
+      content: { text: 'temporary non-sensitive smoke test record for BYOMem tool verification' },
+      provenance: { source: 'fixtures' },
+    });
+
+    await expect(searchIndex(store, { query: 'non-sensitive', scope: 'project', limit: 5 })).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: record.id })]),
+    );
+    await expect(searchIndex(store, { query: 'byomem-global-tools-smoke', scope: 'project', limit: 5 })).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: record.id })]),
+    );
+  });
+
   it('uses remote embeddings and caches them', async () => {
     const dir = tempDir();
     dirs.push(dir);

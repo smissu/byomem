@@ -73,6 +73,12 @@ function truncateEmbeddingText(text: string, maxChars = EMBEDDING_TEXT_MAX_CHARS
   return `${text.slice(0, head)}${EMBEDDING_TEXT_TRUNCATION_MARKER}${tail > 0 ? text.slice(-tail) : ''}`;
 }
 
+function normalizeFtsQuery(query: string): string {
+  const tokens = query.trim().split(/\s+/).map((token) => token.trim()).filter(Boolean);
+  if (!tokens.length) return '';
+  return tokens.map((token) => `"${token.replace(/"/g, '""')}"`).join(' ');
+}
+
 function encodeEmbedding(embedding: number[]): Buffer {
   const buffer = Buffer.allocUnsafe(embedding.length * 4);
   for (let i = 0; i < embedding.length; i += 1) buffer.writeFloatLE(embedding[i] ?? 0, i * 4);
@@ -188,7 +194,10 @@ export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar 
 
   async function hybridSearch(query: string, scope: MemoryScope, limit: number): Promise<MemoryRecord[]> {
     const normalizedQuery = query.trim().toLowerCase();
-    const lexicalRows = searchStmt.all(query, scope ?? null, scope ?? null, limit * 4) as Array<{ id: string; scope: string; namespace: string; leaf_name: string; parent_context: string; provenance_source: string; provenance_timestamp: string | null; provenance_adapter: string | null; provenance_origin: string | null; content_text: string | null; content_structured: string | null; created_at: string; updated_at: string }>;
+    const ftsQuery = normalizeFtsQuery(query);
+    const lexicalRows = ftsQuery
+      ? searchStmt.all(ftsQuery, scope ?? null, scope ?? null, limit * 4) as Array<{ id: string; scope: string; namespace: string; leaf_name: string; parent_context: string; provenance_source: string; provenance_timestamp: string | null; provenance_adapter: string | null; provenance_origin: string | null; content_text: string | null; content_structured: string | null; created_at: string; updated_at: string }>
+      : [];
     const lexical = lexicalMatches(lexicalRows, query);
 
     const lexicalRanked = lexical
@@ -269,7 +278,9 @@ export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar 
       const narrowedScope = scope ?? 'project';
       const hybridResults = await hybridSearch(query, narrowedScope, limit);
       if (hybridResults.length) return hybridResults;
-      return (searchStmt.all(query, narrowedScope ?? null, narrowedScope ?? null, limit) as ReturnType<typeof loadRecord>[]).map((row) => loadRecord(row as never));
+      const ftsQuery = normalizeFtsQuery(query);
+      if (!ftsQuery) return [];
+      return (searchStmt.all(ftsQuery, narrowedScope ?? null, narrowedScope ?? null, limit) as ReturnType<typeof loadRecord>[]).map((row) => loadRecord(row as never));
     },
     close(): void {
       db.close();
