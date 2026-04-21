@@ -177,7 +177,7 @@ describe('byomem extension wiring', () => {
     expect(byomem_runtime_status().pythonDefaultDisabled).toBe(true);
   });
 
-  it('registers the active session capture hooks', async () => {
+  it('registers the active session capture and context hooks', async () => {
     vi.resetModules();
 
     const mod = await import('../src/pi-extension.ts');
@@ -185,9 +185,51 @@ describe('byomem extension wiring', () => {
     mod.default(localMock.api as never);
 
     expect(localMock.events.session_start).toHaveLength(1);
+    expect(localMock.events.before_agent_start).toHaveLength(1);
     expect(localMock.events.turn_end).toHaveLength(1);
     expect(localMock.events.session_before_switch).toHaveLength(1);
     expect(localMock.events.session_shutdown).toHaveLength(1);
+  });
+
+  it('injects remembered user preferences and project context on the first agent start of a session', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
+    vi.resetModules();
+
+    const { default: mod } = await import('../src/pi-extension.ts');
+    const localMock = makeMockPi();
+    mod(localMock.api as never);
+
+    await localMock.events.session_start?.[0]?.({ reason: 'startup' }, { ui: { notify() {} } });
+
+    const storeTool = localMock.tools.find((tool) => tool.name === 'byomem_store');
+    await storeTool!.execute('1', {
+      scope: 'user',
+      identity: { namespace: 'working-preferences', leafName: 'progress-update-intervals', parentContext: 'communication' },
+      content: { text: 'User prefers brief progress updates at roughly 10%, 20%, 30% completion.' },
+      provenance: { source: 'fixtures' },
+    });
+    await storeTool!.execute('2', {
+      scope: 'project',
+      identity: { namespace: 'project-decisions', leafName: 'search-memory-first', parentContext: 'root' },
+      content: { text: 'Search project memory for architecture decisions and prior fixes before starting code changes.' },
+      provenance: { source: 'fixtures' },
+    });
+
+    const result = await localMock.events.before_agent_start?.[0]?.(
+      { prompt: 'Investigate the repo', systemPrompt: 'BASE SYSTEM PROMPT' },
+      {},
+    );
+    expect(result?.systemPrompt).toContain('## Remembered BYOMem context');
+    expect(result?.systemPrompt).toContain('User prefers brief progress updates');
+    expect(result?.systemPrompt).toContain('Search project memory for architecture decisions');
+
+    const second = await localMock.events.before_agent_start?.[0]?.(
+      { prompt: 'Follow-up task', systemPrompt: 'BASE SYSTEM PROMPT' },
+      {},
+    );
+    expect(second).toEqual({});
   });
 
   it('persists a resolved turn_end checkpoint without python bridge assumptions', async () => {
@@ -362,6 +404,7 @@ describe('byomem extension wiring', () => {
       'summarizer:',
       '  base_url: http://localhost:11434/v1',
       '  model: qwen3:8b',
+      '  ollama_num_ctx: 16384',
       'session_capture:',
       '  enabled: true',
       '  threshold_turns: 2',
@@ -370,7 +413,7 @@ describe('byomem extension wiring', () => {
     const calls: Array<{ url: string; body: any }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? '{}')) });
-      return new Response(JSON.stringify({ choices: [{ message: { content: '- Summarized pending turns\nFinal sentence.' } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ message: { content: '- Summarized pending turns\nFinal sentence.' } }), { status: 200, headers: { 'content-type': 'application/json' } });
     }) as typeof fetch;
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
     vi.stubEnv('BYOMEM_CONFIG_PATH', configPath);
@@ -412,8 +455,8 @@ describe('byomem extension wiring', () => {
     );
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toContain('/v1/chat/completions');
-    expect(calls[0]?.body).toMatchObject({ model: 'qwen3:8b' });
+    expect(calls[0]?.url).toContain('/api/chat');
+    expect(calls[0]?.body).toMatchObject({ model: 'qwen3:8b', stream: false, options: { num_ctx: 16384 } });
 
     const snapshot = JSON.parse(readFileSync(join(dir, 'native-store.json'), 'utf8')) as { records: Array<any> };
     expect(snapshot.records.filter((record) => record.provenance.origin === 'session-rollup')).toHaveLength(1);
@@ -430,6 +473,55 @@ describe('byomem extension wiring', () => {
     });
   });
 
+  it('infers Ollama native chat transport from summarizer base URL without num_ctx', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const transcriptPath = join(dir, 'session.jsonl');
+    const configPath = join(dir, 'config.yaml');
+    writeConfig(configPath, [
+      'summarizer:',
+      '  base_url: http://localhost:11434/v1',
+      '  model: qwen3:8b',
+      'session_capture:',
+      '  enabled: true',
+      '  threshold_turns: 2',
+      '  min_turns: 2',
+    ]);
+    const calls: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? '{}')) });
+      return new Response(JSON.stringify({ message: { content: '- Summarized pending turns\nFinal sentence.' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
+    vi.stubEnv('BYOMEM_CONFIG_PATH', configPath);
+    vi.resetModules();
+
+    const mod = await import('../src/pi-extension.ts');
+    const localMock = makeMockPi();
+    mod.default(localMock.api as never);
+
+    writeEventTranscript(transcriptPath, [
+      { id: 'turn-1', user: 'What changed?', assistant: 'Checkpoint capture was restored.' },
+      { id: 'turn-2', user: 'What now?', assistant: 'Use the summarizer for rollups.' },
+    ]);
+    await localMock.events.turn_end?.[0]?.(
+      {},
+      {
+        sessionManager: {
+          getSessionId: () => 'milestone-b-session',
+          getSessionFile: () => transcriptPath,
+          getEntries: () => [{}, {}, {}, {}],
+        },
+        ui: { notify() {} },
+      },
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toContain('/api/chat');
+    expect(calls[0]?.body).toMatchObject({ model: 'qwen3:8b', stream: false });
+    expect(calls[0]?.body?.options).toBeUndefined();
+  });
+
   it('reports config-driven embedding, summarizer, and session-capture settings in runtime status', async () => {
     const dir = tempDir();
     dirs.push(dir);
@@ -442,6 +534,7 @@ describe('byomem extension wiring', () => {
       'summarizer:',
       '  base_url: http://localhost:11434/v1',
       '  model: qwen3:8b',
+      '  ollama_num_ctx: 16384',
       'session_capture:',
       '  enabled: true',
       '  threshold_turns: 2',
@@ -463,6 +556,7 @@ describe('byomem extension wiring', () => {
       summarizerConfigPath: configPath,
       summarizerBaseUrl: 'http://localhost:11434/v1',
       summarizerModel: 'qwen3:8b',
+      summarizerOllamaNumCtx: 16384,
       sessionCaptureConfigSource: 'config',
       sessionCaptureEnabled: true,
       sessionCaptureThresholdTurns: 2,

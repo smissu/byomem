@@ -25,6 +25,33 @@ describe('generation client', () => {
     }
   });
 
+  it('uses Ollama native chat when configured for summarizer-only request options', async () => {
+    const calls: Array<{ url: string; body: any }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? '{}')) });
+      return new Response(JSON.stringify({ message: { content: 'remote answer' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    try {
+      const client = openGenerationClient({
+        baseUrl: 'http://localhost:11434/v1',
+        model: 'qwen3:8b',
+        transport: 'ollama-native-chat',
+        requestOptions: { options: { num_ctx: 16384 } },
+      });
+      await client.generate({ prompt: 'summarize this' });
+      expect(calls[0]?.url).toContain('/api/chat');
+      expect(calls[0]?.body).toMatchObject({
+        model: 'qwen3:8b',
+        stream: false,
+        options: { num_ctx: 16384 },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('fails fast on missing generation input', async () => {
     const client = openGenerationClient();
     await expect(client.generate({ prompt: '   ' })).rejects.toThrow('Missing generation input');

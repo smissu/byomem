@@ -28,6 +28,7 @@ const nativeStore = openNativeStore({
 const readPath = openReadPath(nativeStore);
 const writePath = openWritePath(nativeStore);
 const debugLogPath = join(runtimeBaseDir, 'queue', 'debug', 'byomem-turn-end.jsonl');
+let shouldInjectInitialContext = true;
 
 function logTurnEndDebug(entry: Record<string, unknown>): void {
   try {
@@ -45,6 +46,8 @@ export interface ByomemSummarizerConfig {
   generationBaseUrl?: string;
   generationModel?: string;
   generationTimeoutMs?: number;
+  generationTransport?: 'openai-chat-completions' | 'ollama-native-chat';
+  ollamaNumCtx?: number;
 }
 
 export interface ByomemSessionCaptureConfig {
@@ -151,7 +154,7 @@ function extractYamlBlock(content: string, key: string): string | undefined {
   return match?.[1] ?? undefined;
 }
 
-function parseConfigYaml(content: string): { embeddings?: { base_url?: string; model?: string; request_timeout?: number }; summarizer?: { base_url?: string; model?: string; max_tokens?: number }; session_capture?: { enabled?: boolean; threshold_turns?: number; large_turn_chars?: number; idle_flush_seconds?: number; min_turns?: number } } {
+function parseConfigYaml(content: string): { embeddings?: { base_url?: string; model?: string; request_timeout?: number }; summarizer?: { base_url?: string; model?: string; max_tokens?: number; ollama_num_ctx?: number }; session_capture?: { enabled?: boolean; threshold_turns?: number; large_turn_chars?: number; idle_flush_seconds?: number; min_turns?: number } } {
   const embeddingsBlock = extractYamlBlock(content, 'embeddings') ?? '';
   const summarizerBlock = extractYamlBlock(content, 'summarizer') ?? '';
   const sessionCaptureBlock = extractYamlBlock(content, 'session_capture') ?? '';
@@ -166,6 +169,7 @@ function parseConfigYaml(content: string): { embeddings?: { base_url?: string; m
       base_url: summarizerBlock.match(/base_url:\s*(.+)/)?.[1]?.trim(),
       model: summarizerBlock.match(/model:\s*(.+)/)?.[1]?.trim(),
       max_tokens: (() => { const value = summarizerBlock.match(/max_tokens:\s*(\d+)/)?.[1]; return value ? Number(value) : undefined; })(),
+      ollama_num_ctx: (() => { const value = summarizerBlock.match(/ollama_num_ctx:\s*(\d+)/)?.[1]; return value ? Number(value) : undefined; })(),
     },
     session_capture: {
       enabled: parseBool(sessionCaptureBlock.match(/enabled:\s*(.+)/)?.[1]),
@@ -182,6 +186,20 @@ function resolveConfigPath(): string {
   return process.env.BYOMEM_CONFIG_PATH ?? resolve(homedir(), '.byomem', 'config.yaml');
 }
 
+function inferSummarizerTransport(baseUrl: string | undefined): ByomemSummarizerConfig['generationTransport'] {
+  if (!baseUrl) return undefined;
+  try {
+    const parsed = new URL(baseUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
+    if (parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1') return undefined;
+    if (parsed.port && parsed.port !== '11434') return undefined;
+    if (parsed.pathname === '/' || parsed.pathname === '/v1' || parsed.pathname.startsWith('/v1/')) return 'ollama-native-chat';
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
 function resolveSummarizerConfig(): ByomemSummarizerConfig {
   const configPath = resolveConfigPath();
   if (existsSync(configPath)) {
@@ -192,6 +210,8 @@ function resolveSummarizerConfig(): ByomemSummarizerConfig {
       generationBaseUrl: parsed.summarizer?.base_url,
       generationModel: parsed.summarizer?.model,
       generationTimeoutMs: undefined,
+      generationTransport: inferSummarizerTransport(parsed.summarizer?.base_url),
+      ollamaNumCtx: parsed.summarizer?.ollama_num_ctx,
     };
   }
   return { source: 'default' };
@@ -334,6 +354,8 @@ async function captureSessionFromHook(eventName: string, ctx: Record<string, unk
         baseUrl: summarizerConfig.generationBaseUrl,
         model: summarizerConfig.generationModel,
         timeoutMs: summarizerConfig.generationTimeoutMs,
+        transport: summarizerConfig.generationTransport,
+        requestOptions: summarizerConfig.ollamaNumCtx ? { options: { num_ctx: summarizerConfig.ollamaNumCtx } } : undefined,
       },
     }, input);
     logTurnEndDebug({ hook: eventName, phase: 'capture_completed', success: true });
@@ -346,6 +368,47 @@ async function captureSessionFromHook(eventName: string, ctx: Record<string, unk
     });
     return;
   }
+}
+
+function truncateLine(value: string, maxChars = 220): string {
+  const trimmed = value.trim().replace(/\s+/g, ' ');
+  if (trimmed.length <= maxChars) return trimmed;
+  return `${trimmed.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+function formatContextLines(records: Array<{ content?: { text?: string }; identity?: { leafName?: string } }>, maxItems = 3): string[] {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const record of records) {
+    const candidate = truncateLine(record.content?.text ?? record.identity?.leafName ?? '');
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+    lines.push(`- ${candidate}`);
+    if (lines.length >= maxItems) break;
+  }
+  return lines;
+}
+
+async function buildInitialByomemContext(prompt: string): Promise<string | null> {
+  const userResults = await Promise.resolve(searchIndex(nativeStore, {
+    query: 'working preferences repeated working style communication coding workflow progress updates subagents',
+    scope: 'user',
+    limit: 6,
+  }));
+  const projectResults = (await Promise.resolve(searchIndex(nativeStore, {
+    query: `${prompt || 'current project'} architecture decisions conventions project context current repo`,
+    scope: 'project',
+    limit: 8,
+  }))).filter((record) => record.provenance?.source !== 'session-capture' && record.identity?.namespace !== 'live-verification');
+
+  const userLines = formatContextLines(userResults, 4);
+  const projectLines = formatContextLines(projectResults, 4);
+  if (!userLines.length && !projectLines.length) return null;
+
+  const sections: string[] = ['## Remembered BYOMem context'];
+  if (userLines.length) sections.push('### User preferences', ...userLines);
+  if (projectLines.length) sections.push('### Project context', ...projectLines);
+  return sections.join('\n');
 }
 
 export function byomem_runtime_status() {
@@ -374,6 +437,7 @@ export function byomem_runtime_status() {
     summarizerConfigPath: summarizerConfig.configPath,
     summarizerBaseUrl: summarizerConfig.generationBaseUrl,
     summarizerModel: summarizerConfig.generationModel,
+    summarizerOllamaNumCtx: summarizerConfig.ollamaNumCtx,
     sessionCaptureConfigSource: sessionCaptureConfig.source,
     sessionCaptureEnabled: sessionCaptureConfig.enabled,
     sessionCaptureThresholdTurns: sessionCaptureConfig.thresholdTurns,
@@ -384,8 +448,18 @@ export function byomem_runtime_status() {
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.on('session_start', async (_event, ctx) => {
+  pi.on('session_start', async (event, ctx) => {
+    shouldInjectInitialContext = event.reason !== 'reload';
     ctx.ui?.notify?.('BYOMem TS runtime loaded', 'info');
+  });
+  pi.on('before_agent_start', async (event, _ctx) => {
+    if (!shouldInjectInitialContext) return {};
+    shouldInjectInitialContext = false;
+    const rememberedContext = await buildInitialByomemContext(event.prompt ?? '');
+    if (!rememberedContext) return {};
+    return {
+      systemPrompt: `${event.systemPrompt}\n\n${rememberedContext}`,
+    };
   });
   pi.on('turn_end', async (event, ctx) => {
     await captureSessionFromHook('turn_end', ctx as Record<string, unknown>, event as TurnEndEvent);

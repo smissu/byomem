@@ -111,7 +111,7 @@ describe('session capture', () => {
     const calls: Array<{ url: string; body: any }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? '{}')) });
-      return new Response(JSON.stringify({ choices: [{ message: { content: '- Restored TS-native session capture\n- Added incremental rollups\nFinal: threshold flush complete.' } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ message: { content: '- Restored TS-native session capture\n- Added incremental rollups\nFinal: threshold flush complete.' } }), { status: 200, headers: { 'content-type': 'application/json' } });
     }) as typeof fetch;
 
     writeEventTranscript(transcriptPath, [
@@ -121,7 +121,7 @@ describe('session capture', () => {
       baseDir: dir,
       thresholdTurns: 2,
       minTurns: 2,
-      generation: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:8b' },
+      generation: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:8b', transport: 'ollama-native-chat', requestOptions: { options: { num_ctx: 16384 } } },
     }, {
       sessionId: 'session-alpha',
       transcriptPath,
@@ -140,7 +140,7 @@ describe('session capture', () => {
       baseDir: dir,
       thresholdTurns: 2,
       minTurns: 2,
-      generation: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:8b' },
+      generation: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:8b', transport: 'ollama-native-chat', requestOptions: { options: { num_ctx: 16384 } } },
     }, {
       sessionId: 'session-alpha',
       transcriptPath,
@@ -172,8 +172,8 @@ describe('session capture', () => {
       },
     });
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toContain('/v1/chat/completions');
-    expect(calls[0]?.body).toMatchObject({ model: 'qwen3:8b' });
+    expect(calls[0]?.url).toContain('/api/chat');
+    expect(calls[0]?.body).toMatchObject({ model: 'qwen3:8b', stream: false, options: { num_ctx: 16384 } });
     expect(String(calls[0]?.body?.messages?.[1]?.content ?? '')).toContain('Turn 1 (turn-1-user)');
     expect(store.list().filter((record) => record.provenance.origin === 'session-rollup')).toHaveLength(1);
     expect(JSON.parse(readFileSync(join(dir, 'queue', 'session-capture-state.json'), 'utf8'))).toMatchObject({
