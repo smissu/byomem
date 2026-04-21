@@ -24,6 +24,7 @@
 
 ## Retrieval order
 - For repo work: check project memory first, then user memory if needed.
+- Before starting substantive work in this repo, search project memory for relevant context, decisions, conventions, and prior fixes so you are not starting from the codebase cold.
 - Keep memory retrieval separate from code search/indexing.
 - Use canonical native BYOMem records as the source of truth.
 
