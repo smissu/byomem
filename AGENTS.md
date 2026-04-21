@@ -8,6 +8,7 @@
 
 ## What to store
 - Store concise outcomes, decisions, fixes, and durable preferences.
+- High-confidence inferred durable preferences, repeated working-style preferences, stable decisions, and other important durable info that will help future coding/project work may be stored proactively.
 - Project memory: repo-specific decisions, architecture choices, bug fixes, rollout notes.
 - User memory: long-lived preferences, recurring habits, reusable personal defaults.
 
@@ -18,7 +19,7 @@
 
 ## Capture workflow
 - Prefer reviewed capture over automatic capture.
-- Generate candidate memories from task outcomes, then require explicit approval before writing.
+- Generate candidate memories from task outcomes, and store them when confidence is high and the information is durable.
 - Default ambiguous content to **project** or reject; do not auto-promote uncertain content to user memory.
 
 ## Retrieval order
