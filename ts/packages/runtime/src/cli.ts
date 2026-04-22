@@ -73,7 +73,7 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     const arg = argv[i];
     const next = argv[i + 1];
     if (!command && !arg.startsWith('--')) { command = arg; continue; }
-    if (arg === '--help' || arg === '-h') return { command: 'help', options, payload };
+    if (arg === '--help' || arg === '-h') return { command: 'help', options, payload, flags };
     if (arg === '--base-dir') { options.baseDir = requireValue(next, '--base-dir'); i += 1; }
     else if (arg === '--embedding-base-url') { options.embeddingBaseUrl = requireValue(next, '--embedding-base-url'); i += 1; }
     else if (arg === '--embedding-model') { options.embeddingModel = requireValue(next, '--embedding-model'); i += 1; }
@@ -117,8 +117,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     if (command === 'store') {
       if (!store) throw new Error('Missing native store');
       if (!payload.input) throw new Error('Missing --input for store');
+      if (!queueRuntime) throw new Error('Missing queue runtime');
       const intent = JSON.parse(payload.input) as Parameters<typeof queueRuntime.write>[0];
-      console.log(JSON.stringify({ record: await queueRuntime!.write(intent) }, null, 2));
+      console.log(JSON.stringify({ record: await queueRuntime.write(intent) }, null, 2));
       return;
     }
     if (command === 'search') {

@@ -83,7 +83,7 @@ describe('Sprint 22 shadow validation slice', () => {
     const legacy = () => writeLegacy;
     const harness = openShadowHarness(store, legacy);
 
-    const result = await harness.replace({
+    const result = await harness.write({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Sprint 22 Write Alpha', parentContext: 'root' },
       content: { text: 'write shadow' },

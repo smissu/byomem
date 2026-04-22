@@ -12,12 +12,12 @@ export interface QueueRuntimeOptions {
 
 export interface QueueWriteResult {
   event?: QueueEvent;
-  record?: Awaited<ReturnType<ReturnType<typeof openQueueWriter>['write']>>['record'];
+  record?: Awaited<ReturnType<ReturnType<typeof openQueueWriter>['write']>>;
 }
 
 export interface QueueRuntime {
-  capture(line: string, intent: WriteIntent): QueueEvent | undefined;
-  replay(event: QueueEvent, intent: WriteIntent): QueueEvent | undefined;
+  capture(line: string, intent: WriteIntent): Promise<QueueEvent | undefined>;
+  replay(event: QueueEvent, intent: WriteIntent): Promise<QueueEvent | undefined>;
   write(intent: WriteIntent): Promise<QueueWriteResult | undefined>;
   state(): { workerId: string; sessionId: string; offset: number; lock: string | null };
 }

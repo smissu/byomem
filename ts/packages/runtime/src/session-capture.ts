@@ -64,6 +64,8 @@ export interface SessionCaptureWriteResult {
   record?: MemoryRecord;
   rollup?: MemoryRecord;
   reason: SessionCaptureReason;
+  pendingTurns?: number;
+  checkpointOffset?: number;
 }
 
 const SESSION_CAPTURE_STATE_FILE = 'session-capture-state.json';
@@ -418,7 +420,7 @@ export async function captureSessionCheckpoint(store: NativeStore, options: Sess
 
   const rollupResult = await queueRuntime.write(buildSessionRollupIntent(input, summary, pendingTurns, reason));
   if (!rollupResult?.record || !rollupResult?.event) throw new Error('Failed to persist session rollup');
-  const rollup = rollupResult.record;
+  const rollup = rollupResult.record.record;
   saveSessionState(options.baseDir, input.sessionId, {
     offset: endOffset,
     pendingTurns: [],

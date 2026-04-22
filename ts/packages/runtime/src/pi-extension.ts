@@ -1,8 +1,12 @@
-import type { ExtensionAPI } from '@mariozechner/pi-coding-agent';
+type ExtensionAPI = {
+  on?: (event: string, handler: (event: any, ctx: any) => unknown) => void;
+  registerCommand?: (name: string, options: { description?: string; handler: (args: any, ctx: any) => unknown }) => void;
+  registerTool?: (tool: { name: string; label?: string; description?: string; parameters?: unknown; execute: (toolCallId: string, params: any) => unknown }) => void;
+};
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { enforceNoPythonDefaultPath } from './no-python-default-path.js';
+import { assertNoPythonDefaultPath as noPythonDefaultPath } from './no-python-default-path.js';
 import { openQueueRuntime } from './queue-runtime.js';
 import { openReadPath } from './read.js';
 import { resolveRuntimeMode } from './runtime-mode.js';
@@ -450,7 +454,7 @@ export function byomem_runtime_status() {
     pythonDefaultDisabled: true,
     noPythonDefaultPath: (() => {
       try {
-        enforceNoPythonDefaultPath('python-default');
+        noPythonDefaultPath('python-default');
         return false;
       } catch {
         return true;
@@ -458,7 +462,7 @@ export function byomem_runtime_status() {
     })(),
     packageSurface: 'ts/packages/runtime',
     storeBaseDir: runtimeBaseDir,
-    nativeStorePath: nativeStore.path,
+    nativeStorePath: nativeStore.baseDir,
     activeProject,
     projectKey: activeProject.projectKey,
     embeddingConfigSource: embeddingConfig.source,
@@ -483,11 +487,11 @@ export function byomem_runtime_status() {
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.on('session_start', async (event, ctx) => {
+  pi.on?.('session_start', async (event, ctx) => {
     shouldInjectInitialContext = event.reason !== 'reload';
     ctx.ui?.notify?.('BYOMem TS runtime loaded', 'info');
   });
-  pi.on('before_agent_start', async (event, ctx) => {
+  pi.on?.('before_agent_start', async (event, ctx) => {
     if (!shouldInjectInitialContext) return {};
     shouldInjectInitialContext = false;
     const rememberedContext = await buildInitialByomemContext(event.prompt ?? '');
@@ -497,17 +501,17 @@ export default function (pi: ExtensionAPI) {
       systemPrompt: `${event.systemPrompt}\n\n${rememberedContext.systemPrompt ?? ''}`,
     };
   });
-  pi.on('turn_end', async (event, ctx) => {
+  pi.on?.('turn_end', async (event, ctx) => {
     await captureSessionFromHook('turn_end', ctx as Record<string, unknown>, event as TurnEndEvent);
   });
-  pi.on('session_before_switch', async (event, ctx) => {
+  pi.on?.('session_before_switch', async (event, ctx) => {
     await captureSessionFromHook('session_before_switch', ctx as Record<string, unknown>, event as TurnEndEvent);
   });
-  pi.on('session_shutdown', async (event, ctx) => {
+  pi.on?.('session_shutdown', async (event, ctx) => {
     await captureSessionFromHook('session_shutdown', ctx as Record<string, unknown>, event as TurnEndEvent);
   });
 
-  pi.registerTool({
+  pi.registerTool?.({
     name: 'byomem_runtime_status',
     label: 'BYOMem Runtime Status',
     description: 'Return the repo-local TS runtime status for BYOMem validation.',
@@ -521,7 +525,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  pi.registerTool?.({
     name: 'byomem_search',
     label: 'BYOMem Search',
     description: 'Search the repo-local BYOMem native store.',
@@ -546,7 +550,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  pi.registerTool?.({
     name: 'byomem_store',
     label: 'BYOMem Store',
     description: 'Store a record in the repo-local BYOMem native store.',
@@ -590,7 +594,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  pi.registerTool?.({
     name: 'byomem_prune',
     label: 'BYOMem Prune',
     description: 'Prune a record from the repo-local BYOMem native store.',
@@ -626,7 +630,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerCommand('byomem-status', {
+  pi.registerCommand?.('byomem-status', {
     description: 'Show repo-local BYOMem TS runtime status',
     handler: async (_args: string, ctx) => {
       ctx.ui.notify(JSON.stringify(byomem_runtime_status(), null, 2), 'info');

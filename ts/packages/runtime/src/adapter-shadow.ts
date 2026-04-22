@@ -19,7 +19,7 @@ export function openShadowAdapter(adapter: NativeAdapter, legacyRead: () => Memo
   return {
     async write(intent: WriteIntent): Promise<ShadowResult> {
       const result = await adaptWrite(adapter, intent);
-      const native = result?.record?.record ?? result?.record;
+      const native = (result && typeof result === 'object' && 'record' in result ? (result as unknown as { record: MemoryRecord }).record : result) as MemoryRecord | undefined;
       const legacy = legacyRead();
       return { legacy, native, diffs: legacy && native && legacy.identity?.stableKey && native.identity?.stableKey ? diffRecords(legacy, native) : [] };
     },
