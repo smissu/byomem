@@ -86,11 +86,9 @@ describe('runtime cli', () => {
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
       record: {
         record: {
-          record: {
-            scope: 'project',
-            identity: { namespace: 'byomem', leafName: 'cli-gamma', parentContext: 'root' },
-            provenance: { source: 'fixtures', origin: 'write' },
-          },
+          scope: 'project',
+          identity: { namespace: 'byomem', leafName: 'cli-gamma', parentContext: 'root' },
+          provenance: { source: 'fixtures', origin: 'write' },
         },
       },
     });

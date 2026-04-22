@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { MemoryRecord, QueueEvent, WriteIntent } from './contracts.js';
 import { openGenerationClient, type GenerationClientOptions } from './generation-client.js';
-import { openQueueRuntime, type QueueRuntime } from './queue-runtime.js';
+import { openQueueRuntime, type QueueRuntime, type QueueWriteResult } from './queue-runtime.js';
 import type { NativeStore } from './store.js';
 
 export interface SessionCaptureOptions {
@@ -62,7 +62,7 @@ export type SessionCaptureReason = 'checkpointed' | 'threshold' | 'large-turn' |
 export interface SessionCaptureWriteResult {
   checkpoint: QueueEvent[];
   record?: MemoryRecord;
-  rollup?: MemoryRecord;
+  rollup?: QueueWriteResult;
   reason: SessionCaptureReason;
   pendingTurns?: number;
   checkpointOffset?: number;
@@ -418,9 +418,9 @@ export async function captureSessionCheckpoint(store: NativeStore, options: Sess
     event: input.event,
   }).catch(() => summarizeFallback(pendingTurns))) || summarizeFallback(pendingTurns);
 
-  const rollupResult = await queueRuntime.write(buildSessionRollupIntent(input, summary, pendingTurns, reason));
-  if (!rollupResult?.record || !rollupResult?.event) throw new Error('Failed to persist session rollup');
-  const rollup = rollupResult.record;
+  const rollupIntent = buildSessionRollupIntent(input, summary, pendingTurns, reason);
+  const rollup = await queueRuntime.write(rollupIntent);
+  if (!rollup?.record) throw new Error('Failed to persist session rollup');
   saveSessionState(options.baseDir, input.sessionId, {
     offset: endOffset,
     pendingTurns: [],

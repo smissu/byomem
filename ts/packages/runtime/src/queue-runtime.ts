@@ -1,4 +1,4 @@
-import type { QueueEvent, WriteIntent } from './contracts.js';
+import type { QueueEvent, WriteIntent, MemoryRecord } from './contracts.js';
 import type { NativeStore } from './store.js';
 import { openNativeQueue } from './queue.js';
 import { openNativeWorker } from './worker.js';
@@ -12,7 +12,7 @@ export interface QueueRuntimeOptions {
 
 export interface QueueWriteResult {
   event?: QueueEvent;
-  record?: Awaited<ReturnType<ReturnType<typeof openQueueWriter>['write']>>;
+  record?: MemoryRecord;
 }
 
 export interface QueueRuntime {
@@ -70,7 +70,7 @@ export function openQueueRuntime(store: NativeStore, options: QueueRuntimeOption
         worker.advanceOffset(state.offset + 1);
         queue.enqueue(event, state.workerId, state.offset + 1, normalized);
         queue.checkpoint(event.eventId);
-        const record = await queueWriter.write({ ...normalized, provenance: { ...(normalized.provenance ?? { source: 'native-store' }), origin: event.kind } });
+        const { record } = await queueWriter.write({ ...normalized, provenance: { ...(normalized.provenance ?? { source: 'native-store' }), origin: event.kind } });
         queue.flush(event.eventId);
         return { event, record };
       });
