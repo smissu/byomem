@@ -15,6 +15,7 @@ queue/
 tmp/
 watch_*
 tmp_ollama_descripterizer_results.json
+node_modules/.vite/
 byomem-index.sqlite
 byomem-index.sqlite-shm
 byomem-index.sqlite-wal
