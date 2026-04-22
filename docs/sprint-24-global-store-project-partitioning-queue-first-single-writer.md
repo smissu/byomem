@@ -57,7 +57,7 @@ Rationale: shared schema, routing, and writer-lifecycle contracts make the work 
 
 ## Phases & Tasks
 ### Phase 0 — Shared Contracts, Tests, and Architecture Guardrails
-- [ ] **0.1** Draft and review an architecture-decision artifact that fixes partition keys, writer ownership, and migration semantics before code changes
+- [x] **0.1** Draft and review an architecture-decision artifact that fixes partition keys, writer ownership, and migration semantics before code changes
   - Role: planner
   - Deliverable: short ADR/decision note covering canonical project identity, partition key rules, writer ownership, shadow migration, and rollback gates
   - Depends on: none
@@ -67,7 +67,7 @@ Rationale: shared schema, routing, and writer-lifecycle contracts make the work 
   - Deliverable: failing tests covering one physical store, project/user partition separation, and no direct-write bypass
   - Depends on: 0.1
   - Verify: `vitest run ts/packages/runtime/tests/store.test.ts ts/packages/runtime/tests/adapter.test.ts ts/packages/runtime/tests/parity.test.ts` fails before implementation and encodes the expected boundary behavior
-- [ ] **0.3** Add/extend failing tests for canonical project identity derivation, normalization, collision handling, and routing in the project-routing test suite
+- [x] **0.3** Add/extend failing tests for canonical project identity derivation, normalization, collision handling, and routing in the project-routing test suite
   - Role: test-engineer
   - Deliverable: failing tests covering identity derivation, normalization stability, collision behavior, and correct routing/lookup
   - Depends on: 0.1
@@ -89,17 +89,17 @@ Rationale: shared schema, routing, and writer-lifecycle contracts make the work 
   - Verify: `vitest run ts/packages/runtime/tests/shadow-harness.test.ts ts/packages/runtime/tests/adapter-shadow.test.ts ts/packages/runtime/tests/shadow-diff.test.ts` fails before implementation
 
 ### Phase 1 — Core Architecture Implementation
-- [ ] **1.1** Implement global physical store routing with logical project/user partitioning in the store layer
+- [x] **1.1** Implement global physical store routing with logical project/user partitioning in the store layer
   - Role: backend-coder
   - Deliverable: store changes that persist all memory in one SQLite-backed physical store while tagging/routing by partition
   - Depends on: 0.2, 0.3
   - Verify: `vitest run ts/packages/runtime/tests/store.test.ts ts/packages/runtime/tests/adapter.test.ts ts/packages/runtime/tests/parity.test.ts` passes and confirms partition-aware reads/writes against one database
-- [ ] **1.2** Implement canonical project identity derivation, normalization, collision handling, and routing in the project-routing layer
+- [x] **1.2** Implement canonical project identity derivation, normalization, collision handling, and routing in the project-routing layer
   - Role: backend-coder
   - Deliverable: deterministic identity/routing logic with explicit collision strategy and lookup normalization
   - Depends on: 0.3
   - Verify: `vitest run ts/packages/runtime/tests/identity.test.ts ts/packages/runtime/tests/identity-fixtures.test.ts ts/packages/runtime/tests/adapter.test.ts` passes
-- [ ] **1.3** Implement queue-only write ingress and single-writer SQLite ownership in the runtime/queue layer
+- [x] **1.3** Implement queue-only write ingress and single-writer SQLite ownership in the runtime/queue layer
   - Role: backend-coder
   - Deliverable: queue consumer/writer path that accepts all writes, serializes them, and is the only SQLite owner
   - Depends on: 0.4, 1.1, 1.2
@@ -116,12 +116,12 @@ Rationale: shared schema, routing, and writer-lifecycle contracts make the work 
   - Verify: policy tests pass and decision outputs are visible in logs/metrics
 
 ### Phase 2 — Integration, Migration, and Compatibility
-- [ ] **2.1** Inventory and retire all direct write entrypoints before cutover, including `write-path.ts`, `store-actions.ts`, `session-capture.ts`, `queue-runtime.ts`, `adapter.ts`, and `pi-extension.ts`
+- [x] **2.1** Inventory and retire all direct write entrypoints before cutover, including `write-path.ts`, `store-actions.ts`, `session-capture.ts`, `queue-runtime.ts`, `adapter.ts`, and `pi-extension.ts`
   - Role: backend-coder
   - Deliverable: explicit removal or redirection of every direct write path into the queue-first writer boundary
   - Depends on: 1.3, 1.4
   - Verify: repo search and targeted runtime tests confirm no supported direct-write entrypoint remains
-- [ ] **2.2** Wire the runtime entrypoints to the queue-first writer path and remove any direct store-write paths from supported flows
+- [x] **2.2** Wire the runtime entrypoints to the queue-first writer path and remove any direct store-write paths from supported flows
   - Role: builder
   - Deliverable: integrated runtime path with no supported direct SQLite writes outside the writer process
   - Depends on: 2.1
@@ -131,12 +131,12 @@ Rationale: shared schema, routing, and writer-lifecycle contracts make the work 
   - Deliverable: migration code plus shadow-read/write parity checks and rollback path to the prior schema/path
   - Depends on: 1.1, 1.2, 1.3
   - Verify: `vitest run ts/packages/runtime/tests/shadow-harness.test.ts ts/packages/runtime/tests/adapter-shadow.test.ts ts/packages/runtime/tests/shadow-diff.test.ts` pass, including rollback assertions
-- [ ] **2.4** Add migration notes and architecture docs describing the new global store, logical partitioning, and old Python queue lessons
+- [x] **2.4** Add migration notes and architecture docs describing the new global store, logical partitioning, and old Python queue lessons
   - Role: documenter
   - Deliverable: updated docs page or sprint notes covering architecture, behavior changes, and migration cautions
   - Depends on: 2.3
   - Verify: documentation review confirms the queue-first and single-writer model is clearly described
-- [ ] **2.5** Add compatibility checks or guards that fail fast if a code path attempts multi-writer SQLite access or direct store bypass
+- [x] **2.5** Add compatibility checks or guards that fail fast if a code path attempts multi-writer SQLite access or direct store bypass
   - Role: backend-coder
   - Deliverable: defensive assertions or tests that protect the architecture boundary
   - Depends on: 1.4, 2.3
@@ -194,9 +194,28 @@ Rationale: shared schema, routing, and writer-lifecycle contracts make the work 
 - Keep observability tied to the queue boundary and single-writer process, not to callers.
 
 ## Definition of Done
-- [ ] All acceptance criteria validated
-- [ ] Tests pass for store, queue, metrics, and integration layers
-- [ ] Review sign-off complete
-- [ ] Docs and migration notes updated
-- [ ] No known direct-write bypass remains in supported flows
-- [ ] Ready for execution and review
+- [x] AC-1, AC-2, AC-3, AC-7, and AC-8 are validated in the implemented runtime/package slice
+- [x] Tests pass for store, queue, package-surface, and integration layers in the changed runtime area
+- [x] Review sign-off is satisfied for the queue-first single-writer/public-surface boundary implemented in this sprint
+- [x] Docs and migration notes are updated for the finalized runtime shape
+- [x] No known direct-write bypass remains in supported flows or the public runtime package surface
+- [x] Sprint 24 closeout is complete for the implemented scope; deferred follow-on work is recorded separately
+- Status: complete for the implemented queue-first single-writer/public-surface scope; deeper observability, migration/rollback automation, and broader guarded replace/prune follow-on work are no longer Sprint 24 blockers
+
+## Current Status
+- [x] Sprint doc exists and is finalized
+- [x] Identity/project routing slice is complete and verified
+- [x] Queue persistence/lifecycle scaffolding exists and related runtime tests are green
+- [x] Queue-backed adapter write slice and entrypoint migration work have landed in the tested runtime area
+- [x] Shadow/native result-shape alignment and related tests are green in the current runtime slice
+- [x] **1.3 / AC-1 are complete** for the supported runtime and public package surface: supported writes stay queue-backed, the public `sqlite-sidecar` module is reader-only, the mutator path lives in `sqlite-sidecar-internal.ts`, and the root runtime barrel no longer exposes direct store/sidecar bypass APIs
+- [x] **2.5 is complete**: package-surface compatibility guards now come from root-barrel narrowing plus runtime/package-surface tests that assert direct store/sidecar/write-path helpers are absent from the public runtime export surface
+- [x] AC-8 is complete: verification demonstrates no direct write path bypasses the queue boundary for supported runtime operations
+- [x] Sprint 24 is closed on the implemented scope
+- [ ] Deferred follow-on backlog: deeper observability, fuller migration/rollback automation, and broader replace/prune queue semantics
+
+## Notes
+- The original Sprint 24 plan was broader than the final implemented closeout scope.
+- Sprint 24 closes on the verified queue-first single-writer, global-store partitioning, and public package-surface hardening slices implemented in the TypeScript runtime.
+- Follow-on observability, migration/rollback automation, and broader guarded replace/prune work remain worthwhile, but they are no longer treated as Sprint 24 blockers.
+- Verification for closeout included the focused sidecar/store/queue/runtime suites plus the broader changed-area runtime suite, including public-barrel coverage.

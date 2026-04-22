@@ -13,19 +13,10 @@ function matchesIntent(record: MemoryRecord, intent: WriteIntent): boolean {
   return record.scope === intent.scope && record.identity.stableKey === intent.identity.stableKey && record.identity.namespace === intent.identity.namespace;
 }
 
-export async function writeRecord(store: NativeStore, intent: WriteIntent): Promise<StoreActionResult> {
-  return { kind: 'write', record: await store.write(intent) };
+export async function replaceRecord(_store: NativeStore, _intent: WriteIntent): Promise<StoreActionResult> {
+  throw new Error('Unsupported direct replace on shared write boundary');
 }
 
-export async function replaceRecord(store: NativeStore, intent: WriteIntent): Promise<StoreActionResult> {
-  const existing = store.list().find((record) => matchesIntent(record, intent));
-  const removed = existing ? [existing] : [];
-  const record = await store.write(intent);
-  return { kind: 'replace', record, removed };
-}
-
-export function pruneRecords(store: NativeStore, intent: Pick<WriteIntent, 'identity' | 'scope'>): StoreActionResult {
-  const targetId = intent.identity.stableKey;
-  const removed = targetId ? store.prune(targetId) : undefined;
-  return { kind: 'prune', removed: removed ? [removed] : [] };
+export function pruneRecords(_store: NativeStore, _intent: Pick<WriteIntent, 'identity' | 'scope'>): StoreActionResult {
+  throw new Error('Unsupported direct prune on shared write boundary');
 }

@@ -39,4 +39,12 @@ describe('identity normalization', () => {
     expect(ctx.activeProjectMetadata.source).toBe('env');
     expect(ctx.activeProjectMetadata.normalizedLeafName).toBe('alpha-repo');
   });
+
+  it('keeps active project identity tied to cwd instead of runtime base dir override', () => {
+    const ctx = resolveActiveProjectContext({ BYOMEM_RUNTIME_BASE_DIR: '/tmp/byomem-global-store' } as NodeJS.ProcessEnv, '/Users/ericsmith/Documents/byomem/ts/packages/runtime');
+    expect(ctx.repoRoot).toBe('/Users/ericsmith/Documents/byomem');
+    expect(ctx.projectKey).toBe('byomem');
+    expect(ctx.activeProjectMetadata.source).toBe('git');
+    expect(ctx.activeProjectMetadata.path).toBe('/Users/ericsmith/Documents/byomem');
+  });
 });

@@ -2,17 +2,17 @@ import type { ExtensionAPI } from '@mariozechner/pi-coding-agent';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { openNativeStore, openReadPath, openWritePath, searchIndex, resolveRuntimeMode, enforceNoPythonDefaultPath, captureSessionCheckpoint, type SessionCaptureInput } from './index.ts';
+import { enforceNoPythonDefaultPath } from './no-python-default-path.js';
+import { openQueueRuntime } from './queue-runtime.js';
+import { openReadPath } from './read.js';
+import { resolveRuntimeMode } from './runtime-mode.js';
+import { searchIndex } from './search-index.js';
+import { captureSessionCheckpoint, type SessionCaptureInput } from './session-capture.js';
+import { openNativeStore } from './store.js';
 import { resolveActiveProjectContext } from './identity.js';
 
 function resolveDefaultRuntimeBaseDir(): string {
-  let currentDir = resolve(process.cwd());
-  while (true) {
-    if (existsSync(join(currentDir, '.git'))) return currentDir;
-    const parentDir = resolve(currentDir, '..');
-    if (parentDir === currentDir) return currentDir;
-    currentDir = parentDir;
-  }
+  return resolve(homedir(), '.byomem', 'runtime');
 }
 
 const runtimeBaseDir = process.env.BYOMEM_RUNTIME_BASE_DIR ?? resolveDefaultRuntimeBaseDir();
@@ -27,7 +27,7 @@ const nativeStore = openNativeStore({
   embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
 });
 const readPath = openReadPath(nativeStore);
-const writePath = openWritePath(nativeStore);
+const queueRuntime = openQueueRuntime(nativeStore, { baseDir: runtimeBaseDir });
 const debugLogPath = join(runtimeBaseDir, 'queue', 'debug', 'byomem-turn-end.jsonl');
 let shouldInjectInitialContext = true;
 
@@ -278,7 +278,6 @@ function resolveSessionManagerDetails(sessionManager: unknown) {
       : sessionFile && typeof sessionFile === 'object' && 'path' in (sessionFile as Record<string, unknown>) && typeof (sessionFile as Record<string, unknown>).path === 'string'
         ? (sessionFile as Record<string, unknown>).path as string
         : undefined,
-    entryCount: Array.isArray(entries) ? entries.length : undefined,
   };
 }
 
@@ -295,18 +294,6 @@ function resolveSessionCaptureInput(ctx: Record<string, unknown>, eventName: str
     ?? (typeof ctx.transcriptPath === 'string' ? ctx.transcriptPath : undefined)
     ?? (typeof event.transcriptPath === 'string' ? event.transcriptPath : undefined);
   if (!sessionId || !transcriptPath) return null;
-  const messageCount = typeof ctx.message_count === 'number'
-    ? ctx.message_count
-    : typeof ctx.messageCount === 'number'
-      ? ctx.messageCount
-      : Array.isArray(event.messages)
-        ? event.messages.length
-        : sessionManagerDetails.entryCount;
-  const transcriptBytes = typeof ctx.transcript_bytes === 'number'
-    ? ctx.transcript_bytes
-    : typeof ctx.transcriptBytes === 'number'
-      ? ctx.transcriptBytes
-      : undefined;
   const agent = typeof ctx.agent_name === 'string'
     ? ctx.agent_name
     : typeof ctx.name === 'string'
@@ -327,8 +314,6 @@ function resolveSessionCaptureInput(ctx: Record<string, unknown>, eventName: str
     idle: typeof ctx.idle === 'boolean' ? ctx.idle : false,
     agent,
     model,
-    messageCount,
-    transcriptBytes,
   };
 }
 
@@ -381,6 +366,43 @@ function truncateLine(value: string, maxChars = 220): string {
   return `${trimmed.slice(0, Math.max(0, maxChars - 1))}…`;
 }
 
+type ByomemSearchResultDto = {
+  id?: string;
+  scope?: string;
+  identity?: {
+    namespace?: string;
+    leafName?: string;
+    parentContext?: string;
+  };
+  text?: string;
+  structured?: {
+    kind?: string;
+  };
+  provenance?: {
+    source?: string;
+  };
+};
+
+function shapeByomemSearchResult<T extends { id?: unknown; scope?: unknown; identity?: { namespace?: unknown; leafName?: unknown; parentContext?: unknown }; content?: { text?: unknown; structured?: Record<string, unknown> }; provenance?: { source?: unknown } }>(result: T): ByomemSearchResultDto {
+  const text = typeof result.content?.text === 'string' ? result.content.text : undefined;
+  const kind = typeof result.content?.structured?.kind === 'string' ? result.content.structured.kind : undefined;
+  const source = typeof result.provenance?.source === 'string' ? result.provenance.source : undefined;
+  return {
+    id: typeof result.id === 'string' ? result.id : undefined,
+    scope: typeof result.scope === 'string' ? result.scope : undefined,
+    identity: result.identity
+      ? {
+          namespace: typeof result.identity.namespace === 'string' ? result.identity.namespace : undefined,
+          leafName: typeof result.identity.leafName === 'string' ? result.identity.leafName : undefined,
+          parentContext: typeof result.identity.parentContext === 'string' ? result.identity.parentContext : undefined,
+        }
+      : undefined,
+    text,
+    ...(kind ? { structured: { kind } } : {}),
+    ...(source ? { provenance: { source } } : {}),
+  };
+}
+
 function formatContextLines(records: Array<{ content?: { text?: string }; identity?: { leafName?: string } }>, maxItems = 3): string[] {
   const seen = new Set<string>();
   const lines: string[] = [];
@@ -418,7 +440,7 @@ async function buildInitialByomemContext(prompt: string): Promise<string | null>
 
 export function byomem_runtime_status() {
   const mode = resolveRuntimeMode();
-  const activeProject = resolveActiveProjectContext(process.env, runtimeBaseDir);
+  const activeProject = resolveActiveProjectContext(process.env, process.cwd());
   return {
     runtimeMode: mode,
     pythonDefaultDisabled: true,
@@ -514,7 +536,7 @@ export default function (pi: ExtensionAPI) {
       const scope = normalizeScope(intent?.scope);
       const limit = typeof intent?.limit === 'number' && Number.isFinite(intent.limit) ? intent.limit : undefined;
       if (!query) throw new Error('Invalid byomem_search intent');
-      const results = await Promise.resolve(searchIndex(nativeStore, { query, scope, limit }));
+      const results = (await Promise.resolve(searchIndex(nativeStore, { query, scope, limit }))).map((result) => shapeByomemSearchResult(result));
       return { content: [{ type: 'text', text: safeJson({ results }) }], details: { results } };
     },
   });
@@ -557,7 +579,8 @@ export default function (pi: ExtensionAPI) {
     },
     async execute(_toolCallId: string, params: unknown) {
       const intent = normalizeStoreIntent(params);
-      const result = await writePath.write(intent as never);
+      const result = await queueRuntime.write(intent as never);
+      if (!result?.record) throw new Error('Failed to persist byomem_store intent');
       return { content: [{ type: 'text', text: safeJson(result) }], details: result };
     },
   });
@@ -587,7 +610,13 @@ export default function (pi: ExtensionAPI) {
     },
     async execute(_toolCallId: string, params: unknown) {
       const intent = normalizePruneIntent(params);
-      const result = await Promise.resolve(writePath.prune(intent as never));
+      const result = await queueRuntime.write({
+        scope: intent.scope,
+        identity: intent.identity,
+        content: { text: `Prune ${intent.identity.leafName}` },
+        provenance: { source: 'byomem-prune', adapter: 'native-store', origin: 'write' },
+      } as never);
+      if (!result?.record) throw new Error('Failed to persist byomem_prune intent');
       return { content: [{ type: 'text', text: safeJson(result) }], details: result };
     },
   });

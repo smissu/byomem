@@ -85,8 +85,13 @@ describe('runtime cli', () => {
 
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
       record: {
-        scope: 'project',
-        identity: { namespace: 'byomem', leafName: 'cli-gamma', parentContext: 'root' },
+        record: {
+          record: {
+            scope: 'project',
+            identity: { namespace: 'byomem', leafName: 'cli-gamma', parentContext: 'root' },
+            provenance: { source: 'fixtures', origin: 'write' },
+          },
+        },
       },
     });
     expect(existsSync(join(dir, 'native-store.json'))).toBe(true);

@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { QueueEvent } from './contracts.js';
+import type { QueueEvent, WriteIntent } from './contracts.js';
 
 export interface QueueJob {
   jobId: string;
@@ -9,6 +9,7 @@ export interface QueueJob {
   workerId: string;
   offset: number;
   event: QueueEvent;
+  writeIntent?: WriteIntent;
   state: 'queued' | 'checkpointed' | 'flushed';
 }
 
@@ -39,12 +40,11 @@ function persistQueueSnapshot(filePath: string, snapshot: QueueSnapshot): void {
 }
 
 export interface NativeQueue {
-  enqueue(event: QueueEvent, workerId: string, offset: number): QueueJob;
+  enqueue(event: QueueEvent, workerId: string, offset: number, writeIntent?: WriteIntent): QueueJob;
   checkpoint(jobId: string): QueueJob | undefined;
   flush(jobId: string): QueueJob | undefined;
   list(): QueueJob[];
 }
-
 export function openNativeQueue(options: QueueOptions): NativeQueue {
   const filePath = resolve(options.baseDir, options.queueFile ?? 'queue.json');
   const snapshot = loadQueueSnapshot(filePath);
@@ -53,13 +53,14 @@ export function openNativeQueue(options: QueueOptions): NativeQueue {
   const persist = () => persistQueueSnapshot(filePath, { version: 1, jobs: [...jobsById.values()] });
 
   return {
-    enqueue(event: QueueEvent, workerId: string, offset: number): QueueJob {
+    enqueue(event: QueueEvent, workerId: string, offset: number, writeIntent?: WriteIntent): QueueJob {
       const job: QueueJob = {
         jobId: event.eventId,
         sessionId: event.sessionId,
         workerId,
         offset,
         event,
+        writeIntent,
         state: 'queued',
       };
       jobsById.set(job.jobId, job);

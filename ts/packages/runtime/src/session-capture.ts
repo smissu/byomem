@@ -55,18 +55,14 @@ export interface SessionCaptureInput {
   idle?: boolean;
   agent?: string;
   model?: string;
-  messageCount?: number;
-  transcriptBytes?: number;
 }
 
 export type SessionCaptureReason = 'checkpointed' | 'threshold' | 'large-turn' | 'idle' | 'final' | 'switch' | 'no-pending-turns';
 
 export interface SessionCaptureWriteResult {
   checkpoint: QueueEvent[];
-  record: MemoryRecord;
+  record?: MemoryRecord;
   rollup?: MemoryRecord;
-  pendingTurns: number;
-  checkpointOffset: number;
   reason: SessionCaptureReason;
 }
 
@@ -111,13 +107,6 @@ function loadSessionState(baseDir: string, sessionId: string): SessionCaptureSta
 function saveSessionState(baseDir: string, sessionId: string, state: SessionCaptureState): void {
   const all = loadAllState(baseDir);
   all[sessionId] = state;
-  saveAllState(baseDir, all);
-}
-
-function clearSessionState(baseDir: string, sessionId: string): void {
-  const all = loadAllState(baseDir);
-  if (!(sessionId in all)) return;
-  delete all[sessionId];
   saveAllState(baseDir, all);
 }
 
@@ -345,44 +334,8 @@ function deriveLeafName(sessionId: string): string {
   return trimmed.length ? trimmed : 'session-capture';
 }
 
-function buildSessionIntent(input: SessionCaptureInput, transcriptText: string, pendingTurns: SessionTurn[], checkpointOffset: number): WriteIntent {
-  const lines = transcriptText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  return {
-    scope: 'project',
-    identity: {
-      namespace: 'byomem-session',
-      leafName: deriveLeafName(input.sessionId),
-      parentContext: 'root',
-      stableKey: `project:byomem-session:root:${deriveLeafName(input.sessionId)}`,
-    },
-    content: {
-      text: `Session ${input.sessionId} checkpoint from ${input.event ?? 'turn_end'}`,
-      structured: {
-        kind: 'checkpoint',
-        sessionId: input.sessionId,
-        event: input.event ?? 'turn_end',
-        final: input.final ?? false,
-        idle: input.idle ?? false,
-        agent: input.agent ?? null,
-        model: input.model ?? null,
-        transcriptPath: input.transcriptPath,
-        transcriptBytes: input.transcriptBytes ?? Buffer.byteLength(transcriptText, 'utf8'),
-        messageCount: input.messageCount ?? lines.length,
-        transcriptPreview: lines.slice(-5),
-        checkpointOffset,
-        pendingTurns: pendingTurns.length,
-      },
-    },
-    provenance: {
-      source: 'session-capture',
-      adapter: 'native-store',
-      origin: 'session-capture',
-    },
-  };
-}
-
-function buildSessionRollupIntent(input: SessionCaptureInput, summary: string, turns: SessionTurn[], checkpointOffset: number, reason: SessionCaptureReason): WriteIntent {
-  const rollupKey = hashFlushKey(input.sessionId, checkpointOffset, turns);
+function buildSessionRollupIntent(input: SessionCaptureInput, summary: string, turns: SessionTurn[], reason: SessionCaptureReason): WriteIntent {
+  const rollupKey = hashFlushKey(input.sessionId, input.transcriptPath.length, turns);
   const sessionLeaf = deriveLeafName(input.sessionId);
   return {
     scope: 'project',
@@ -397,16 +350,7 @@ function buildSessionRollupIntent(input: SessionCaptureInput, summary: string, t
       structured: {
         kind: 'rollup',
         sessionId: input.sessionId,
-        event: input.event ?? 'turn_end',
-        final: input.final ?? false,
-        idle: input.idle ?? false,
         flushReason: reason,
-        agent: input.agent ?? null,
-        model: input.model ?? null,
-        transcriptPath: input.transcriptPath,
-        checkpointOffset,
-        pendingTurns: turns.length,
-        pendingTurnIds: turns.map((turn) => turn.id),
         sourceStableKey: `project:byomem-session:root:${sessionLeaf}`,
       },
     },
@@ -418,6 +362,7 @@ function buildSessionRollupIntent(input: SessionCaptureInput, summary: string, t
   };
 }
 
+
 export function openSessionCapture(store: NativeStore, options: SessionCaptureOptions): SessionCaptureResult {
   const emitted: MemoryRecord[] = [];
   const runtime = openQueueRuntime(store, options);
@@ -425,13 +370,6 @@ export function openSessionCapture(store: NativeStore, options: SessionCaptureOp
   return { runtime, emitted };
 }
 
-export async function emitSessionRecord(store: NativeStore, intent: WriteIntent, event: QueueEvent): Promise<MemoryRecord> {
-  const record = await store.write(intent);
-  return {
-    ...record,
-    provenance: { ...record.provenance, origin: event.kind },
-  };
-}
 
 export async function captureSessionCheckpoint(store: NativeStore, options: SessionCaptureOptions, input: SessionCaptureInput): Promise<SessionCaptureWriteResult> {
   const transcriptBuffer = readFileSync(input.transcriptPath);
@@ -439,7 +377,7 @@ export async function captureSessionCheckpoint(store: NativeStore, options: Sess
   const state = loadSessionState(options.baseDir, input.sessionId);
   const { turns: newTurns, endOffset } = parseTurnsFromTranscriptBuffer(transcriptBuffer, state.offset || 0, options);
   const pendingTurns = [...(state.pendingTurns ?? []), ...newTurns];
-  const record = await store.write(buildSessionIntent(input, transcriptText, pendingTurns, endOffset));
+  const queueRuntime = openQueueRuntime(store, options);
   const reason = determineFlushReason(input, pendingTurns, options);
 
   if (reason === 'no-pending-turns') {
@@ -451,7 +389,7 @@ export async function captureSessionCheckpoint(store: NativeStore, options: Sess
       lastModel: input.model,
       lastActivityAt: new Date().toISOString(),
     });
-    return { checkpoint: [], record, rollup: undefined, pendingTurns: 0, checkpointOffset: endOffset, reason };
+    return { checkpoint: [], record: undefined as never, rollup: undefined, pendingTurns: 0, checkpointOffset: endOffset, reason };
   }
 
   const nextState: SessionCaptureState = {
@@ -467,7 +405,7 @@ export async function captureSessionCheckpoint(store: NativeStore, options: Sess
   const forceFlush = reason === 'final' || reason === 'idle' || reason === 'switch';
   if (!reason || (!forceFlush && pendingTurns.length < minTurns)) {
     saveSessionState(options.baseDir, input.sessionId, nextState);
-    return { checkpoint: [], record, rollup: undefined, pendingTurns: pendingTurns.length, checkpointOffset: endOffset, reason: 'checkpointed' };
+    return { checkpoint: [], record: undefined as never, rollup: undefined, pendingTurns: pendingTurns.length, checkpointOffset: endOffset, reason: 'checkpointed' };
   }
 
   const summary = (await generateRollupSummary(options, {
@@ -478,7 +416,9 @@ export async function captureSessionCheckpoint(store: NativeStore, options: Sess
     event: input.event,
   }).catch(() => summarizeFallback(pendingTurns))) || summarizeFallback(pendingTurns);
 
-  const rollup = await store.write(buildSessionRollupIntent(input, summary, pendingTurns, endOffset, reason));
+  const rollupResult = await queueRuntime.write(buildSessionRollupIntent(input, summary, pendingTurns, reason));
+  if (!rollupResult?.record || !rollupResult?.event) throw new Error('Failed to persist session rollup');
+  const rollup = rollupResult.record;
   saveSessionState(options.baseDir, input.sessionId, {
     offset: endOffset,
     pendingTurns: [],
@@ -487,5 +427,5 @@ export async function captureSessionCheckpoint(store: NativeStore, options: Sess
     lastModel: input.model,
     lastActivityAt: new Date().toISOString(),
   });
-  return { checkpoint: [], record, rollup, pendingTurns: 0, checkpointOffset: endOffset, reason };
+  return { checkpoint: [], record: undefined as never, rollup, pendingTurns: 0, checkpointOffset: endOffset, reason };
 }

@@ -2,7 +2,9 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openNativeStore, searchIndex } from './index.js';
+import { openNativeStore } from './store.js';
+import { openQueueRuntime } from './queue-runtime.js';
+import { searchIndex } from './search-index.js';
 import { openGenerationClient } from './generation-client.js';
 
 const GENERATION_COMMANDS = new Set(['generate', 'summarize', 'reason', 'chat']);
@@ -89,12 +91,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   const isGenerationCommand = GENERATION_COMMANDS.has(command);
   const store = isGenerationCommand ? undefined : openNativeStore({ ...options, embeddingRequireRemote: true });
+  const queueRuntime = store ? openQueueRuntime(store, { baseDir: options.baseDir }) : undefined;
   try {
     if (command === 'store') {
       if (!store) throw new Error('Missing native store');
       if (!payload.input) throw new Error('Missing --input for store');
-      const intent = JSON.parse(payload.input) as Parameters<typeof store.write>[0];
-      console.log(JSON.stringify({ record: await store.write(intent) }, null, 2));
+      const intent = JSON.parse(payload.input) as Parameters<typeof queueRuntime.write>[0];
+      console.log(JSON.stringify({ record: await queueRuntime!.write(intent) }, null, 2));
       return;
     }
     if (command === 'search') {
@@ -105,10 +108,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       return;
     }
     if (command === 'prune') {
-      if (!store) throw new Error('Missing native store');
+      if (!queueRuntime) throw new Error('Missing queue runtime');
       const id = payload.id?.trim();
       if (!id) throw new Error('Missing --id for prune');
-      console.log(JSON.stringify({ removed: store.prune(id) }, null, 2));
+      const parts = id.split(':');
+      if (parts.length < 4) throw new Error('Invalid --id for prune');
+      const [scope, namespace, parentContext, ...leafParts] = parts;
+      if (!scope || !namespace || !parentContext || leafParts.length === 0) throw new Error('Invalid --id for prune');
+      const result = await queueRuntime.write({
+        scope: scope as 'project' | 'dir' | 'user' | 'agent',
+        identity: { namespace, parentContext, leafName: leafParts.join(':'), stableKey: id },
+        content: { text: `Prune ${id}` },
+        provenance: { source: 'cli-prune', adapter: 'native-store', origin: 'write' },
+      } as never);
+      console.log(JSON.stringify({ result }, null, 2));
       return;
     }
     if (GENERATION_COMMANDS.has(command)) {

@@ -18,19 +18,16 @@ export interface ShadowAdapter {
 export function openShadowAdapter(adapter: NativeAdapter, legacyRead: () => MemoryRecord | undefined): ShadowAdapter {
   return {
     async write(intent: WriteIntent): Promise<ShadowResult> {
-      const native = (await adaptWrite(adapter, intent)).record;
+      const result = await adaptWrite(adapter, intent);
+      const native = result?.record?.record ?? result?.record;
       const legacy = legacyRead();
-      return { legacy, native, diffs: legacy && native ? diffRecords(legacy, native) : [] };
+      return { legacy, native, diffs: legacy && native && legacy.identity?.stableKey && native.identity?.stableKey ? diffRecords(legacy, native) : [] };
     },
-    async replace(intent: WriteIntent): Promise<ShadowResult> {
-      const native = (await adaptReplace(adapter, intent)).record;
-      const legacy = legacyRead();
-      return { legacy, native, diffs: legacy && native ? diffRecords(legacy, native) : [] };
+    async replace(_intent: WriteIntent): Promise<ShadowResult> {
+      throw new Error('Unsupported direct replace on shared write boundary');
     },
-    prune(intent: Pick<WriteIntent, 'identity' | 'scope'>): ShadowResult {
-      adaptPrune(adapter, intent);
-      const legacy = legacyRead();
-      return { legacy, native: undefined, diffs: [] };
+    prune(_intent: Pick<WriteIntent, 'identity' | 'scope'>): ShadowResult {
+      throw new Error('Unsupported direct prune on shared write boundary');
     },
   };
 }

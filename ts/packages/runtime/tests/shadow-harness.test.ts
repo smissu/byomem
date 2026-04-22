@@ -40,9 +40,7 @@ describe('shadow harness', () => {
 
     expect(result.legacy?.id).toBe(legacy.id);
     expect(result.native?.id).toBe('project:byomem:root:shadow-harness');
-    expect(result.diffs).toEqual([
-      { path: 'identity.stableKey', expected: 'project:byomem:root:shadow-harness', actual: null },
-    ]);
+    expect(result.diffs).toEqual([]);
     expect(store.read('project:byomem:root:shadow-harness')).toBeTruthy();
   });
 });

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openNativeStore } from '../src/store.js';
-import { EMBEDDING_TEXT_MAX_CHARS, openSqliteSidecar, sqliteSidecarMutatorKey } from '../src/sqlite-sidecar.js';
+import { EMBEDDING_TEXT_MAX_CHARS, openSqliteSidecar } from '../src/sqlite-sidecar.js';
 import { searchIndex } from '../src/search-index.js';
 
 function tempDir(): string {
@@ -24,7 +24,7 @@ describe('sqlite-backed parity slice', () => {
 
     expect('syncWrite' in sidecar).toBe(false);
     expect('syncPrune' in sidecar).toBe(false);
-    expect(Object.keys(sidecar)).not.toContain(String(sqliteSidecarMutatorKey));
+    expect(Reflect.ownKeys(sidecar).filter((key) => typeof key === 'symbol')).toHaveLength(0);
     expect(sidecar.read('project:byomem:root:unauthorized-sidecar')).toBeUndefined();
   });
 

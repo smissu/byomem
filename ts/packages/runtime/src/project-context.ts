@@ -30,13 +30,14 @@ function normalizeProjectLeafName(value: string): string {
 
 export function resolveProjectContext(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): ProjectContext {
   const envOverride = env.BYOMEM_PROJECT_KEY?.trim();
-  const repoRoot = env.BYOMEM_RUNTIME_BASE_DIR?.trim() || resolveGitRoot(cwd) || resolve(cwd);
+  const gitRoot = resolveGitRoot(cwd);
+  const repoRoot = gitRoot || resolve(cwd);
   const projectLeafName = envOverride
     ? envOverride
     : normalizeProjectLeafName(repoRoot === resolve(cwd) ? cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? 'project' : repoRoot.split(/[\\/]/).filter(Boolean).at(-1) ?? 'project');
   const normalizedLeafName = normalizeProjectLeafName(projectLeafName);
   const projectKey = envOverride ? normalizeProjectLeafName(envOverride) : normalizedLeafName;
-  const source: ProjectContext['activeProjectMetadata']['source'] = envOverride ? 'env' : resolveGitRoot(cwd) ? 'git' : 'cwd';
+  const source: ProjectContext['activeProjectMetadata']['source'] = envOverride ? 'env' : gitRoot ? 'git' : 'cwd';
   return {
     cwd: resolve(cwd),
     repoRoot,

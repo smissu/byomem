@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto';
 import type { MemoryIdentity, MemoryRecord, MemoryScope, WriteIntent } from './contracts.js';
 import { normalizeRecord, normalizeWriteIntent } from './normalizers.js';
 import { normalizeIdentity, normalizeStableKey } from './identity.js';
-import { getSqliteSidecarMutator, openSqliteSidecar, type SqliteSidecar } from './sqlite-sidecar.js';
+import { type SqliteSidecar } from './sqlite-sidecar.js';
+import { openSqliteSidecarInternal } from './sqlite-sidecar-internal.js';
 
 
 export interface NativeStoreOptions {
@@ -63,10 +64,8 @@ function persistSnapshot(filePath: string, snapshot: StoreSnapshot): void {
 
 export function openNativeStore(options: NativeStoreOptions): NativeStore {
   const filePath = resolve(options.baseDir, options.storeFile ?? 'native-store.json');
-  const sidecar = openSqliteSidecar(options);
-  const sidecarMutator = getSqliteSidecarMutator(sidecar);
+  const { sidecar, mutator: sidecarMutator } = openSqliteSidecarInternal(options);
   const sidecarOwner = Object.freeze({ kind: 'native-store' as const });
-  if (!sidecarMutator) throw new Error('SQLite sidecar mutator unavailable');
   const snapshot = loadSnapshot(filePath);
   const recordsById = new Map<string, MemoryRecord>(snapshot.records.map((record) => [record.id, normalizeRecord(record)]));
 

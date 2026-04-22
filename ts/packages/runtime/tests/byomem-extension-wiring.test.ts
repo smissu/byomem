@@ -191,6 +191,45 @@ describe('byomem extension wiring', () => {
     expect(localMock.events.session_shutdown).toHaveLength(1);
   });
 
+  it('defaults storeBaseDir to a global runtime path while keeping active project tied to cwd', async () => {
+    vi.resetModules();
+
+    const { byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts');
+    const status = statusFn();
+
+    expect(status.storeBaseDir).toBe(join(process.env.HOME ?? '', '.byomem', 'runtime'));
+    expect(status.activeProject).toMatchObject({
+      repoRoot: '/Users/ericsmith/Documents/byomem',
+      projectKey: 'byomem',
+      activeProjectMetadata: {
+        source: 'git',
+        path: '/Users/ericsmith/Documents/byomem',
+        normalizedLeafName: 'byomem',
+      },
+    });
+  });
+
+  it('uses BYOMEM_RUNTIME_BASE_DIR only for store location, not active project identity', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
+    vi.resetModules();
+
+    const { byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts');
+    const status = statusFn();
+
+    expect(status.storeBaseDir).toBe(dir);
+    expect(status.activeProject).toMatchObject({
+      repoRoot: '/Users/ericsmith/Documents/byomem',
+      projectKey: 'byomem',
+      activeProjectMetadata: {
+        source: 'git',
+        path: '/Users/ericsmith/Documents/byomem',
+        normalizedLeafName: 'byomem',
+      },
+    });
+  });
+
   it('injects remembered user preferences and project context on the first agent start of a session', async () => {
     const dir = tempDir();
     dirs.push(dir);
@@ -204,11 +243,14 @@ describe('byomem extension wiring', () => {
     await localMock.events.session_start?.[0]?.({ reason: 'startup' }, { ui: { notify() {} } });
 
     const storeTool = localMock.tools.find((tool) => tool.name === 'byomem_store');
-    await storeTool!.execute('1', {
+    const storeResult = await storeTool!.execute('1', {
       scope: 'user',
       identity: { namespace: 'working-preferences', leafName: 'progress-update-intervals', parentContext: 'communication' },
       content: { text: 'User prefers brief progress updates at roughly 10%, 20%, 30% completion.' },
       provenance: { source: 'fixtures' },
+    });
+    expect((storeResult as { details?: { record?: unknown } }).details).toMatchObject({
+      event: { kind: 'write' },
     });
     await storeTool!.execute('2', {
       scope: 'project',
@@ -232,7 +274,7 @@ describe('byomem extension wiring', () => {
     expect(second).toEqual({});
   });
 
-  it('persists a resolved turn_end checkpoint without python bridge assumptions', async () => {
+  it('operates without durable checkpoint persistence for turn_end processing', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const transcriptPath = join(dir, 'session.jsonl');
@@ -268,7 +310,7 @@ describe('byomem extension wiring', () => {
     );
 
     const storePath = join(dir, 'native-store.json');
-    expect(existsSync(storePath)).toBe(true);
+    expect(existsSync(storePath)).toBe(false);
     const debugLogPath = join(dir, 'queue', 'debug', 'byomem-turn-end.jsonl');
     expect(existsSync(debugLogPath)).toBe(true);
     const debugLines = readFileSync(debugLogPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -277,34 +319,7 @@ describe('byomem extension wiring', () => {
       { hook: 'turn_end', phase: 'session_capture_input_resolved', success: undefined, resolved: true },
       { hook: 'turn_end', phase: 'capture_completed', success: true, resolved: undefined },
     ]);
-    const snapshot = JSON.parse(readFileSync(storePath, 'utf8')) as { version: number; records: Array<any> };
-    expect(snapshot.records).toHaveLength(1);
-    expect(snapshot.records[0]).toMatchObject({
-      scope: 'project',
-      identity: {
-        namespace: 'byomem-session',
-        leafName: 'milestone-a-session',
-        parentContext: 'root',
-      },
-      provenance: {
-        source: 'session-capture',
-        adapter: 'native-store',
-        origin: 'session-capture',
-      },
-      content: {
-        text: 'Session milestone-a-session checkpoint from turn_end',
-        structured: expect.objectContaining({
-          kind: 'checkpoint',
-          sessionId: 'milestone-a-session',
-          event: 'turn_end',
-          final: false,
-          idle: false,
-          pendingTurns: 1,
-          transcriptPath,
-          transcriptPreview: ['user: hello', 'assistant: hi there'],
-        }),
-      },
-    });
+    expect(existsSync(storePath)).toBe(false);
   });
 
   it('does not write anything when session info is incomplete', async () => {
@@ -376,23 +391,29 @@ describe('byomem extension wiring', () => {
       {},
       { sessionId: 'milestone-a-session', transcriptPath, ui: { notify() {} } },
     );
-    let snapshot = JSON.parse(readFileSync(join(dir, 'native-store.json'), 'utf8')) as { records: Array<any> };
-    expect(snapshot.records).toHaveLength(1);
-    expect(snapshot.records[0].content.structured).toMatchObject({ event: 'session_before_switch', final: false, idle: false });
+    await localMock.events.session_before_switch?.[0]?.(
+      {},
+      { sessionId: 'milestone-a-session', transcriptPath, ui: { notify() {} } },
+    );
+    const nativeStorePath = join(dir, 'native-store.json');
+    expect(existsSync(nativeStorePath)).toBe(false);
 
     await localMock.events.session_shutdown?.[0]?.(
       {},
       { sessionId: 'milestone-a-session', transcriptPath, ui: { notify() {} } },
     );
-    snapshot = JSON.parse(readFileSync(join(dir, 'native-store.json'), 'utf8')) as { records: Array<any> };
-    expect(snapshot.records.find((record) => record.provenance.origin === 'session-capture')?.content.structured).toMatchObject({ event: 'session_shutdown', final: true, idle: false });
-
-    await localMock.events.session_before_switch?.[0]?.(
-      {},
-      { sessionId: 'milestone-a-session', transcriptPath, idle: true, ui: { notify() {} } },
-    );
-    snapshot = JSON.parse(readFileSync(join(dir, 'native-store.json'), 'utf8')) as { records: Array<any> };
-    expect(snapshot.records.find((record) => record.provenance.origin === 'session-capture')?.content.structured).toMatchObject({ event: 'session_before_switch', final: false, idle: true });
+    expect(existsSync(nativeStorePath)).toBe(true);
+    const snapshot = JSON.parse(readFileSync(nativeStorePath, 'utf8')) as { records: Array<any> };
+    expect(snapshot.records.filter((record) => record.content.structured?.kind === 'checkpoint')).toHaveLength(0);
+    const rollups = snapshot.records.filter((record) => record.content.structured?.kind === 'rollup');
+    expect(rollups.length).toBeGreaterThanOrEqual(1);
+    expect(rollups[0]?.content.structured).toMatchObject({
+      kind: 'rollup',
+      sessionId: 'milestone-a-session',
+      flushReason: 'final',
+      sourceStableKey: 'project:byomem-session:root:milestone-a-session',
+    });
+    expect(Object.keys((rollups[0]?.content.structured ?? {}) as Record<string, unknown>)).toEqual(['kind', 'sessionId', 'flushReason', 'sourceStableKey']);
   });
 
   it('uses summarizer config to trigger TS rollups on threshold flush', async () => {
@@ -464,18 +485,19 @@ describe('byomem extension wiring', () => {
     expect(status).toMatchObject({ summarizerModel: 'qwen3:8b', summarizerFallbackModel: 'qwen3.5:4b', activeProject: expect.any(Object), projectKey: expect.any(String) });
 
     const snapshot = JSON.parse(readFileSync(join(dir, 'native-store.json'), 'utf8')) as { records: Array<any> };
-    expect(snapshot.records.filter((record) => record.provenance.origin === 'session-rollup')).toHaveLength(1);
-    expect(snapshot.records.find((record) => record.provenance.origin === 'session-rollup')).toMatchObject({
+    expect(snapshot.records.filter((record) => record.content.structured?.kind === 'rollup')).toHaveLength(1);
+    expect(snapshot.records.find((record) => record.content.structured?.kind === 'rollup')).toMatchObject({
       content: {
         text: expect.stringContaining('Summarized pending turns'),
         structured: {
           kind: 'rollup',
+          sessionId: 'milestone-a-session',
           flushReason: 'threshold',
-          pendingTurns: 2,
-          pendingTurnIds: ['turn-1-user', 'turn-2-user'],
+          sourceStableKey: 'project:byomem-session:root:milestone-a-session',
         },
       },
     });
+    expect(Object.keys((snapshot.records.find((record) => record.content.structured?.kind === 'rollup')?.content.structured ?? {}) as Record<string, unknown>)).toEqual(['kind', 'sessionId', 'flushReason', 'sourceStableKey']);
   });
 
   it('infers Ollama native chat transport from summarizer base URL without num_ctx', async () => {
@@ -571,13 +593,92 @@ describe('byomem extension wiring', () => {
     });
   });
 
-  it('searches the native store via the extension tool against the real repo store', async () => {
+  it('returns a minimal DTO for byomem_search results and omits support fields', async () => {
     const mock = makeMockPi();
     extensionModule(mock.api as never);
 
-    const searchTool = mock.tools.find((tool) => tool.name === 'byomem_search');
-    const result = await searchTool!.execute('1', { query: 'extension wiring', scope: 'project', limit: 5 });
-    expect(result).toMatchObject({ content: [{ type: 'text' }] });
+    const tool = mock.tools.find((entry) => entry.name === 'byomem_search')!;
+    const rawResults = [
+      {
+        id: 'rec-session',
+        scope: 'project',
+        identity: { namespace: 'byomem-session', leafName: 'session-a', parentContext: 'root' },
+        content: {
+          text: 'Session checkpoint summary',
+          structured: {
+            kind: 'checkpoint',
+            sessionId: 'session-a',
+            transcriptPreview: ['user: hello', 'assistant: hi'],
+            transcriptPath: '/tmp/session.jsonl',
+            transcriptBytes: 1234,
+            messageCount: 2,
+            retained: true,
+          },
+        },
+        provenance: { source: 'session-capture', adapter: 'native-store' },
+        metadata: { hidden: true },
+      },
+      {
+        id: 'rec-project',
+        scope: 'project',
+        identity: { namespace: 'project-decisions', leafName: 'search-memory-first', parentContext: 'root' },
+        content: {
+          text: 'Search memory first',
+          structured: {
+            kind: 'note',
+            transcriptPreview: ['keep me'],
+            transcriptPath: '/tmp/keep.jsonl',
+            transcriptBytes: 99,
+            messageCount: 1,
+            retained: true,
+          },
+        },
+        provenance: { source: 'fixtures', adapter: 'native-store' },
+        metadata: { hidden: false },
+      },
+    ];
+
+    const searchIndexModule = await import('../src/search-index.js');
+    vi.spyOn(searchIndexModule, 'searchIndex').mockResolvedValue(rawResults as never);
+
+    const result = await tool.execute('1', { query: 'session', scope: 'project', limit: 5 });
+    const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text) as { results: Array<Record<string, unknown>> };
+    const detailsResults = (result as { details: { results: Array<Record<string, unknown>> } }).details.results;
+
+    expect(parsed.results).toEqual(detailsResults);
+
+    for (const entry of parsed.results) {
+      expect(entry).toHaveProperty('id');
+      expect(entry).toHaveProperty('scope');
+      expect(entry).toHaveProperty('identity');
+      expect(entry).toHaveProperty('text');
+      expect(entry).not.toHaveProperty('content');
+      expect(entry).not.toHaveProperty('metadata');
+      expect(entry).not.toHaveProperty('transcriptPreview');
+      expect(entry).not.toHaveProperty('transcriptPath');
+      expect(entry).not.toHaveProperty('transcriptBytes');
+      expect(entry).not.toHaveProperty('messageCount');
+      expect(entry).not.toHaveProperty('provenance.adapter');
+      expect(Object.keys(entry)).toEqual(expect.arrayContaining(['id', 'scope', 'identity', 'text']));
+    }
+
+    for (const entry of parsed.results) {
+      expect(entry).toHaveProperty('id');
+      expect(entry).toHaveProperty('scope');
+      expect(entry).toHaveProperty('identity');
+      expect(entry).toHaveProperty('text');
+      expect(entry).not.toHaveProperty('content');
+      expect(entry).not.toHaveProperty('metadata');
+      expect(entry).not.toHaveProperty('transcriptPreview');
+      expect(entry).not.toHaveProperty('transcriptPath');
+      expect(entry).not.toHaveProperty('transcriptBytes');
+      expect(entry).not.toHaveProperty('messageCount');
+      expect(entry).not.toHaveProperty('provenance.adapter');
+      const structured = entry.structured as Record<string, unknown> | undefined;
+      if (structured) expect(Object.keys(structured)).toEqual(['kind']);
+      const provenance = entry.provenance as Record<string, unknown> | undefined;
+      if (provenance) expect(Object.keys(provenance)).toEqual(['source']);
+    }
   });
 
   it('normalizes store and prune intents before write-path execution', async () => {

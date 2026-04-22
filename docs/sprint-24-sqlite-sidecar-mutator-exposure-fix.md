@@ -1,89 +1,103 @@
-# Sprint 24: SQLite Sidecar Mutator Exposure Fix for Pi Extension Startup
+# Sprint 24: SQLite Sidecar Mutator Exposure Closeout
 
 ## Objective
-Document the targeted fix that restored Pi BYOMem extension startup after the SQLite sidecar refactor split the public reader surface from the internal mutator surface.
+Document the final Sprint 24 fix set that both:
+
+- restored Pi BYOMem extension startup, and
+- closed the remaining public mutator-exposure gap at the runtime package boundary.
 
 ## Problem
-The BYOMem Pi extension began failing to load with:
+After the SQLite sidecar refactor split the reader and mutator concerns, the runtime briefly regressed in two stages:
 
-- `SQLite sidecar mutator unavailable`
+1. **startup regression**
+   - `openNativeStore()` could no longer reach the SQLite sidecar mutator
+   - Pi extension startup failed with `SQLite sidecar mutator unavailable`
 
-This happened during extension import because `pi-extension.ts` opens the native store eagerly, and `openNativeStore()` requires access to the SQLite sidecar mutator.
+2. **boundary-hardening gap**
+   - restoring startup through a hidden mutator attachment on the public sidecar object fixed correctness
+   - but it still left the mutator recoverable from the public module surface, which kept Sprint 24 item `1.3` / `AC-1` only partial
 
-## Root Cause
-The SQLite sidecar refactor changed the module shape from a combined read/write sidecar to:
+## Final Fix
+The final closeout removed the public recovery path instead of hiding it on the public object.
 
-- a public reader surface (`SqliteSidecar`)
-- a private mutator surface (`SqliteSidecarMutator`)
-
-However, the refactor stopped short of wiring the two back together for the native store:
-
-1. `openSqliteSidecarBundle()` returned `{ sidecar, mutator }`
-2. `openSqliteSidecar()` returned only `sidecar`
-3. `openNativeStore()` still expected to find an internal mutator on the returned sidecar
-4. the mutator was never attached, so startup failed immediately
-
-In short: the ownership boundary was introduced, but the hidden ownership channel from the reader surface back to the native-store owner was not preserved.
-
-## What Changed
-### 1. Restored hidden mutator exposure in `sqlite-sidecar.ts`
+### 1. Introduced an internal-only sidecar implementation module
 Added:
 
-- `sqliteSidecarMutatorKey` as a symbol-based internal key
-- `getSqliteSidecarMutator(sidecar)` helper
+- `ts/packages/runtime/src/sqlite-sidecar-internal.ts`
 
-Changed `openSqliteSidecar()` so it now:
+This module now owns:
 
-- calls `openSqliteSidecarBundle()`
-- attaches the mutator to the returned sidecar with `Object.defineProperty(...)`
-- keeps the property non-enumerable so the public reader surface remains read-only to normal callers
+- the SQLite sidecar bundle factory
+- the internal `{ sidecar, mutator }` pairing
+- the mutator-facing implementation used by the native store
 
-### 2. Switched `store.ts` to the supported helper lookup
-Replaced the dead `__mutator` lookup with `getSqliteSidecarMutator(sidecar)`.
+### 2. Reduced the public `sqlite-sidecar.ts` module to a reader-only wrapper
+`ts/packages/runtime/src/sqlite-sidecar.ts` now exposes only the safe reader-facing API:
 
-This makes the native store depend on the current internal contract instead of an unattached legacy field.
+- `openSqliteSidecar(...)`
+- reader-facing types
+- embedding-related public constants used by tests/callers
 
-### 3. Fixed the reader-surface regression test
-Updated `sqlite-sidecar.test.ts` to use:
+It no longer exports a public mutator accessor or mutator key.
 
-- `sidecar.read(...)`
+### 3. Switched `store.ts` to the internal bundle path
+`ts/packages/runtime/src/store.ts` now consumes the internal sidecar bundle directly from:
 
-instead of the invalid:
+- `sqlite-sidecar-internal.ts`
 
-- `sidecar.sidecar.read(...)`
+That keeps the native-store write path working without exposing the mutator through the public sidecar module.
 
-That keeps the test aligned with the refactored public API shape.
+### 4. Narrowed the public runtime package surface
+`ts/packages/runtime/src/index.ts` no longer re-exports:
 
-## Why This Fix
-This approach preserves the intended architecture:
+- `./store.js`
+- `./sqlite-sidecar.js`
+- `./write-path.js`
+- `./store-actions.js`
 
-- public callers get a reader-only sidecar surface
-- write access remains restricted to the native store owner path
-- the mutator is still hidden from normal enumeration and consumer code
-- Pi extension startup works again because `openNativeStore()` can recover the internal mutator
+Internal runtime files that still need `openNativeStore(...)` now import it directly from `./store.js` instead of from the public root barrel.
 
-This is the smallest fix that restores behavior without undoing the ownership split.
+### 5. Updated proof tests
+`ts/packages/runtime/tests/sqlite-sidecar.test.ts` now proves the public sidecar surface is reader-only, and `runtime-mode.test.ts` now proves the public runtime barrel no longer exposes direct store/sidecar/write-path helpers.
+
+## Why This Fix Closes the Gap
+This final shape preserves both correctness and the intended ownership boundary:
+
+- Pi extension startup still works
+- supported runtime writes still go through the queue-backed path
+- the public `sqlite-sidecar` module is reader-only
+- the mutator is no longer recoverable from the public runtime/package surface
+- the public runtime root barrel no longer exposes the native store direct-write API
 
 ## Verification
-Ran:
+Focused verification:
 
-- `npm test -- --run ts/packages/runtime/tests/sqlite-sidecar.test.ts ts/packages/runtime/tests/byomem-extension-wiring.test.ts`
+- `npm test -- --run ts/packages/runtime/tests/sqlite-sidecar.test.ts ts/packages/runtime/tests/store.test.ts ts/packages/runtime/tests/queue-runtime.test.ts ts/packages/runtime/tests/runtime-mode.test.ts`
 
 Result:
 
-- 2 test files passed
-- 25 tests passed
+- 4 test files passed
+- 22 tests passed
 
-Also verified:
+Broader changed-area verification:
 
-- `pi --continue` reached the normal interactive UI
-- the previous extension-load failure did not appear
+- `npm test -- --run ts/packages/runtime/tests/shared-corpus.test.ts ts/packages/runtime/tests/adapter.test.ts ts/packages/runtime/tests/runtime-mode.test.ts ts/packages/runtime/tests/queue-runtime.test.ts ts/packages/runtime/tests/byomem-extension-wiring.test.ts ts/packages/runtime/tests/session-capture.test.ts ts/packages/runtime/tests/cli.test.ts ts/packages/runtime/tests/adapter-shadow.test.ts ts/packages/runtime/tests/shadow-harness.test.ts ts/packages/runtime/tests/write-path.test.ts ts/packages/runtime/tests/sqlite-sidecar.test.ts ts/packages/runtime/tests/store.test.ts`
+
+Result:
+
+- 12 test files passed
+- 54 tests passed
 
 ## Files Changed
+- `ts/packages/runtime/src/sqlite-sidecar-internal.ts`
 - `ts/packages/runtime/src/sqlite-sidecar.ts`
 - `ts/packages/runtime/src/store.ts`
+- `ts/packages/runtime/src/index.ts`
+- `ts/packages/runtime/src/cli.ts`
+- `ts/packages/runtime/src/pi-extension.ts`
 - `ts/packages/runtime/tests/sqlite-sidecar.test.ts`
+- `ts/packages/runtime/tests/runtime-mode.test.ts`
 - `docs/sprint-24-sqlite-sidecar-mutator-exposure-fix.md`
 
 ## Outcome
-Pi can load the BYOMem extension again, and the SQLite sidecar refactor now preserves its hidden native-store write path while keeping the public surface reader-only.
+Sprint 24's remaining SQLite mutator-exposure blocker is closed for the supported runtime and public runtime package surface. Pi still loads the BYOMem extension, supported writes remain queue-backed, and the mutator path is now internal-only to the native-store sidecar implementation.

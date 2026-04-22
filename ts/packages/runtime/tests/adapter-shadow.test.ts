@@ -9,7 +9,7 @@ function legacyRead(record: MemoryRecord): () => MemoryRecord {
 }
 
 describe('shadow adapter', () => {
-  it('returns legacy output while capturing native diffs', async () => {
+  it('returns legacy output for write and rejects direct replace/prune', async () => {
     const store = openNativeStore({ baseDir: '/tmp/byomem-shadow-adapter' });
     const adapter = openNativeAdapter(store);
     const intent: WriteIntent = {
@@ -33,8 +33,8 @@ describe('shadow adapter', () => {
 
     expect(result.legacy?.id).toBe(legacy.id);
     expect(result.native?.id).toBe('project:byomem:root:shadow-adapter');
-    expect(result.diffs).toEqual([
-      { path: 'identity.stableKey', expected: 'project:byomem:root:shadow-adapter', actual: null },
-    ]);
+    expect(result.diffs).toEqual([]);
+    await expect(shadow.replace(intent)).rejects.toThrow('Unsupported direct replace on shared write boundary');
+    expect(() => shadow.prune({ scope: intent.scope, identity: intent.identity })).toThrow('Unsupported direct prune on shared write boundary');
   });
 });

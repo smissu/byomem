@@ -64,7 +64,7 @@ describe('session capture', () => {
     expect((result.runtime as SessionCaptureRuntime).state().offset).toBe(0);
   });
 
-  it('writes a checkpoint and buffers pending turns before the threshold', async () => {
+  it('does not persist a checkpoint record before the threshold', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const transcriptPath = join(dir, 'session.jsonl');
@@ -89,19 +89,39 @@ describe('session capture', () => {
     });
 
     expect(result.reason).toBe('checkpointed');
-    expect(result.pendingTurns).toBe(1);
     expect(result.rollup).toBeUndefined();
-    expect(result.record).toMatchObject({
-      identity: { namespace: 'byomem-session', leafName: 'session-alpha', parentContext: 'root' },
-      provenance: { source: 'session-capture', adapter: 'native-store', origin: 'session-capture' },
-      content: {
-        text: 'Session session-alpha checkpoint from turn_end',
-        structured: expect.objectContaining({ event: 'turn_end', pendingTurns: 1 }),
-      },
-    });
+    expect(result.record).toBeUndefined();
+    expect(result.checkpoint).toHaveLength(0);
     expect(existsSync(join(dir, 'queue', 'session-capture-state.json'))).toBe(true);
-    expect(store.list()).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(dir, 'queue', 'session-capture-state.json'), 'utf8'))).toMatchObject({
+      'session-alpha': expect.objectContaining({ offset: expect.any(Number) }),
+    });
+    expect(store.list().filter((record) => record.content.structured?.kind === 'checkpoint')).toHaveLength(0);
   });
+
+  it('does not persist checkpoint records even when transcript lines include sensitive support fields', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const transcriptPath = join(dir, 'session.jsonl');
+    const store = openNativeStore({ baseDir: dir });
+    writeFileSync(transcriptPath, [
+      JSON.stringify({ type: 'session', version: 3, id: 'session-alpha', timestamp: '2026-04-20T00:00:00.000Z' }),
+      JSON.stringify({ type: 'message', id: 'turn-1-user', message: { role: 'user', content: [{ type: 'text', text: 'hello' }] } }),
+      JSON.stringify({ type: 'message', id: 'turn-1-assistant', parentId: 'turn-1-user', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } }),
+      JSON.stringify({ encrypted_content: 'opaque-payload', thinkingSignature: 'hidden-signature' }),
+      JSON.stringify({ type: 'message', id: 'turn-2-user', message: { role: 'user', content: [{ type: 'text', text: 'bye' }] } }),
+      JSON.stringify({ type: 'message', id: 'turn-2-assistant', parentId: 'turn-2-user', message: { role: 'assistant', content: [{ type: 'text', text: 'see ya' }] } }),
+    ].join('\n'), 'utf8');
+
+    await captureSessionCheckpoint(store, {
+      baseDir: dir,
+      thresholdTurns: 2,
+      minTurns: 2,
+      generation: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:8b' },
+    }, { sessionId: 'session-alpha', transcriptPath, event: 'turn_end', final: false, idle: false });
+
+    expect(store.list().filter((record) => record.content.structured?.kind === 'checkpoint')).toHaveLength(0);
+  }, 10000);
 
   it('summarizes and writes a rollup once the threshold is reached', async () => {
     const dir = tempDir();
@@ -152,30 +172,40 @@ describe('session capture', () => {
     });
 
     expect(result.reason).toBe('threshold');
-    expect(result.pendingTurns).toBe(0);
-    expect(result.rollup).toMatchObject({
+    expect(result.rollup?.record).toMatchObject({
+      scope: 'project',
       identity: {
         namespace: 'byomem-session',
         parentContext: 'root',
       },
-      provenance: { source: 'session-capture', adapter: 'native-store', origin: 'session-rollup' },
+      provenance: { source: 'session-capture', adapter: 'native-store', origin: 'write' },
       content: {
         text: expect.stringContaining('threshold flush complete'),
         structured: {
           kind: 'rollup',
           sessionId: 'session-alpha',
           flushReason: 'threshold',
-          pendingTurns: 2,
-          pendingTurnIds: ['turn-1-user', 'turn-2-user'],
           sourceStableKey: 'project:byomem-session:root:session-alpha',
         },
       },
     });
+    expect(result.checkpoint).toHaveLength(0);
     expect(calls).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(dir, 'queue', 'session-capture-state.json'), 'utf8'))).toMatchObject({
+      'session-alpha': expect.objectContaining({ offset: 1036, pendingTurns: [] }),
+    });
     expect(calls[0]?.url).toContain('/api/chat');
     expect(calls[0]?.body).toMatchObject({ model: 'qwen3:8b', stream: false, options: { num_ctx: 16384 } });
     expect(String(calls[0]?.body?.messages?.[1]?.content ?? '')).toContain('Turn 1 (turn-1-user)');
-    expect(store.list().filter((record) => record.provenance.origin === 'session-rollup')).toHaveLength(1);
+    expect(store.list().filter((record) => record.content.structured?.kind === 'rollup')).toHaveLength(1);
+    const rollupRecord = store.list().find((record) => record.content.structured?.kind === 'rollup');
+    expect(rollupRecord?.content.structured).toMatchObject({
+      kind: 'rollup',
+      sessionId: 'session-alpha',
+      flushReason: 'threshold',
+      sourceStableKey: 'project:byomem-session:root:session-alpha',
+    });
+    expect(Object.keys((rollupRecord?.content.structured ?? {}) as Record<string, unknown>)).toEqual(['kind', 'sessionId', 'flushReason', 'sourceStableKey']);
     expect(JSON.parse(readFileSync(join(dir, 'queue', 'session-capture-state.json'), 'utf8'))).toMatchObject({
       'session-alpha': {
         pendingTurns: [],
@@ -229,13 +259,15 @@ describe('session capture', () => {
     }, { sessionId: 'session-alpha', transcriptPath, event: 'session_shutdown', final: true, idle: false });
 
     expect(result.reason).toBe('final');
-    expect(result.rollup?.content.structured).toMatchObject({
+    expect(result.rollup?.record?.content.structured).toMatchObject({
       kind: 'rollup',
+      sessionId: 'session-alpha',
       flushReason: 'final',
-      pendingTurns: 1,
-      pendingTurnIds: ['turn-3-user'],
+      sourceStableKey: 'project:byomem-session:root:session-alpha',
     });
-    expect(store.list().filter((record) => record.provenance.origin === 'session-rollup')).toHaveLength(2);
+    expect(Object.keys((result.rollup?.record?.content.structured ?? {}) as Record<string, unknown>)).toEqual(['kind', 'sessionId', 'flushReason', 'sourceStableKey']);
+    expect(result.checkpoint).toHaveLength(0);
+    expect(store.list().filter((record) => record.content.structured?.kind === 'rollup')).toHaveLength(2);
     expect(prompts).toHaveLength(2);
     expect(prompts[1]).toContain('Turn 1 (turn-3-user)');
     expect(prompts[1]).not.toContain('turn-1-user');
@@ -260,6 +292,11 @@ describe('session capture', () => {
     }, { sessionId: 'session-alpha', transcriptPath, event: 'session_before_switch', final: false, idle: true });
 
     expect(result.reason).toBe('idle');
-    expect(result.rollup?.content.structured).toMatchObject({ kind: 'rollup', flushReason: 'idle', pendingTurns: 1 });
+    expect(result.rollup?.record?.content.structured).toMatchObject({ kind: 'rollup', sessionId: 'session-alpha', flushReason: 'idle', sourceStableKey: 'project:byomem-session:root:session-alpha' });
+    expect(Object.keys((result.rollup?.record?.content.structured ?? {}) as Record<string, unknown>)).toEqual(['kind', 'sessionId', 'flushReason', 'sourceStableKey']);
+    expect(result.checkpoint).toHaveLength(0);
+    expect(JSON.parse(readFileSync(join(dir, 'queue', 'session-capture-state.json'), 'utf8'))).toMatchObject({
+      'session-alpha': expect.objectContaining({ offset: 539 }),
+    });
   });
 });

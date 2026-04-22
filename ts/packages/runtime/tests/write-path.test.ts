@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openNativeStore } from '../src/store.js';
 import { openWritePath } from '../src/write-path.js';
-import { openNativeAdapter, adaptWrite, adaptReplace, adaptPrune } from '../src/adapter.js';
 import { openReadPath } from '../src/read.js';
 import { searchIndex } from '../src/search-index.js';
 
@@ -19,7 +18,7 @@ describe('Sprint 20 write path', () => {
     while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
   });
 
-  it('writes, replaces, and prunes through the public write-path surface', async () => {
+  it('writes through the public write-path surface and rejects direct replace/prune', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });
@@ -31,23 +30,14 @@ describe('Sprint 20 write path', () => {
       content: { text: 'one' },
       provenance: { source: 'fixtures' },
     });
-    const replaced = await writePath.replace({
-      scope: 'project',
-      identity: { namespace: 'byomem', leafName: 'Write Path', parentContext: 'Root' },
-      content: { text: 'two' },
-      provenance: { source: 'fixtures' },
-    });
-    const pruned = writePath.prune({
+    expect(written.kind).toBe('write');
+    expect(written.record?.id).toBeDefined();
+    expect(() => writePath.prune({
       scope: 'project',
       identity: { namespace: 'byomem', leafName: 'Write Path', parentContext: 'Root', stableKey: 'project:wrong:manual:wrong-key' },
-    });
-
-    expect(written.record?.id).toBe(replaced.record?.id);
-    expect(replaced.kind).toBe('replace');
-    expect(pruned.kind).toBe('prune');
-    expect(pruned.removed).toHaveLength(1);
-    expect(pruned.removed?.[0]?.id).toBe(replaced.record?.id);
-    expect(store.list()).toHaveLength(0);
+    })).toThrow('Unsupported direct prune on shared write boundary');
+    expect(store.list()).toHaveLength(1);
+    expect(store.list()[0]?.content.text).toBe('one');
   });
 
   it('rejects invalid mutation intents', async () => {
@@ -57,7 +47,7 @@ describe('Sprint 20 write path', () => {
     const writePath = openWritePath(store);
 
     await expect(writePath.write({ scope: 'project', identity: { namespace: '', leafName: '' }, content: { text: 'x' } } as never)).rejects.toThrow('Invalid write intent');
-    expect(() => writePath.prune({ scope: 'project', identity: { namespace: '', leafName: '' } } as never)).toThrow('Invalid prune intent');
+    expect(() => writePath.prune({ scope: 'project', identity: { namespace: '', leafName: '' } } as never)).toThrow('Unsupported direct prune on shared write boundary');
   });
 
   it('integrates write -> read/search consistency through public surfaces', async () => {
