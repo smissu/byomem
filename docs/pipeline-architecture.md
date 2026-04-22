@@ -283,3 +283,9 @@ _process_one(job)
 ```
 
 Processing history is logged to `queue/history.jsonl` with timing breakdown (`summarize_s`, `embed_s`, `db_write_s`) and the actual backend used.
+
+## Runtime Queue Observation
+
+- Use the TS-native `queue-observe` command for read-only runtime inspection.
+- `queue-observe --watch` is the default active monitoring workflow for terminal polling.
+- Keep any retained `monitor-queue.sh` or Python queue-monitoring helper as legacy/non-default or dev-only.

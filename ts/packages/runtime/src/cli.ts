@@ -6,8 +6,12 @@ import { openNativeStore } from './store.js';
 import { openQueueRuntime } from './queue-runtime.js';
 import { searchIndex } from './search-index.js';
 import { openGenerationClient } from './generation-client.js';
+import { observeQueue, renderQueueObserver } from './queue-observer.js';
 
 const GENERATION_COMMANDS = new Set(['generate', 'summarize', 'reason', 'chat']);
+const OBSERVER_COMMANDS = new Set(['queue-observe']);
+const OBSERVER_WATCH_INTERVAL_DEFAULT = 2;
+const OBSERVER_WATCH_INTERVAL_MIN = 0.1;
 
 type CliOptions = {
   baseDir: string;
@@ -22,8 +26,10 @@ type CliOptions = {
   generationMessages?: string;
 };
 
+type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
+
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'prune', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
@@ -49,8 +55,18 @@ function parseMessages(raw: string | undefined): Array<{ role: 'system' | 'user'
   });
 }
 
-function parseArgs(argv: string[]): { command?: string; options: CliOptions; payload: Record<string, string> } {
+function parseWatchMode(flags: { watch: boolean; watchInterval?: string }, json: boolean): ObserverWatchMode {
+  if (!flags.watch) return { enabled: false, intervalSeconds: OBSERVER_WATCH_INTERVAL_DEFAULT };
+  const intervalRaw = flags.watchInterval?.trim() || String(OBSERVER_WATCH_INTERVAL_DEFAULT);
+  const intervalSeconds = Number(intervalRaw);
+  if (!Number.isFinite(intervalSeconds) || intervalSeconds < OBSERVER_WATCH_INTERVAL_MIN) throw new Error('--watch-interval must be a positive number');
+  if (json) throw new Error('--watch is not supported with --json in queue-observe');
+  return { enabled: true, intervalSeconds };
+}
+
+function parseArgs(argv: string[]): { command?: string; options: CliOptions; payload: Record<string, string>; flags: { watch: boolean; watchInterval?: string } } {
   const payload: Record<string, string> = {};
+  const flags = { watch: false, watchInterval: undefined as string | undefined };
   const options: CliOptions = { baseDir: mkdtempSync(join(tmpdir(), 'byomem-cli-')) };
   let command: string | undefined;
   for (let i = 0; i < argv.length; i += 1) {
@@ -68,17 +84,21 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--generation-system') { options.generationSystem = requireValue(next, '--generation-system'); i += 1; }
     else if (arg === '--messages') { options.generationMessages = requireValue(next, '--messages'); i += 1; }
     else if (arg === '--input') { payload.input = requireValue(next, '--input'); i += 1; }
+    else if (arg === '--json') { payload.json = 'true'; }
+    else if (arg === '--watch') { flags.watch = true; }
+    else if (arg === '--watch-interval') { flags.watchInterval = requireValue(next, '--watch-interval'); i += 1; }
+    else if (arg === '--history') { payload.history = requireValue(next, '--history'); i += 1; }
     else if (arg === '--query') { payload.query = requireValue(next, '--query'); i += 1; }
     else if (arg === '--id') { payload.id = requireValue(next, '--id'); i += 1; }
     else if (arg === '--scope') { payload.scope = requireValue(next, '--scope'); i += 1; }
     else if (arg === '--prompt') { payload.prompt = requireValue(next, '--prompt'); i += 1; }
     else if (arg === '--text') { payload.text = requireValue(next, '--text'); i += 1; }
   }
-  return { command, options, payload };
+  return { command, options, payload, flags };
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
-  const { command, options, payload } = parseArgs(argv);
+  const { command, options, payload, flags } = parseArgs(argv);
   if (!command) {
     jsonError('Missing command', null);
     process.exitCode = 1;
@@ -90,7 +110,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   const isGenerationCommand = GENERATION_COMMANDS.has(command);
-  const store = isGenerationCommand ? undefined : openNativeStore({ ...options, embeddingRequireRemote: true });
+  const isObserverCommand = OBSERVER_COMMANDS.has(command);
+  const store = isGenerationCommand || isObserverCommand ? undefined : openNativeStore({ ...options, embeddingRequireRemote: true });
   const queueRuntime = store ? openQueueRuntime(store, { baseDir: options.baseDir }) : undefined;
   try {
     if (command === 'store') {
@@ -122,6 +143,50 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         provenance: { source: 'cli-prune', adapter: 'native-store', origin: 'write' },
       } as never);
       console.log(JSON.stringify({ result }, null, 2));
+      return;
+    }
+    if (isObserverCommand) {
+      const history = Number(payload.history?.trim() || '5');
+      const snapshot = observeQueue({ baseDir: options.baseDir, history, json: Boolean(payload.json) });
+      const watchMode = parseWatchMode(flags, Boolean(payload.json));
+      if (watchMode.enabled) {
+        let shutdown = false;
+        let resolveSleep: (() => void) | undefined;
+        const render = () => {
+          const nextSnapshot = observeQueue({ baseDir: options.baseDir, history, json: false });
+          process.stdout.write('\u001b[2J\u001b[H');
+          process.stdout.write(`${renderQueueObserver(nextSnapshot)}\n`);
+        };
+        const stop = () => {
+          if (shutdown) return;
+          shutdown = true;
+          resolveSleep?.();
+        };
+        const onSigint = () => stop();
+        process.once('SIGINT', onSigint);
+        try {
+          while (!shutdown) {
+            render();
+            await new Promise<void>((resolve) => {
+              resolveSleep = resolve;
+              setTimeout(() => {
+                resolveSleep = undefined;
+                resolve();
+              }, watchMode.intervalSeconds * 1000);
+              if (shutdown) {
+                resolveSleep = undefined;
+                resolve();
+              }
+            });
+          }
+        } finally {
+          process.removeListener('SIGINT', onSigint);
+          process.stdout.write('\n');
+        }
+        return;
+      }
+      if (payload.json) console.log(JSON.stringify(snapshot, null, 2));
+      else console.log(renderQueueObserver(snapshot));
       return;
     }
     if (GENERATION_COMMANDS.has(command)) {

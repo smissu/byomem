@@ -19,5 +19,9 @@
 ## Historical / superseded notes
 - [Sprint 8 — BYOMem Team Dispatcher Memory](./sprint-8-byomem-team-dispatcher-memory.md) (superseded split note)
 
+## Runtime / queue observation
+- The TS-native `queue-observe --watch` path is the default active monitoring workflow for runtime queue inspection.
+- Any retained `monitor-queue.sh` or Python queue-monitoring helper should be treated as legacy/non-default or dev-only.
+
 ## Local LLM benchmarks
 - [Local LLM benchmark report](./local-llm-benchmark-report.md)

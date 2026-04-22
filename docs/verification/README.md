@@ -76,6 +76,7 @@ Use this for a quick live/integration sanity pass when the native path or sessio
 3. Verify the bridge success payload is present and that `native_written_count` increments as expected.
 4. Confirm a new native record appears in `records.jsonl` and is retrievable after the flush/reload path.
 5. Do not require markdown artifacts for success; markdown/main.md/MEMORY.md may remain absent or stale.
+6. For runtime queue inspection, prefer the TS-native `queue-observe --watch` path; treat any retained `monitor-queue.sh` or Python queue-monitoring helper as legacy/non-default or dev-only.
 
 ### Normalized golden outputs
 Parity fixtures should compare normalized outputs, not raw filesystem-dependent values. In practice that means store responses should canonicalize paths to the current BYOMem root placeholder before comparison so the same fixture can replay across temp directories and local environments.

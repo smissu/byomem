@@ -7,6 +7,7 @@ Sprint 16 begins the actual TypeScript runtime foundation for BYOMem, and the re
 
 - **Push** — Stop hook captures sessions automatically after every response
 - **Pull** — MCP server lets Claude query memory on demand during a session
+- **Observe** — `queue-observe --watch` is the default active monitoring path for queue/runtime inspection; any retained `monitor-queue.sh` flow is legacy/non-default or dev-only
 
 **Works across all projects. No external services. No bloat.**
 
