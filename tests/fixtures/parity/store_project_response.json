@@ -1,8 +1,0 @@
-{
-  "ok": true,
-  "project": "repo-a",
-  "scope": "project",
-  "scope_id": "project:repo-a",
-  "path": "/workspace/.byomem/native",
-  "summary": "Remember to keep stop price updates on aux_price."
-}

@@ -1,8 +1,0 @@
-{
-  "action": "store",
-  "cwd": "/workspace/byomem/repo-a",
-  "text": "Remember to keep stop price updates on aux_price.",
-  "summary": null,
-  "tags": ["byomem", "parity"],
-  "scope": "project"
-}
