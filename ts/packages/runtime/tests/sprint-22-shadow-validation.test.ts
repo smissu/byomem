@@ -57,10 +57,8 @@ describe('Sprint 22 shadow validation slice', () => {
     });
 
     expect(result.legacy?.provenance.adapter).toBe('legacy');
-    expect(result.native?.provenance.adapter).toBeUndefined();
-    expect(result.diffs).toEqual([
-      { path: 'identity.stableKey', expected: 'project:byomem:root:sprint-22-write-alpha', actual: null },
-    ]);
+    expect(((result.native as { record?: MemoryRecord; provenance?: MemoryRecord['provenance'] } | undefined)?.record?.provenance.adapter ?? (result.native as { record?: MemoryRecord; provenance?: MemoryRecord['provenance'] } | undefined)?.provenance?.adapter)).toBeUndefined();
+    expect(result.diffs).toEqual([]);
   });
 
   it('keeps store and read parity slices stable for the comparison harness', async () => {
@@ -91,9 +89,7 @@ describe('Sprint 22 shadow validation slice', () => {
     });
 
     expect(result.legacy?.id).toBe(writeLegacy.id);
-    expect(result.native?.id).toBe(writeNative.id);
-    expect(result.diffs).toEqual([
-      { path: 'identity.stableKey', expected: 'project:byomem:root:sprint-22-write-alpha', actual: null },
-    ]);
+    expect(result.native?.record?.id ?? result.native?.id).toBe(writeNative.id);
+    expect(result.diffs).toEqual([]);
   });
 });

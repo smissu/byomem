@@ -420,7 +420,7 @@ export async function captureSessionCheckpoint(store: NativeStore, options: Sess
 
   const rollupResult = await queueRuntime.write(buildSessionRollupIntent(input, summary, pendingTurns, reason));
   if (!rollupResult?.record || !rollupResult?.event) throw new Error('Failed to persist session rollup');
-  const rollup = rollupResult.record.record;
+  const rollup = rollupResult.record;
   saveSessionState(options.baseDir, input.sessionId, {
     offset: endOffset,
     pendingTurns: [],

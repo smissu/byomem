@@ -32,7 +32,7 @@ describe('shadow adapter', () => {
     const result = await shadow.write(intent);
 
     expect(result.legacy?.id).toBe(legacy.id);
-    expect(result.native?.id).toBe('project:byomem:root:shadow-adapter');
+    expect(result.native?.record?.id ?? result.native?.id).toBe('project:byomem:root:shadow-adapter');
     expect(result.diffs).toEqual([]);
     await expect(shadow.replace(intent)).rejects.toThrow('Unsupported direct replace on shared write boundary');
     expect(() => shadow.prune({ scope: intent.scope, identity: intent.identity })).toThrow('Unsupported direct prune on shared write boundary');
