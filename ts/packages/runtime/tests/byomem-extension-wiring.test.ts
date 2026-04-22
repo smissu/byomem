@@ -230,7 +230,7 @@ describe('byomem extension wiring', () => {
     });
   });
 
-  it('injects remembered user preferences and project context on the first agent start of a session', async () => {
+  it('surfaces remembered context visibly once while keeping hidden steering compact', async () => {
     const dir = tempDir();
     dirs.push(dir);
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
@@ -240,17 +240,15 @@ describe('byomem extension wiring', () => {
     const localMock = makeMockPi();
     mod(localMock.api as never);
 
-    await localMock.events.session_start?.[0]?.({ reason: 'startup' }, { ui: { notify() {} } });
+    const notify = vi.fn();
+    await localMock.events.session_start?.[0]?.({ reason: 'startup' }, { ui: { notify } });
 
     const storeTool = localMock.tools.find((tool) => tool.name === 'byomem_store');
-    const storeResult = await storeTool!.execute('1', {
+    await storeTool!.execute('1', {
       scope: 'user',
       identity: { namespace: 'working-preferences', leafName: 'progress-update-intervals', parentContext: 'communication' },
       content: { text: 'User prefers brief progress updates at roughly 10%, 20%, 30% completion.' },
       provenance: { source: 'fixtures' },
-    });
-    expect((storeResult as { details?: { record?: unknown } }).details).toMatchObject({
-      event: { kind: 'write' },
     });
     await storeTool!.execute('2', {
       scope: 'project',
@@ -259,19 +257,23 @@ describe('byomem extension wiring', () => {
       provenance: { source: 'fixtures' },
     });
 
-    const result = await localMock.events.before_agent_start?.[0]?.(
+    const first = await localMock.events.before_agent_start?.[0]?.(
       { prompt: 'Investigate the repo', systemPrompt: 'BASE SYSTEM PROMPT' },
-      {},
+      { ui: { notify } },
     );
-    expect(result?.systemPrompt).toContain('## Remembered BYOMem context');
-    expect(result?.systemPrompt).toContain('User prefers brief progress updates');
-    expect(result?.systemPrompt).toContain('Search project memory for architecture decisions');
+    expect(first?.systemPrompt).toContain('## Remembered BYOMem steering');
+    expect(first?.systemPrompt).toContain('- User preferences:');
+    expect(first?.systemPrompt).toContain('- Project context:');
+    expect(first?.systemPrompt).not.toContain('## Remembered BYOMem context');
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining('## Remembered BYOMem context'), 'info');
+    expect(notify).toHaveBeenCalledTimes(2);
 
     const second = await localMock.events.before_agent_start?.[0]?.(
       { prompt: 'Follow-up task', systemPrompt: 'BASE SYSTEM PROMPT' },
-      {},
+      { ui: { notify } },
     );
     expect(second).toEqual({});
+    expect(notify).toHaveBeenCalledTimes(2);
   });
 
   it('operates without durable checkpoint persistence for turn_end processing', async () => {

@@ -416,7 +416,7 @@ function formatContextLines(records: Array<{ content?: { text?: string }; identi
   return lines;
 }
 
-async function buildInitialByomemContext(prompt: string): Promise<string | null> {
+async function buildInitialByomemContext(prompt: string): Promise<{ visible?: string; systemPrompt?: string } | null> {
   const userResults = await Promise.resolve(searchIndex(nativeStore, {
     query: 'working preferences repeated working style communication coding workflow progress updates subagents',
     scope: 'user',
@@ -435,7 +435,11 @@ async function buildInitialByomemContext(prompt: string): Promise<string | null>
   const sections: string[] = ['## Remembered BYOMem context'];
   if (userLines.length) sections.push('### User preferences', ...userLines);
   if (projectLines.length) sections.push('### Project context', ...projectLines);
-  return sections.join('\n');
+  const visible = sections.join('\n');
+  const systemLines: string[] = ['## Remembered BYOMem steering'];
+  if (userLines.length) systemLines.push(`- User preferences: ${userLines[0].replace(/^[-\s]+/, '')}`);
+  if (projectLines.length) systemLines.push(`- Project context: ${projectLines[0].replace(/^[-\s]+/, '')}`);
+  return { visible, systemPrompt: systemLines.join('\n') };
 }
 
 export function byomem_runtime_status() {
@@ -483,13 +487,14 @@ export default function (pi: ExtensionAPI) {
     shouldInjectInitialContext = event.reason !== 'reload';
     ctx.ui?.notify?.('BYOMem TS runtime loaded', 'info');
   });
-  pi.on('before_agent_start', async (event, _ctx) => {
+  pi.on('before_agent_start', async (event, ctx) => {
     if (!shouldInjectInitialContext) return {};
     shouldInjectInitialContext = false;
     const rememberedContext = await buildInitialByomemContext(event.prompt ?? '');
     if (!rememberedContext) return {};
+    ctx.ui?.notify?.(rememberedContext.visible ?? rememberedContext.systemPrompt ?? '', 'info');
     return {
-      systemPrompt: `${event.systemPrompt}\n\n${rememberedContext}`,
+      systemPrompt: `${event.systemPrompt}\n\n${rememberedContext.systemPrompt ?? ''}`,
     };
   });
   pi.on('turn_end', async (event, ctx) => {
