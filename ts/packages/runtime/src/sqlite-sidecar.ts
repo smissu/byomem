@@ -7,6 +7,8 @@ import { normalizeIdentity, normalizeStableKey } from './identity.js';
 import { normalizeRecord, normalizeWriteIntent } from './normalizers.js';
 import { openEmbeddingClient, type EmbeddingClient } from './embedding-client.js';
 
+
+
 export interface SqliteSidecarOptions {
   baseDir: string;
   dbFile?: string;
@@ -17,9 +19,12 @@ export interface SqliteSidecarOptions {
   embeddingRequireRemote?: boolean;
 }
 
-export interface SqliteSidecar {
-  syncWrite(intent: WriteIntent): Promise<MemoryRecord>;
-  syncPrune(id: string): MemoryRecord | undefined;
+interface SqliteSidecarOwner {
+  readonly kind: 'native-store';
+}
+
+
+export interface SqliteSidecarReader {
   read(id: string): MemoryRecord | undefined;
   list(): MemoryRecord[];
   search(query: string, scope?: MemoryScope, limit?: number): Promise<MemoryRecord[]>;
@@ -28,9 +33,26 @@ export interface SqliteSidecar {
   db: BetterSqliteDatabase;
 }
 
+export interface SqliteSidecarMutator {
+  syncWrite(intent: WriteIntent, owner: SqliteSidecarOwner): Promise<MemoryRecord>;
+  syncPrune(id: string, owner: SqliteSidecarOwner): MemoryRecord | undefined;
+}
+
+export interface SqliteSidecar extends SqliteSidecarReader {}
+
+export const sqliteSidecarMutatorKey = Symbol.for('byomem.runtime.sqliteSidecar.mutator');
+
 const DEFAULT_DIMENSION = 1536;
 export const EMBEDDING_TEXT_MAX_CHARS = 4000;
 const EMBEDDING_TEXT_TRUNCATION_MARKER = ' …[truncated for embedding]… ';
+const SIDECAR_OWNER_KIND = 'native-store';
+
+function assertOwner(owner: SqliteSidecarOwner | undefined): asserts owner is SqliteSidecarOwner {
+  if (!owner || owner.kind !== SIDECAR_OWNER_KIND) {
+    throw new Error('SQLite sidecar writes must be owned by NativeStore');
+  }
+}
+
 
 function resolveDbPath(options: SqliteSidecarOptions): string {
   return resolve(options.baseDir, options.dbFile ?? 'byomem-index.sqlite');
@@ -118,7 +140,11 @@ function loadRecord(row: { id: string; scope: string; namespace: string; leaf_na
   });
 }
 
-export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar {
+export function getSqliteSidecarMutator(sidecar: SqliteSidecar): SqliteSidecarMutator | undefined {
+  return (sidecar as unknown as Record<PropertyKey, unknown>)[sqliteSidecarMutatorKey] as SqliteSidecarMutator | undefined;
+}
+
+function openSqliteSidecarBundle(options: SqliteSidecarOptions): { sidecar: SqliteSidecar; mutator: SqliteSidecarMutator } {
   const filePath = resolveDbPath(options);
   mkdirSync(dirname(filePath), { recursive: true });
   const db = new Database(filePath);
@@ -230,10 +256,32 @@ export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar 
     return semantic.filter((entry) => entry.score >= 0.5).slice(0, limit).map((entry) => entry.record);
   }
 
-  return {
+  const sidecar: SqliteSidecar = {
     path: filePath,
     db,
-    async syncWrite(intent: WriteIntent): Promise<MemoryRecord> {
+    read(id: string): MemoryRecord | undefined {
+      const row = selectRecord.get(id) as ReturnType<typeof loadRecord> | undefined;
+      return row ? loadRecord(row as never) : undefined;
+    },
+    list(): MemoryRecord[] {
+      return (listRecordsStmt.all() as ReturnType<typeof loadRecord>[]).map((row) => loadRecord(row as never));
+    },
+    async search(query: string, scope?: MemoryScope, limit = 10): Promise<MemoryRecord[]> {
+      const narrowedScope = scope ?? 'project';
+      const hybridResults = await hybridSearch(query, narrowedScope, limit);
+      if (hybridResults.length) return hybridResults;
+      const ftsQuery = normalizeFtsQuery(query);
+      if (!ftsQuery) return [];
+      return (searchStmt.all(ftsQuery, narrowedScope ?? null, narrowedScope ?? null, limit) as ReturnType<typeof loadRecord>[]).map((row) => loadRecord(row as never));
+    },
+    close(): void {
+      db.close();
+    },
+  };
+
+  const mutator: SqliteSidecarMutator = {
+    async syncWrite(intent: WriteIntent, owner: SqliteSidecarOwner): Promise<MemoryRecord> {
+      assertOwner(owner);
       const normalized = normalizeWriteIntent(intent);
       const id = normalizeStableKey(normalized.scope, normalized.identity);
       const record = normalizeRecord({
@@ -257,8 +305,9 @@ export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar 
       })();
       return record;
     },
-    syncPrune(id: string): MemoryRecord | undefined {
-      const removed = this.read(id);
+    syncPrune(id: string, owner: SqliteSidecarOwner): MemoryRecord | undefined {
+      assertOwner(owner);
+      const removed = sidecar.read(id);
       if (!removed) return undefined;
       db.transaction(() => {
         deleteEmbeddingStmt.run(id);
@@ -267,23 +316,18 @@ export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar 
       })();
       return removed;
     },
-    read(id: string): MemoryRecord | undefined {
-      const row = selectRecord.get(id) as ReturnType<typeof loadRecord> | undefined;
-      return row ? loadRecord(row as never) : undefined;
-    },
-    list(): MemoryRecord[] {
-      return (listRecordsStmt.all() as ReturnType<typeof loadRecord>[]).map((row) => loadRecord(row as never));
-    },
-    async search(query: string, scope?: MemoryScope, limit = 10): Promise<MemoryRecord[]> {
-      const narrowedScope = scope ?? 'project';
-      const hybridResults = await hybridSearch(query, narrowedScope, limit);
-      if (hybridResults.length) return hybridResults;
-      const ftsQuery = normalizeFtsQuery(query);
-      if (!ftsQuery) return [];
-      return (searchStmt.all(ftsQuery, narrowedScope ?? null, narrowedScope ?? null, limit) as ReturnType<typeof loadRecord>[]).map((row) => loadRecord(row as never));
-    },
-    close(): void {
-      db.close();
-    },
   };
+
+  return { sidecar, mutator };
+}
+
+export function openSqliteSidecar(options: SqliteSidecarOptions): SqliteSidecar {
+  const { sidecar, mutator } = openSqliteSidecarBundle(options);
+  Object.defineProperty(sidecar, sqliteSidecarMutatorKey, {
+    value: mutator,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return sidecar;
 }

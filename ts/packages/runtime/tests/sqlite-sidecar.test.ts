@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openNativeStore } from '../src/store.js';
-import { EMBEDDING_TEXT_MAX_CHARS } from '../src/sqlite-sidecar.js';
+import { EMBEDDING_TEXT_MAX_CHARS, openSqliteSidecar, sqliteSidecarMutatorKey } from '../src/sqlite-sidecar.js';
 import { searchIndex } from '../src/search-index.js';
 
 function tempDir(): string {
@@ -17,7 +17,18 @@ describe('sqlite-backed parity slice', () => {
     while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
   });
 
-  it('creates sqlite db artifacts on write', async () => {
+  it('keeps the public sidecar surface reader-only while guarding internal writes', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const sidecar = openSqliteSidecar({ baseDir: dir });
+
+    expect('syncWrite' in sidecar).toBe(false);
+    expect('syncPrune' in sidecar).toBe(false);
+    expect(Object.keys(sidecar)).not.toContain(String(sqliteSidecarMutatorKey));
+    expect(sidecar.read('project:byomem:root:unauthorized-sidecar')).toBeUndefined();
+  });
+
+  it('creates sqlite db artifacts on queue-owned write', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const store = openNativeStore({ baseDir: dir });

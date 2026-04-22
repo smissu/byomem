@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto';
 import type { MemoryIdentity, MemoryRecord, MemoryScope, WriteIntent } from './contracts.js';
 import { normalizeRecord, normalizeWriteIntent } from './normalizers.js';
 import { normalizeIdentity, normalizeStableKey } from './identity.js';
-import { openSqliteSidecar, type SqliteSidecar } from './sqlite-sidecar.js';
+import { getSqliteSidecarMutator, openSqliteSidecar, type SqliteSidecar } from './sqlite-sidecar.js';
+
 
 export interface NativeStoreOptions {
   baseDir: string;
@@ -17,13 +18,17 @@ export interface NativeStoreOptions {
   embeddingRequireRemote?: boolean;
 }
 
+export const storeKey = Symbol.for('byomem.runtime.nativeStore.singleWriter');
+
 export interface NativeStore {
+  baseDir: string;
   write(intent: WriteIntent): Promise<MemoryRecord>;
   read(id: string): MemoryRecord | undefined;
   list(): MemoryRecord[];
   prune(id: string): MemoryRecord | undefined;
   close(): void;
   sidecar?: SqliteSidecar;
+  [storeKey]?: true;
 }
 
 interface StoreSnapshot {
@@ -59,11 +64,16 @@ function persistSnapshot(filePath: string, snapshot: StoreSnapshot): void {
 export function openNativeStore(options: NativeStoreOptions): NativeStore {
   const filePath = resolve(options.baseDir, options.storeFile ?? 'native-store.json');
   const sidecar = openSqliteSidecar(options);
+  const sidecarMutator = getSqliteSidecarMutator(sidecar);
+  const sidecarOwner = Object.freeze({ kind: 'native-store' as const });
+  if (!sidecarMutator) throw new Error('SQLite sidecar mutator unavailable');
   const snapshot = loadSnapshot(filePath);
   const recordsById = new Map<string, MemoryRecord>(snapshot.records.map((record) => [record.id, normalizeRecord(record)]));
 
   return {
+    baseDir: options.baseDir,
     sidecar,
+    [storeKey]: true,
     async write(intent: WriteIntent): Promise<MemoryRecord> {
       const normalized = normalizeWriteIntent(intent);
       const id = stableIdFromIntent(normalized) || buildRecordId(normalized.identity, normalized.scope);
@@ -78,7 +88,7 @@ export function openNativeStore(options: NativeStoreOptions): NativeStore {
           updatedAt: new Date().toISOString(),
         },
       });
-      await sidecar.syncWrite(normalized);
+      await sidecarMutator.syncWrite(normalized, sidecarOwner);
       recordsById.set(record.id, record);
       persistSnapshot(filePath, { version: 1, records: [...recordsById.values()] });
       return record;
@@ -93,7 +103,7 @@ export function openNativeStore(options: NativeStoreOptions): NativeStore {
       const removed = recordsById.get(id);
       if (!removed) return undefined;
       recordsById.delete(id);
-      sidecar.syncPrune(id);
+      sidecarMutator.syncPrune(id, sidecarOwner);
       persistSnapshot(filePath, { version: 1, records: [...recordsById.values()] });
       return removed;
     },
