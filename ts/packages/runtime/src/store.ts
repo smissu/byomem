@@ -6,6 +6,7 @@ import { normalizeRecord, normalizeWriteIntent } from './normalizers.js';
 import { normalizeIdentity, normalizeStableKey } from './identity.js';
 import { type SqliteSidecar } from './sqlite-sidecar.js';
 import { openSqliteSidecarInternal } from './sqlite-sidecar-internal.js';
+import { openFileSearchDb, type FileSearchDbHandle } from './file-search-db.js';
 
 
 export interface NativeStoreOptions {
@@ -29,6 +30,7 @@ export interface NativeStore {
   prune(id: string): MemoryRecord | undefined;
   close(): void;
   sidecar?: SqliteSidecar;
+  fileSearchDb?: FileSearchDbHandle;
   [storeKey]?: true;
 }
 
@@ -65,6 +67,7 @@ function persistSnapshot(filePath: string, snapshot: StoreSnapshot): void {
 export function openNativeStore(options: NativeStoreOptions): NativeStore {
   const filePath = resolve(options.baseDir, options.storeFile ?? 'native-store.json');
   const { sidecar, mutator: sidecarMutator } = openSqliteSidecarInternal(options);
+  const fileSearchDb = openFileSearchDb({ baseDir: options.baseDir });
   const sidecarOwner = Object.freeze({ kind: 'native-store' as const });
   const snapshot = loadSnapshot(filePath);
   const recordsById = new Map<string, MemoryRecord>(snapshot.records.map((record) => [record.id, normalizeRecord(record)]));
@@ -72,6 +75,7 @@ export function openNativeStore(options: NativeStoreOptions): NativeStore {
   return {
     baseDir: options.baseDir,
     sidecar,
+    fileSearchDb,
     [storeKey]: true,
     async write(intent: WriteIntent): Promise<MemoryRecord> {
       const normalized = normalizeWriteIntent(intent);
@@ -107,6 +111,7 @@ export function openNativeStore(options: NativeStoreOptions): NativeStore {
       return removed;
     },
     close(): void {
+      fileSearchDb.close();
       sidecar.close();
       persistSnapshot(filePath, { version: 1, records: [...recordsById.values()] });
     },
