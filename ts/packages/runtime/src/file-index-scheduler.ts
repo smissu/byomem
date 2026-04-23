@@ -1,4 +1,5 @@
 import type { FileSearchDbHandle, FileSearchRefreshEvent } from './file-search-db.js';
+import { resolveProjectContext } from './project-context.js';
 
 export interface FileIndexSchedulerMetrics {
   runs: number;
@@ -21,13 +22,14 @@ export class FileIndexScheduler {
   private readonly maxActiveProjects: number;
   private readonly debounceWindowMs: number;
   private readonly backstopWindowMs: number;
+  private readonly defaultProjectKey: string;
 
-  constructor(private readonly db: FileSearchDbHandle['db'], private readonly baseDir: string, options?: { maxActiveProjects?: number; debounceWindowMs?: number; backstopWindowMs?: number }) {
+  constructor(private readonly db: FileSearchDbHandle, private readonly baseDir: string, options?: { maxActiveProjects?: number; debounceWindowMs?: number; backstopWindowMs?: number }) {
     this.maxActiveProjects = options?.maxActiveProjects ?? 3;
     this.debounceWindowMs = options?.debounceWindowMs ?? 250;
     this.backstopWindowMs = options?.backstopWindowMs ?? 60_000;
-    const defaultProjectKey = `project:${this.baseDir.split('/').filter(Boolean).at(-1) ?? 'project'}`;
-    this.projects.set(defaultProjectKey, { lastRefreshAt: 0 });
+    this.defaultProjectKey = `project:${resolveProjectContext({}, this.baseDir).projectKey}`;
+    this.projects.set(this.defaultProjectKey, { lastRefreshAt: 0 });
     this.backstopTimer = setInterval(() => this.flushBackstop(), this.backstopWindowMs);
   }
 
@@ -36,7 +38,7 @@ export class FileIndexScheduler {
   }
 
   scheduleRefresh(event: FileSearchRefreshEvent): void {
-    const projectKey = event.projectKey ?? `project:${this.baseDir.split('/').filter(Boolean).at(-1) ?? 'project'}`;
+    const projectKey = event.projectKey ?? this.defaultProjectKey;
     const state = this.ensureState(projectKey);
     const now = Date.now();
 
@@ -48,10 +50,6 @@ export class FileIndexScheduler {
     if (event.kind === 'activation') {
       this.flushProject(projectKey);
       return;
-    }
-
-    if (event.kind === 'backstop' && !this.backstopTimer) {
-      this.backstopTimer = setInterval(() => this.flushBackstop(), this.backstopWindowMs);
     }
 
     clearTimeout(this.debounceTimer);
@@ -78,7 +76,7 @@ export class FileIndexScheduler {
     if (this.projects.size > this.maxActiveProjects && !this.projects.has(projectKey)) return;
 
     try {
-      this.db.prepare('SELECT 1').get();
+      this.db.scanAndIndex();
       state.lastRefreshAt = Date.now();
       state.pending = undefined;
       state.failed = false;

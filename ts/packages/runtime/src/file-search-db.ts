@@ -45,12 +45,14 @@ function isIgnoredInternalFile(filePath: string): boolean {
 
 function resolveFileSearchDbPath(options: FileSearchDbOptions): string {
   const fileName = options.dbFile ?? DEFAULT_FILE_SEARCH_DB_FILE;
-  const path = resolve(options.baseDir, fileName);
-  const memoriesPath = openSqliteSidecarInternal({ baseDir: options.baseDir }).sidecar.path;
-  if (path === memoriesPath || path === resolve(options.baseDir, 'native-store.json')) {
+  const resolvedPath = resolve(options.baseDir, fileName);
+  const canonicalResolved = resolve(resolvedPath);
+  const memoriesDbPath = resolve(options.baseDir, 'byomem-index.sqlite');
+  const memoriesSnapshotPath = resolve(options.baseDir, 'native-store.json');
+  if (canonicalResolved === memoriesDbPath || canonicalResolved === memoriesSnapshotPath) {
     throw new Error('file search DB must not target the memories DB path');
   }
-  return path;
+  return resolvedPath;
 }
 
 function assertFileSearchDbPath(path: string): void {
@@ -312,7 +314,9 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
   const db = new Database(path);
   ensureFoundationSchema(db);
   ensureScannerIndexerSchema(db);
-  const scheduler = new FileIndexScheduler(db, options.baseDir, { maxActiveProjects: MAX_ACTIVE_PROJECTS, debounceWindowMs: DEBOUNCE_WINDOW_MS, backstopWindowMs: BACKSTOP_WINDOW_MS });
+  const scheduler = new FileIndexScheduler({
+    scanAndIndex: () => scanAndIndexFiles(db, options.baseDir),
+  } as FileSearchDbHandle, options.baseDir, { maxActiveProjects: MAX_ACTIVE_PROJECTS, debounceWindowMs: DEBOUNCE_WINDOW_MS, backstopWindowMs: BACKSTOP_WINDOW_MS });
 
   const handle: FileSearchDbHandle = {
     path,
