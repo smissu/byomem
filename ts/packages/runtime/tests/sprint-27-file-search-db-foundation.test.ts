@@ -97,4 +97,14 @@ describe('Sprint 27 file search DB foundation', () => {
 
     expect(() => openFileSearchDb({ baseDir: dir, dbFile: join(dir, 'byomem-index.sqlite') })).toThrow(/memories DB path/i);
   });
+
+  it('does not open the memories sidecar just to resolve the file-search DB path', () => {
+    const dir = tempDir();
+    dirs.push(dir);
+
+    expect(() => openFileSearchDb({ baseDir: dir })).not.toThrow();
+    const fileDb = openFileSearchDb({ baseDir: dir });
+    expect(fileDb.path).toMatch(/byomem-file-search\.sqlite$/);
+    fileDb.close();
+  });
 });
