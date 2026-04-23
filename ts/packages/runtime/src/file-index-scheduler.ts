@@ -4,7 +4,13 @@ import { resolveProjectContext } from './project-context.js';
 export interface FileIndexSchedulerMetrics {
   runs: number;
   failures: number;
+  skips: number;
+  retries: number;
+  lastRunAt?: string;
+  lastFailureAt?: string;
 }
+
+export interface FileIndexSchedulerRefreshState extends FileIndexSchedulerMetrics {}
 
 interface ProjectSchedulerState {
   lastActivationAt?: number;
@@ -12,11 +18,12 @@ interface ProjectSchedulerState {
   lastRefreshAt?: number;
   pending?: FileSearchRefreshEvent;
   failed?: boolean;
+  retryCount?: number;
 }
 
 export class FileIndexScheduler {
   private readonly projects = new Map<string, ProjectSchedulerState>();
-  private readonly metrics: FileIndexSchedulerMetrics = { runs: 0, failures: 0 };
+  private readonly metrics: FileIndexSchedulerMetrics = { runs: 0, failures: 0, skips: 0, retries: 0 };
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
   private backstopTimer: ReturnType<typeof setInterval> | undefined;
   private readonly maxActiveProjects: number;
@@ -33,7 +40,7 @@ export class FileIndexScheduler {
     this.backstopTimer = setInterval(() => this.flushBackstop(), this.backstopWindowMs);
   }
 
-  get refreshMetrics(): FileIndexSchedulerMetrics {
+  get refreshMetrics(): FileIndexSchedulerRefreshState {
     return this.metrics;
   }
 
@@ -72,18 +79,32 @@ export class FileIndexScheduler {
 
   private flushProject(projectKey: string): void {
     const state = this.ensureState(projectKey);
-    if (!state.pending) return;
-    if (this.projects.size > this.maxActiveProjects && !this.projects.has(projectKey)) return;
+    if (!state.pending) {
+      this.metrics.skips += 1;
+      return;
+    }
+    if (this.projects.size > this.maxActiveProjects && !this.projects.has(projectKey)) {
+      this.metrics.skips += 1;
+      return;
+    }
 
     try {
       this.db.scanAndIndex();
-      state.lastRefreshAt = Date.now();
+      const now = new Date();
+      state.lastRefreshAt = now.getTime();
       state.pending = undefined;
       state.failed = false;
+      state.retryCount = 0;
       this.metrics.runs += 1;
+      this.metrics.lastRunAt = now.toISOString();
     } catch {
+      const now = new Date();
       state.failed = true;
+      state.retryCount = (state.retryCount ?? 0) + 1;
       this.metrics.failures += 1;
+      this.metrics.retries += 1;
+      this.metrics.lastFailureAt = now.toISOString();
+      state.pending = undefined;
     }
   }
 

@@ -3,7 +3,6 @@ import { mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, resolve, relative, sep, join, basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
-import { openSqliteSidecarInternal } from './sqlite-sidecar-internal.js';
 import { resolveProjectContext } from './project-context.js';
 import { FileIndexScheduler } from './file-index-scheduler.js';
 
@@ -24,7 +23,7 @@ export interface FileSearchDbHandle {
   scanAndIndex(): void;
   scheduleRefresh(event: FileSearchRefreshEvent): void;
   flushScheduledRefreshes(): void;
-  refreshMetrics: { runs: number; failures: number };
+  refreshMetrics: { runs: number; failures: number; skips: number; retries: number; lastRunAt?: string; lastFailureAt?: string };
 }
 
 const DEFAULT_FILE_SEARCH_DB_FILE = 'byomem-file-search.sqlite';
@@ -56,7 +55,8 @@ function resolveFileSearchDbPath(options: FileSearchDbOptions): string {
 }
 
 function assertFileSearchDbPath(path: string): void {
-  const fileName = path.split(/[/\\]/).pop() ?? path;
+  const canonical = resolve(path);
+  const fileName = canonical.split(/[/\\]/).pop() ?? canonical;
   if (fileName === 'byomem-index.sqlite' || fileName === 'native-store.json') {
     throw new Error('file search DB must not target the memories DB path');
   }
