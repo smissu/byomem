@@ -115,6 +115,17 @@ function ensureScannerIndexerSchema(db: BetterSqliteDatabase): void {
       updated_at TEXT NOT NULL,
       FOREIGN KEY(file_record_id) REFERENCES file_records(id) ON DELETE CASCADE
     );
+    CREATE VIRTUAL TABLE IF NOT EXISTS indexed_chunks_fts USING fts5(id UNINDEXED, project_key UNINDEXED, file_record_id UNINDEXED, chunk_index UNINDEXED, chunk_text, chunk_hash, content='indexed_chunks', content_rowid='rowid', tokenize = 'unicode61');
+    CREATE TRIGGER IF NOT EXISTS indexed_chunks_ai AFTER INSERT ON indexed_chunks BEGIN
+      INSERT INTO indexed_chunks_fts(rowid, id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash) VALUES (new.rowid, new.id, new.project_key, new.file_record_id, new.chunk_index, new.chunk_text, new.chunk_hash);
+    END;
+    CREATE TRIGGER IF NOT EXISTS indexed_chunks_ad AFTER DELETE ON indexed_chunks BEGIN
+      INSERT INTO indexed_chunks_fts(indexed_chunks_fts, rowid, id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash) VALUES('delete', old.rowid, old.id, old.project_key, old.file_record_id, old.chunk_index, old.chunk_text, old.chunk_hash);
+    END;
+    CREATE TRIGGER IF NOT EXISTS indexed_chunks_au AFTER UPDATE ON indexed_chunks BEGIN
+      INSERT INTO indexed_chunks_fts(indexed_chunks_fts, rowid, id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash) VALUES('delete', old.rowid, old.id, old.project_key, old.file_record_id, old.chunk_index, old.chunk_text, old.chunk_hash);
+      INSERT INTO indexed_chunks_fts(rowid, id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash) VALUES (new.rowid, new.id, new.project_key, new.file_record_id, new.chunk_index, new.chunk_text, new.chunk_hash);
+    END;
     CREATE INDEX IF NOT EXISTS idx_indexed_chunks_project_key ON indexed_chunks(project_key);
     CREATE INDEX IF NOT EXISTS idx_indexed_chunks_file_record_id ON indexed_chunks(file_record_id);
     CREATE TABLE IF NOT EXISTS changed_files (
