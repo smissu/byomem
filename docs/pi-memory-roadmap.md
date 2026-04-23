@@ -58,6 +58,10 @@ Memories move through a simple state model:
 - [Sprint 5.2] sprint-5.2-query-aware-native-search-ranking.md — query-aware retrieval on the native store
 - [Sprint 6] sprint-6-byomem-recent.md — recent retrieval on the native + query-aware foundation
 - [Sprint 7] sprint-7-byomem-manage.md — lifecycle management on the native foundation
+- [Sprint 27] sprint-27-global-file-search-db-foundation.md — file-search DB foundation
+- [Sprint 28] sprint-28-file-scanner-indexer-mvp.md — scanner/indexer MVP
+- [Sprint 29] sprint-29-file-search-mvp.md — file search MVP
+- [Sprint 30] sprint-30-file-index-scheduler-and-hardening.md — scheduler/freshness/hardening
 
 
 ## Cross-sprint dependencies
