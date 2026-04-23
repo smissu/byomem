@@ -62,6 +62,7 @@ Memories move through a simple state model:
 - [Sprint 28] sprint-28-file-scanner-indexer-mvp.md — scanner/indexer MVP
 - [Sprint 29] sprint-29-file-search-mvp.md — file search MVP
 - [Sprint 30] sprint-30-file-index-scheduler-and-hardening.md — scheduler/freshness/hardening
+- [Sprint 31] sprint-31-file-search-refinement-and-cleanup.md — refinement and cleanup
 
 
 ## Cross-sprint dependencies

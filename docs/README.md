@@ -18,16 +18,7 @@
 - [Sprint 28 — File Scanner / Indexer MVP](./sprint-28-file-scanner-indexer-mvp.md)
 - [Sprint 29 — File Search MVP](./sprint-29-file-search-mvp.md)
 - [Sprint 30 — File Index Scheduler and Hardening](./sprint-30-file-index-scheduler-and-hardening.md)
-- [Pi memory implementation backlog](./pi-memory-implementation-backlog.md)
-- [Sprint 3 — Pi-Native Integration](./sprint-3-pi-native-integration.md)
-- [Sprint 4 — Hardening, Curation, and byomem-agent](./sprint-4-hardening-curation-byomem-agent.md)
-- [Sprint 5 — byomem Store](./sprint-5-byomem-store.md)
-- [Sprint 5.1 — BYOMem-Native Storage + Stable Identity Foundation](./sprint-5.1-native-storage-stable-identity.md)
-- [Sprint 5.2 — Query-Aware Retrieval on Native Memory Store](./sprint-5.2-query-aware-native-search-ranking.md)
-- [Sprint 6 — byomem Recent](./sprint-6-byomem-recent.md)
-- [Sprint 7 — byomem Manage](./sprint-7-byomem-manage.md)
-- [Sprint 8 — Non-Team BYOMem Modes](./sprint-8-non-team-byomem-modes.md)
-- [Sprint 9 — Team Dispatcher BYOMem Memory Adaptation](./sprint-9-team-dispatcher-byomem-memory.md)
+- [Sprint 31 — File Search Refinement and Cleanup](./sprint-31-file-search-refinement-and-cleanup.md)
 - [Pi memory implementation backlog](./pi-memory-implementation-backlog.md)
 
 ## Historical / superseded notes
