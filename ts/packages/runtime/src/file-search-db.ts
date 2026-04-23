@@ -5,10 +5,16 @@ import { createHash } from 'node:crypto';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { openSqliteSidecarInternal } from './sqlite-sidecar-internal.js';
 import { resolveProjectContext } from './project-context.js';
+import { FileIndexScheduler } from './file-index-scheduler.js';
 
 export interface FileSearchDbOptions {
   baseDir: string;
   dbFile?: string;
+}
+
+export interface FileSearchRefreshEvent {
+  kind: 'activation' | 'post-activity' | 'backstop';
+  projectKey?: string;
 }
 
 export interface FileSearchDbHandle {
@@ -16,11 +22,17 @@ export interface FileSearchDbHandle {
   db: BetterSqliteDatabase;
   close(): void;
   scanAndIndex(): void;
+  scheduleRefresh(event: FileSearchRefreshEvent): void;
+  flushScheduledRefreshes(): void;
+  refreshMetrics: { runs: number; failures: number };
 }
 
 const DEFAULT_FILE_SEARCH_DB_FILE = 'byomem-file-search.sqlite';
 const IGNORED_DIRS = new Set(['node_modules', '.git']);
 const IGNORED_BASENAMES = new Set(['byomem-index.sqlite', 'byomem-file-search.sqlite', 'native-store.json']);
+const MAX_ACTIVE_PROJECTS = 3;
+const DEBOUNCE_WINDOW_MS = 250;
+const BACKSTOP_WINDOW_MS = 60_000;
 
 function isSQLiteCompanion(filePath: string): boolean {
   return /-(wal|shm)$/.test(filePath);
@@ -300,13 +312,23 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
   const db = new Database(path);
   ensureFoundationSchema(db);
   ensureScannerIndexerSchema(db);
+  const scheduler = new FileIndexScheduler(db, options.baseDir, { maxActiveProjects: MAX_ACTIVE_PROJECTS, debounceWindowMs: DEBOUNCE_WINDOW_MS, backstopWindowMs: BACKSTOP_WINDOW_MS });
+
   const handle: FileSearchDbHandle = {
     path,
     db,
+    refreshMetrics: scheduler.refreshMetrics,
     scanAndIndex(): void {
       scanAndIndexFiles(db, options.baseDir);
     },
+    scheduleRefresh(event: FileSearchRefreshEvent): void {
+      scheduler.scheduleRefresh(event);
+    },
+    flushScheduledRefreshes(): void {
+      scheduler.flushScheduledRefreshes();
+    },
     close(): void {
+      scheduler.close();
       assertFileSearchDbPath(handle.path);
       db.close();
     },
