@@ -19,6 +19,7 @@
 - [Sprint 29 — File Search MVP](./sprint-29-file-search-mvp.md)
 - [Sprint 30 — File Index Scheduler and Hardening](./sprint-30-file-index-scheduler-and-hardening.md)
 - [Sprint 31 — File Search Refinement and Cleanup](./sprint-31-file-search-refinement-and-cleanup.md)
+- [Sprint 32 — Semantic / Hybrid Document Search](./sprint-32-semantic-hybrid-document-search.md)
 - [Pi memory implementation backlog](./pi-memory-implementation-backlog.md)
 
 ## Historical / superseded notes
