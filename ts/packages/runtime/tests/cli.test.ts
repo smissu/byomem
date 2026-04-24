@@ -96,6 +96,19 @@ describe('runtime cli', () => {
     expect(existsSync(join(dir, 'byomem-index.sqlite'))).toBe(true);
   });
 
+  it('runs file-search without embedding config by degrading default hybrid mode to FTS', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    writeFileSync(join(dir, 'lexical.txt'), 'lexical only body\n', 'utf8');
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await main(['file-search', '--base-dir', dir, '--query', 'lexical']);
+
+    expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      results: [expect.objectContaining({ file: expect.objectContaining({ path: expect.stringContaining('lexical.txt') }) })],
+    });
+  });
+
   it('runs semantic file-search through the public CLI surface', async () => {
     const dir = tempDir();
     dirs.push(dir);

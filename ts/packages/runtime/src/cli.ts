@@ -115,7 +115,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   const isGenerationCommand = GENERATION_COMMANDS.has(command);
   const isObserverCommand = OBSERVER_COMMANDS.has(command);
-  const store = isGenerationCommand || isObserverCommand ? undefined : openNativeStore({ ...options, embeddingRequireRemote: true });
+  const isFileSearchCommand = command === 'file-search';
+  const store = isGenerationCommand || isObserverCommand
+    ? undefined
+    : openNativeStore({
+      ...options,
+      embeddingRequireRemote: isFileSearchCommand ? options.embeddingRequireRemote : true,
+      fileSearchSemanticEnabled: isFileSearchCommand ? Boolean(options.fileSearchSemanticEnabled || options.embeddingBaseUrl) : options.fileSearchSemanticEnabled,
+    });
   const queueRuntime = store ? openQueueRuntime(store, { baseDir: options.baseDir }) : undefined;
   try {
     if (command === 'store') {
