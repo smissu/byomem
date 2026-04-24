@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, resolve, relative, sep, join, basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
@@ -40,6 +40,96 @@ function isSQLiteCompanion(filePath: string): boolean {
 function isIgnoredInternalFile(filePath: string): boolean {
   const name = basename(filePath);
   return IGNORED_BASENAMES.has(name) || isSQLiteCompanion(name);
+}
+
+interface GitignoreRule {
+  basePath: string;
+  pattern: string;
+  directoryOnly: boolean;
+  negated: boolean;
+  anchored: boolean;
+  hasSlash: boolean;
+  regex: RegExp;
+}
+
+function normalizePathForGitignore(filePath: string): string {
+  return filePath.split(sep).join('/');
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+}
+
+function globToRegex(pattern: string): RegExp {
+  const source = pattern
+    .split('*')
+    .map((part) => escapeRegex(part))
+    .join('[^/]*');
+  return new RegExp(`^${source}$`);
+}
+
+function loadGitignoreRules(rootDir: string, currentDir: string): GitignoreRule[] {
+  const gitignorePath = join(currentDir, '.gitignore');
+  if (!existsSync(gitignorePath)) return [];
+  const basePath = normalizePathForGitignore(relative(rootDir, currentDir));
+  return readFileSync(gitignorePath, 'utf8')
+    .split(/\r?\n/)
+    .map((rawLine) => rawLine.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('#'))
+    .map((line) => {
+      const negated = line.startsWith('!');
+      let pattern = negated ? line.slice(1) : line;
+      const anchored = pattern.startsWith('/');
+      if (anchored) pattern = pattern.slice(1);
+      const directoryOnly = pattern.endsWith('/');
+      pattern = pattern.replace(/^\/+|\/+$/g, '');
+      return {
+        basePath,
+        pattern,
+        directoryOnly,
+        negated,
+        anchored,
+        hasSlash: pattern.includes('/'),
+        regex: globToRegex(pattern),
+      };
+    })
+    .filter((rule) => rule.pattern.length > 0);
+}
+
+function pathRelativeToRuleBase(rule: GitignoreRule, relativePath: string): string | undefined {
+  const path = normalizePathForGitignore(relativePath);
+  if (!path) return undefined;
+  if (!rule.basePath) return path;
+  if (path === rule.basePath) return '';
+  if (!path.startsWith(`${rule.basePath}/`)) return undefined;
+  return path.slice(rule.basePath.length + 1);
+}
+
+function gitignoreRuleMatches(rule: GitignoreRule, relativePath: string, isDirectory: boolean): boolean {
+  const path = pathRelativeToRuleBase(rule, relativePath);
+  if (!path) return false;
+  const segments = path.split('/');
+
+  if (rule.directoryOnly) {
+    if (rule.hasSlash || rule.anchored) {
+      return path === rule.pattern || path.startsWith(`${rule.pattern}/`);
+    }
+    return segments.some((segment) => rule.regex.test(segment));
+  }
+
+  if (rule.hasSlash || rule.anchored) {
+    return rule.regex.test(path);
+  }
+
+  return rule.regex.test(isDirectory ? segments[segments.length - 1] : basename(path));
+}
+
+function isGitignored(rules: GitignoreRule[], relativePath: string, isDirectory: boolean): boolean {
+  let ignored = false;
+  for (const rule of rules) {
+    if (gitignoreRuleMatches(rule, relativePath, isDirectory)) ignored = !rule.negated;
+  }
+  return ignored;
 }
 
 function resolveFileSearchDbPath(options: FileSearchDbOptions): string {
@@ -171,15 +261,18 @@ function chunkContent(content: string): string[] {
 
 function walkFiles(rootDir: string): string[] {
   const files: string[] = [];
-  const queue = [rootDir];
+  const queue: Array<{ dir: string; rules: GitignoreRule[] }> = [{ dir: rootDir, rules: [] }];
   while (queue.length) {
     const current = queue.shift()!;
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
+    const gitignoreRules = [...current.rules, ...loadGitignoreRules(rootDir, current.dir)];
+    for (const entry of readdirSync(current.dir, { withFileTypes: true })) {
+      const fullPath = join(current.dir, entry.name);
+      const relativePath = relative(rootDir, fullPath);
       if (entry.isDirectory()) {
-        if (!IGNORED_DIRS.has(entry.name)) queue.push(join(current, entry.name));
+        if (!IGNORED_DIRS.has(entry.name) && !isGitignored(gitignoreRules, relativePath, true)) queue.push({ dir: fullPath, rules: gitignoreRules });
         continue;
       }
-      if (entry.isFile()) files.push(join(current, entry.name));
+      if (entry.isFile() && !isIgnoredInternalFile(fullPath) && !isGitignored(gitignoreRules, relativePath, false)) files.push(fullPath);
     }
   }
   return files;

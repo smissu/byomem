@@ -211,6 +211,23 @@ These can proceed in parallel only after shared RED tests and contract decisions
 - [ ] Focused Sprint 27–30 regressions remain green after this sprint.
 - [ ] Review sign-off confirms no watcher creep, no fake semantic behavior, and no unintended scheduler redesign.
 
+## Deferred / Partial Follow-Up Items
+Sprint 31 landed as a constrained implementation slice in commit `831d7e2` (`Complete Sprint 31 refinement and cleanup`), but the following items remain deferred, partial, or weakly evidenced and should be considered for a follow-up sprint/backlog pass:
+
+- **Formal sprint closeout:** Update this sprint artifact with completion status, verification evidence, and accepted deferrals if a full closeout record is desired.
+- **Docs/runbook consolidation:** AC-6 remains weakly evidenced because the completion commit did not update operator-facing file-search docs/runbooks for DB separation, scanner/indexer/search flow, scheduler freshness semantics, 1–3 active-project expectations, or semantic gating behavior.
+- **Scheduler dependency typing:** AC-1 is functionally improved, but the scheduler constructor type still references the broader `FileSearchDbHandle`; a follow-up could introduce a narrower explicit TypeScript interface for the project-scoped scan/index contract.
+- **Scheduler observability depth:** AC-3 is covered by aggregate metrics, but distinct activation/debounce/backstop/skip/retry/degradation states are only lightly evidenced; a follow-up could add richer state/event reporting if needed for operations.
+- **Retry/non-wedging proof:** AC-4 is partially evidenced through failure counters and pending-state cleanup, but targeted transient-failure/recovery coverage could be strengthened.
+- **Search-hit metadata completeness:** AC-5 preserves key chunk fields such as `chunkHash`, but additional persisted metadata such as content hashes or indexed timestamps could be exposed if consumers need them.
+- **Grounded semantic retrieval:** AC-7 is satisfied primarily through clean gating/no fake fallback; fully grounded semantic-on retrieval over persisted stable chunk artifacts remains deferred unless a future sprint explicitly scopes it.
+- **Ranking quality target:** AC-8 has lightweight hybrid-ranking coverage, but broader file-search result-quality fixtures and snippet/result-shaping assertions remain possible follow-up work.
+- **Chunking policy tuning:** AC-9 appears not delivered; current chunking remains compatible and line-oriented, with tuning deferred.
+- **Read-only inspection surface:** AC-10 appears not delivered; any minimal inspection command/API remains optional follow-up work.
+- **RED-first traceability:** AC-11 is not independently provable from git history because Sprint 31 tests and implementation landed in the same completion commit; future sprints should preserve clearer RED/GREEN commit or artifact evidence.
+- **Path canonicalization hardening:** Current guards use path normalization via `resolve(...)`; if symlink-aware safety is required, evaluate `realpath`-based handling in a follow-up.
+- **Multi-project scheduler enforcement:** Review max-active-project behavior if the 1–3 active-project model needs strict enforcement rather than documented/operator-level guidance.
+
 ## See Also
 - `docs/sprint-27-global-file-search-db-foundation.md`
 - `docs/sprint-28-file-scanner-indexer-mvp.md`
