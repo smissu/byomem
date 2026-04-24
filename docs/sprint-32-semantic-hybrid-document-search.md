@@ -311,23 +311,30 @@ Rationale: the sprint has a shared schema/config/test kernel, then separable wor
   **Mitigation:** store model and dimension with every embedding/cache row and force fresh embeddings when model/dimension changes.
 
 ## Definition of Done
-- [ ] All acceptance criteria are satisfied by passing tests.
-- [ ] File-search DB stores chunk embeddings separately from the memories DB.
-- [ ] `fts`, `semantic`, and `hybrid` document search modes are implemented and typed.
-- [ ] Hybrid search demonstrably improves or supplements FTS results under mocked embedding tests.
-- [ ] Unchanged chunks are not re-embedded; changed/deleted chunks update embedding state correctly.
-- [ ] Ollama unavailable behavior is explicit, test-covered, and does not break FTS search unexpectedly.
-- [ ] Backfill, model-version changes, embedding coverage, and diagnostics are test-covered.
-- [ ] Embedding configuration reaches file-search from runtime, CLI, and Pi extension paths.
-- [ ] Minimal public runtime/CLI/API surfacing can run document `fts`, `semantic`, and `hybrid` modes without private imports.
-- [ ] Async semantic indexing/backfill is explicitly awaited and test-covered; no hidden unawaited scanner embedding work is required.
-- [ ] Semantic enablement, batch sizing, partial failures, result limits, dedupe, and deterministic tie-breaking are test-covered.
-- [ ] Docs include `ollama pull nomic-embed-text`, config examples, MVP corpus/latency assumptions, and limitations.
-- [ ] Automated tests use mocked/fake embeddings; live Ollama checks are documented as manual/skippable smoke tests.
-- [ ] Sprint 27–31 regression tests remain green.
-- [ ] Full test suite and build pass.
-- [ ] Docs/runbook and docs indexes are updated.
-- [ ] Independent review confirms no memories DB coupling, no project-scope leakage, and no scanner daemon/watch creep.
+- [x] All acceptance criteria are satisfied by passing tests.
+- [x] File-search DB stores chunk embeddings separately from the memories DB.
+- [x] `fts`, `semantic`, and `hybrid` document search modes are implemented and typed.
+- [x] Hybrid search demonstrably improves or supplements FTS results under mocked embedding tests.
+- [x] Unchanged chunks are not re-embedded; changed/deleted chunks update embedding state correctly.
+- [x] Ollama unavailable behavior is explicit, test-covered, and does not break FTS search unexpectedly.
+- [x] Backfill, model-version changes, embedding coverage, and diagnostics are test-covered.
+- [x] Embedding configuration reaches file-search from runtime and CLI paths; Pi extension embedding config continues to flow through `openNativeStore()`.
+- [x] Minimal public runtime/CLI/API surfacing can run document `fts`, `semantic`, and `hybrid` modes without private imports.
+- [x] Async semantic indexing/backfill is explicitly awaited and test-covered; no hidden unawaited scanner embedding work is required.
+- [x] Semantic enablement, batch sizing, partial failures, result limits, dedupe, and deterministic tie-breaking are test-covered.
+- [x] Docs include `ollama pull nomic-embed-text`, config examples, MVP corpus/latency assumptions, and limitations.
+- [x] Automated tests use mocked/fake embeddings; live Ollama checks are documented as manual/skippable smoke tests.
+- [x] Sprint 27–31 regression tests remain green.
+- [x] Full test suite and build pass.
+- [x] Docs/runbook and docs indexes are updated.
+- [x] Independent review confirms no memories DB coupling, no project-scope leakage, and no scanner daemon/watch creep.
+
+## Closeout Notes
+- Implemented file-search-owned chunk embedding storage with cache metadata, model/dimension tracking, diagnostics, and explicit async `refreshSemanticIndex()` backfill/refresh.
+- Added true document `fts`, `semantic`, and `hybrid` query modes, preserving FTS-only fallback when embeddings are absent/unconfigured.
+- Added public runtime export `searchFileIndex` and CLI `file-search --mode fts|semantic|hybrid` surface for manual testing.
+- Added runbook: `docs/semantic-hybrid-document-search-runbook.md`.
+- Verification completed before review: focused Sprint 32 tests, CLI tests, full runtime suite, and build all passed.
 
 ## See Also
 - `docs/sprint-27-global-file-search-db-foundation.md`
@@ -335,6 +342,7 @@ Rationale: the sprint has a shared schema/config/test kernel, then separable wor
 - `docs/sprint-29-file-search-mvp.md`
 - `docs/sprint-30-file-index-scheduler-and-hardening.md`
 - `docs/sprint-31-file-search-refinement-and-cleanup.md`
+- `docs/semantic-hybrid-document-search-runbook.md`
 - `ts/packages/runtime/src/file-search-db.ts`
 - `ts/packages/runtime/src/file-search-query.ts`
 - `ts/packages/runtime/src/embedding-client.ts`

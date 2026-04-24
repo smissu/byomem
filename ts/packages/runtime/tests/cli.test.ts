@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main } from '../src/cli.js';
@@ -94,5 +94,23 @@ describe('runtime cli', () => {
     });
     expect(existsSync(join(dir, 'native-store.json'))).toBe(true);
     expect(existsSync(join(dir, 'byomem-index.sqlite'))).toBe(true);
+  });
+
+  it('runs semantic file-search through the public CLI surface', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    writeFileSync(join(dir, 'alpha.txt'), 'alpha target body\n', 'utf8');
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { prompt?: string };
+      const embedding = body.prompt?.includes('meaning query') || body.prompt?.includes('alpha target') ? [1, 0, 0] : [0, 1, 0];
+      return new Response(JSON.stringify({ embedding }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await main(['file-search', '--base-dir', dir, '--embedding-base-url', 'http://localhost:11434', '--semantic-file-search', '--mode', 'semantic', '--query', 'meaning query']);
+
+    expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      results: [expect.objectContaining({ file: expect.objectContaining({ path: expect.stringContaining('alpha.txt') }) })],
+    });
   });
 });

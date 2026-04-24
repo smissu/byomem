@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { openNativeStore } from './store.js';
 import { openQueueRuntime } from './queue-runtime.js';
 import { searchIndex } from './search-index.js';
+import { searchIndex as searchFileIndex } from './file-search-query.js';
 import { openGenerationClient } from './generation-client.js';
 import { observeQueue, renderQueueObserver } from './queue-observer.js';
 
@@ -19,6 +20,7 @@ type CliOptions = {
   embeddingModel?: string;
   embeddingTimeoutMs?: number;
   embeddingRequireRemote?: boolean;
+  fileSearchSemanticEnabled?: boolean;
   generationBaseUrl?: string;
   generationModel?: string;
   generationTimeoutMs?: number;
@@ -29,7 +31,7 @@ type CliOptions = {
 type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
 
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'file-search', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
@@ -91,6 +93,8 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--query') { payload.query = requireValue(next, '--query'); i += 1; }
     else if (arg === '--id') { payload.id = requireValue(next, '--id'); i += 1; }
     else if (arg === '--scope') { payload.scope = requireValue(next, '--scope'); i += 1; }
+    else if (arg === '--mode') { payload.mode = requireValue(next, '--mode'); i += 1; }
+    else if (arg === '--semantic-file-search') { options.fileSearchSemanticEnabled = true; }
     else if (arg === '--prompt') { payload.prompt = requireValue(next, '--prompt'); i += 1; }
     else if (arg === '--text') { payload.text = requireValue(next, '--text'); i += 1; }
   }
@@ -127,6 +131,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const query = payload.query?.trim();
       if (!query) throw new Error('Missing --query for search');
       console.log(JSON.stringify({ results: await searchIndex(store, { query, scope: payload.scope?.trim() as 'project' | 'user' | undefined }) }, null, 2));
+      return;
+    }
+    if (command === 'file-search') {
+      if (!store) throw new Error('Missing native store');
+      const query = payload.query?.trim();
+      if (!query) throw new Error('Missing --query for file-search');
+      const mode = (payload.mode?.trim() || 'hybrid') as 'fts' | 'semantic' | 'hybrid';
+      if (mode !== 'fts' && mode !== 'semantic' && mode !== 'hybrid') throw new Error('--mode must be fts, semantic, or hybrid');
+      if (mode !== 'fts') await store.fileSearchDb?.refreshSemanticIndex();
+      console.log(JSON.stringify({ results: await searchFileIndex(store, { query, mode, limit: 10 }) }, null, 2));
       return;
     }
     if (command === 'prune') {

@@ -25,4 +25,7 @@ export * from './queue-runtime.js';
 export * from './markdown-projection.js';
 export { normalizeIdentity, normalizeLeafName, normalizeStableKey, normalizeScope } from './identity.js';
 export * from './embedding-client.js';
+export * from './embedding-vector.js';
+export { searchIndex as searchFileIndex } from './file-search-query.js';
+export type { FileSearchHit, FileSearchQuery } from './file-search-query.js';
 export { openSharedCorpusStore, resolveCorpusPath } from './shared-corpus.js';

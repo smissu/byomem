@@ -18,6 +18,8 @@ export interface NativeStoreOptions {
   embeddingDimension?: number;
   embeddingTimeoutMs?: number;
   embeddingRequireRemote?: boolean;
+  fileSearchSemanticEnabled?: boolean;
+  fileSearchEmbeddingBatchSize?: number;
 }
 
 export const storeKey = Symbol.for('byomem.runtime.nativeStore.singleWriter');
@@ -67,7 +69,16 @@ function persistSnapshot(filePath: string, snapshot: StoreSnapshot): void {
 export function openNativeStore(options: NativeStoreOptions): NativeStore {
   const filePath = resolve(options.baseDir, options.storeFile ?? 'native-store.json');
   const { sidecar, mutator: sidecarMutator } = openSqliteSidecarInternal(options);
-  const fileSearchDb = openFileSearchDb({ baseDir: options.baseDir });
+  const fileSearchDb = openFileSearchDb({
+    baseDir: options.baseDir,
+    embeddingBaseUrl: options.embeddingBaseUrl,
+    embeddingModel: options.embeddingModel,
+    embeddingDimension: options.embeddingDimension,
+    embeddingTimeoutMs: options.embeddingTimeoutMs,
+    embeddingRequireRemote: options.embeddingRequireRemote,
+    semanticSearchEnabled: options.fileSearchSemanticEnabled,
+    embeddingBatchSize: options.fileSearchEmbeddingBatchSize,
+  });
   const sidecarOwner = Object.freeze({ kind: 'native-store' as const });
   const snapshot = loadSnapshot(filePath);
   const recordsById = new Map<string, MemoryRecord>(snapshot.records.map((record) => [record.id, normalizeRecord(record)]));
