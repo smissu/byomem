@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { main } from '../src/cli.js';
 import { openFileSearchDb, resolveDefaultFileSearchDbPath } from '../src/file-search-db.js';
 import { searchIndex as searchFileIndex } from '../src/file-search-query.js';
@@ -206,16 +206,4 @@ describe('Sprint 37 file-search project registry', () => {
     }
   });
 
-  it('ships a project-local Pi skill for safe file-search project registration', () => {
-    const skillPath = resolve('.pi/skills/file-search-project-registration/SKILL.md');
-    expect(existsSync(skillPath)).toBe(true);
-    const content = readFileSync(skillPath, 'utf8');
-    expect(content).toMatch(/^---\n[\s\S]*name:\s*file-search-project-registration\n[\s\S]*description:\s*.+\n[\s\S]*---/);
-    expect(dirname(skillPath).endsWith(join('.pi', 'skills', 'file-search-project-registration'))).toBe(true);
-    expect(content).toContain('file-search-project-register --base-dir');
-    expect(content).toContain('file-search-project-list --json');
-    expect(content).toContain('Do not infer');
-    expect(content).toContain('saved memories');
-    expect(content).toContain('polling');
-  });
 });

@@ -9,11 +9,7 @@ build/
 .env
 .byomem/
 .claude/
-.pi/*
-!.pi/skills/
-.pi/skills/*
-!.pi/skills/file-search-project-registration/
-!.pi/skills/file-search-project-registration/SKILL.md
+.pi/
 .playwright-cli/
 queue/
 tmp/

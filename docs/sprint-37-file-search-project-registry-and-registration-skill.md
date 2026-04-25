@@ -1,7 +1,7 @@
 # Sprint 37: File Search Project Registry and Registration Skill
 
 ## Objective
-Add an explicit global file-search project registry so BYOMem can track projects intentionally before future polling automation. The registry distinguishes **seen** projects from **enabled/registered** projects: normal file-search usage may record that a project has been seen, but only explicit registration opts a project into future automated scanning. This sprint also adds a project-local Pi skill that teaches agents how to register projects safely for the file-search/scanner workflow.
+Add an explicit global file-search project registry so BYOMem can track projects intentionally before future polling automation. The registry distinguishes **seen** projects from **enabled/registered** projects: normal file-search usage may record that a project has been seen, but only explicit registration opts a project into future automated scanning. This sprint also adds a global Pi skill that teaches agents in any project how to register projects safely for the file-search/scanner workflow.
 
 ## User Rationale
 The global file-search DB from Sprint 36 allows many projects to share one physical index. To automate rescans later, BYOMem needs a durable list of projects that are eligible for automation. The registry should not infer automation eligibility from saved memories, because memories and file indexing have different privacy and performance implications. Registration should be explicit, agent-readable, and easy to verify.
@@ -23,7 +23,7 @@ The global file-search DB from Sprint 36 allows many projects to share one physi
   - `file-search-project-unregister --base-dir <project>`
   - `file-search-project-list --json`
 - Ensure registration does **not** depend on saved memories, `native-store.json`, `byomem-index.sqlite`, or memory search results.
-- Add a project-local skill at `.pi/skills/file-search-project-registration/SKILL.md` with workflow instructions for agents.
+- Add a global skill at `~/.pi/agent/skills/file-search-project-registration/SKILL.md` with workflow instructions for agents.
 - Update docs index/roadmap/runbook with registry behavior and automation boundaries.
 
 ### Out of scope
@@ -38,7 +38,7 @@ The global file-search DB from Sprint 36 allows many projects to share one physi
 - Sprint 36 moved file-search DB storage to a global runtime DB while preserving per-project `project_key` partitions.
 - The scanner remains on-demand per `--base-dir`; there is no durable registry table yet for projects eligible for future automation.
 - A polling automation sprint will need an explicit project list. Using projects with saved memories would be surprising and unsafe because memory curation does not imply permission to scan source files.
-- Pi skills are discovered from project-local `.pi/skills/<skill-name>/SKILL.md` files when they contain required `name` and `description` frontmatter. The skill name should match the parent directory and use lowercase letters/numbers/hyphens.
+- Global Pi skills are discovered from `~/.pi/agent/skills/<skill-name>/SKILL.md` files when they contain required `name` and `description` frontmatter. The skill name should match the parent directory and use lowercase letters/numbers/hyphens.
 
 ## Acceptance Criteria
 - [x] **AC37-1:** A global file-search project registry exists and is stored independently of project-local memories.
@@ -50,7 +50,7 @@ The global file-search DB from Sprint 36 allows many projects to share one physi
 - [x] **AC37-7:** Memory store/write/search/prune activity, including CLI `store`, `search`, and `prune`, must not create or enable file-search registry entries.
 - [x] **AC37-8:** Registry operations are idempotent: re-registering the same absolute resolved path updates timestamps/state instead of duplicating entries; symlink equivalence beyond `resolve(...)` is out of scope.
 - [x] **AC37-9:** Registry project keys use the Sprint 36 collision-safe file-search project key helper, so same-basename projects in different parent directories remain distinct.
-- [x] **AC37-10:** A project-local skill exists at `.pi/skills/file-search-project-registration/SKILL.md` with valid YAML frontmatter at the top, `name: file-search-project-registration`, a non-empty `description`, and a parent directory matching the skill name.
+- [x] **AC37-10:** A global skill exists at `~/.pi/agent/skills/file-search-project-registration/SKILL.md` with valid YAML frontmatter at the top, `name: file-search-project-registration`, a non-empty `description`, and a parent directory matching the skill name.
 - [x] **AC37-11:** The skill instructs agents not to infer scanner registration from saved memories or existing DB files, and to verify registration through the CLI list command.
 - [x] **AC37-12:** Registry commands do not start polling, watchers, daemons, background scans, or automatic project scans in this sprint.
 - [x] **AC37-13:** Existing Sprint 27–36 file-search behavior remains green.
@@ -59,7 +59,7 @@ The global file-search DB from Sprint 36 allows many projects to share one physi
 ## Execution Mode
 standard
 
-Rationale: the registry affects shared runtime/CLI surfaces and global DB behavior. Implementation should be serialized after RED tests lock the data model and CLI contract. The project-local skill and docs can be completed after command names/output shape are stable.
+Rationale: the registry affects shared runtime/CLI surfaces and global DB behavior. Implementation should be serialized after RED tests lock the data model and CLI contract. The global skill and docs can be completed after command names/output shape are stable.
 
 ## Proposed Registry Contract
 The exact table/module names should be locked by RED tests, but the registry should be close to:
@@ -127,9 +127,9 @@ List contract:
   - Depends on: 0.1, 0.2
   - Verify: targeted CLI tests fail before implementation.
 
-- [x] **0.5** Add project-local skill validation test or documented verification.
+- [x] **0.5** Add global skill validation checklist or documented verification.
   - Role: test-engineer/documenter
-  - Deliverable: test or checklist proving `.pi/skills/file-search-project-registration/SKILL.md` exists, frontmatter is the first block, `name` equals `file-search-project-registration`, `description` is present, and required guardrails/instructions are included.
+  - Deliverable: checklist proving `~/.pi/agent/skills/file-search-project-registration/SKILL.md` exists, frontmatter is the first block, `name` equals `file-search-project-registration`, `description` is present, and required guardrails/instructions are included.
   - Depends on: none
   - Verify: test/check fails before skill is added.
 
@@ -180,8 +180,8 @@ List contract:
   - Depends on: 2.1-2.3
   - Verify: CLI tests pass without embedding configuration.
 
-## Phase 3 — Project-Local Skill and Docs
-- [x] **3.1** Add `.pi/skills/file-search-project-registration/SKILL.md`.
+## Phase 3 — Global Skill and Docs
+- [x] **3.1** Add `~/.pi/agent/skills/file-search-project-registration/SKILL.md`.
   - Role: documenter
   - Deliverable: valid Pi skill with required frontmatter and agent workflow.
   - Depends on: command names/output stable.
@@ -277,7 +277,7 @@ git diff --check
 - Stored registry rows in the global file-search DB alongside scanner/index tables.
 - Integrated `seen` recording for explicit file-search scan/search/status paths without enabling automation.
 - Added CLI commands `file-search-project-register`, `file-search-project-unregister`, and `file-search-project-list --json`; register/unregister require explicit `--base-dir`, list does not, and CLI output uses snake_case registry fields sorted by `base_dir ASC`.
-- Added `.pi/skills/file-search-project-registration/SKILL.md` and a narrow `.gitignore` exception so the project-local skill is trackable without exposing other `.pi` runtime files.
+- Installed the skill globally at `~/.pi/agent/skills/file-search-project-registration/SKILL.md` so agents in other projects can discover it; removed the BYOMem project-local copy to avoid duplicate skill-name collisions.
 - Added a registry-only global DB open path for registry commands so they do not instantiate the file index scheduler/backstop timer.
 - Updated the semantic/hybrid runbook with registry commands, state semantics, and no-polling/no-inference boundaries.
 
@@ -288,7 +288,7 @@ git diff --check
 - [x] Register/unregister/list CLI commands are implemented and tested, including explicit `--base-dir` requirements for register/unregister, soft-disable unregister, all-state list output, and no scheduler timer side effects.
 - [x] Memory writes/searches/prunes do not create or enable registry entries.
 - [x] File-search usage may record seen projects but does not enable automation.
-- [x] Project-local Pi skill exists with valid frontmatter and safe registration workflow.
+- [x] Global Pi skill exists with valid frontmatter and safe registration workflow.
 - [x] Docs explain polling/automation is deferred.
 - [x] Sprint 27–37 file-search regression passes.
 - [x] Full test suite and build pass.
