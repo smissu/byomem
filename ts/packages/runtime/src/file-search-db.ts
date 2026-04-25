@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, resolve, relative, sep, join, basename } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
@@ -9,8 +10,13 @@ import { openEmbeddingClient, type EmbeddingClient } from './embedding-client.js
 import { DEFAULT_EMBEDDING_DIMENSION, encodeEmbedding, truncateEmbeddingText } from './embedding-vector.js';
 
 export interface FileSearchDbOptions {
-  baseDir: string;
+  /** Project root to scan and use for project_key/status identity. */
+  baseDir?: string;
+  projectBaseDir?: string;
+  /** Explicit physical SQLite file path/name override. Relative paths resolve under dbBaseDir. */
   dbFile?: string;
+  /** Physical DB storage root override. Defaults to BYOMEM_RUNTIME_BASE_DIR or ~/.byomem/runtime. */
+  dbBaseDir?: string;
   embeddingBaseUrl?: string;
   embeddingModel?: string;
   embeddingDimension?: number;
@@ -206,15 +212,34 @@ function isGitignored(rules: GitignoreRule[], relativePath: string, isDirectory:
   return ignored;
 }
 
-function resolveFileSearchDbPath(options: FileSearchDbOptions): string {
-  const fileName = options.dbFile ?? DEFAULT_FILE_SEARCH_DB_FILE;
-  const resolvedPath = resolve(options.baseDir, fileName);
+function resolveProjectBaseDir(options: FileSearchDbOptions): string {
+  const projectBaseDir = options.projectBaseDir ?? options.baseDir;
+  if (!projectBaseDir?.trim()) throw new Error('file search project baseDir is required');
+  return resolve(projectBaseDir);
+}
+
+function resolveDefaultRuntimeBaseDir(): string {
+  const override = process.env.BYOMEM_RUNTIME_BASE_DIR?.trim();
+  return override ? resolve(override) : resolve(homedir(), '.byomem', 'runtime');
+}
+
+export function resolveDefaultFileSearchDbPath(options: Pick<FileSearchDbOptions, 'dbBaseDir' | 'dbFile'> = {}): string {
+  const dbBaseDir = options.dbBaseDir ?? resolveDefaultRuntimeBaseDir();
+  const dbFile = options.dbFile ?? DEFAULT_FILE_SEARCH_DB_FILE;
+  return resolve(dbBaseDir, dbFile);
+}
+
+function resolveFileSearchDbPath(options: FileSearchDbOptions, projectBaseDir: string): string {
+  const resolvedPath = options.dbFile
+    ? resolve(options.dbBaseDir ?? projectBaseDir, options.dbFile)
+    : resolveDefaultFileSearchDbPath({ dbBaseDir: options.dbBaseDir });
   const canonicalResolved = resolve(resolvedPath);
-  const memoriesDbPath = resolve(options.baseDir, 'byomem-index.sqlite');
-  const memoriesSnapshotPath = resolve(options.baseDir, 'native-store.json');
+  const memoriesDbPath = resolve(projectBaseDir, 'byomem-index.sqlite');
+  const memoriesSnapshotPath = resolve(projectBaseDir, 'native-store.json');
   if (canonicalResolved === memoriesDbPath || canonicalResolved === memoriesSnapshotPath) {
     throw new Error('file search DB must not target the memories DB path');
   }
+  assertFileSearchDbPath(canonicalResolved);
   return resolvedPath;
 }
 
@@ -413,9 +438,15 @@ function walkFiles(rootDir: string): WalkFilesResult {
   return { files, ignoredFiles };
 }
 
+export function resolveFileSearchProjectKey(baseDir: string): string {
+  const resolvedBaseDir = resolve(baseDir);
+  const context = resolveProjectContext({}, resolvedBaseDir);
+  const pathHash = createHash('sha256').update(resolve(context.repoRoot || resolvedBaseDir)).digest('hex').slice(0, 12);
+  return `project:${context.projectKey}-${pathHash}`;
+}
+
 function deriveProjectKey(baseDir: string): string {
-  const context = resolveProjectContext({}, baseDir);
-  return `project:${context.projectKey}`;
+  return resolveFileSearchProjectKey(baseDir);
 }
 
 function relPath(baseDir: string, filePath: string): string {
@@ -724,13 +755,14 @@ async function refreshSemanticIndex(db: BetterSqliteDatabase, options: FileSearc
 }
 
 export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHandle {
-  const path = resolveFileSearchDbPath(options);
+  const projectBaseDir = resolveProjectBaseDir(options);
+  const path = resolveFileSearchDbPath(options, projectBaseDir);
   mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
   ensureFoundationSchema(db);
   ensureScannerIndexerSchema(db);
   ensureScannerStatusSchema(db);
-  const projectKey = deriveProjectKey(options.baseDir);
+  const projectKey = deriveProjectKey(projectBaseDir);
   const scanOnOpen = options.scanOnOpen ?? true;
   const scannerStaleAfterMs = options.scannerStaleAfterMs ?? DEFAULT_SCANNER_STALE_AFTER_MS;
   const runningOnOpen = readPersistedScannerStatus(db, projectKey)?.state === 'running';
@@ -745,7 +777,7 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
   const buildScannerStatus = (): FileSearchScannerStatus => {
     const persisted = readPersistedScannerStatus(db, projectKey);
     if (!persisted) {
-      return { state: 'idle', projectKey, baseDir: options.baseDir, progress: emptyScannerProgress(), database: scannerDatabaseCounts(db, projectKey), embeddings: embeddingDiagnostics(db, options) };
+      return { state: 'idle', projectKey, baseDir: projectBaseDir, progress: emptyScannerProgress(), database: scannerDatabaseCounts(db, projectKey), embeddings: embeddingDiagnostics(db, options) };
     }
     if (persisted.state === 'running' && persisted.runId !== activeRunId && isStaleRunning(persisted)) {
       const completedAt = new Date().toISOString();
@@ -769,16 +801,16 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
     const progress = emptyScannerProgress();
     activeRunId = runId;
     const persistRunning = (currentPath?: string, lastPath?: string): void => {
-      persistScannerStatus(db, projectKey, { state: 'running', projectKey, baseDir: options.baseDir, runId, trigger, startedAt, currentPath, lastPath, progress: { ...progress } });
+      persistScannerStatus(db, projectKey, { state: 'running', projectKey, baseDir: projectBaseDir, runId, trigger, startedAt, currentPath, lastPath, progress: { ...progress } });
     };
     persistRunning();
     try {
-      const result = scanAndIndexFiles(db, options.baseDir, progress, persistRunning);
+      const result = scanAndIndexFiles(db, projectBaseDir, progress, persistRunning);
       const completedAt = new Date().toISOString();
       persistScannerStatus(db, projectKey, {
         state: 'completed',
         projectKey,
-        baseDir: options.baseDir,
+        baseDir: projectBaseDir,
         runId,
         trigger,
         startedAt,
@@ -793,7 +825,7 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
       persistScannerStatus(db, projectKey, {
         state: 'failed',
         projectKey,
-        baseDir: options.baseDir,
+        baseDir: projectBaseDir,
         runId,
         trigger,
         startedAt,
@@ -816,7 +848,7 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
   });
   const scheduler = new FileIndexScheduler({
     scanAndIndex: (scanOptions?: { trigger?: FileSearchScannerTrigger }) => runScan(scanOptions?.trigger ?? 'manual'),
-  } as FileSearchDbHandle, options.baseDir, { maxActiveProjects: MAX_ACTIVE_PROJECTS, debounceWindowMs: DEBOUNCE_WINDOW_MS, backstopWindowMs: BACKSTOP_WINDOW_MS });
+  } as FileSearchDbHandle, projectBaseDir, { maxActiveProjects: MAX_ACTIVE_PROJECTS, debounceWindowMs: DEBOUNCE_WINDOW_MS, backstopWindowMs: BACKSTOP_WINDOW_MS });
 
   const handle: FileSearchDbHandle = {
     path,

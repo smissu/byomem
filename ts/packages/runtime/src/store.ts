@@ -21,6 +21,9 @@ export interface NativeStoreOptions {
   fileSearchSemanticEnabled?: boolean;
   fileSearchEmbeddingBatchSize?: number;
   fileSearchScanOnOpen?: boolean;
+  fileSearchProjectBaseDir?: string;
+  fileSearchDbFile?: string;
+  fileSearchDbBaseDir?: string;
 }
 
 export const storeKey = Symbol.for('byomem.runtime.nativeStore.singleWriter');
@@ -34,6 +37,7 @@ export interface NativeStore {
   close(): void;
   sidecar?: SqliteSidecar;
   fileSearchDb?: FileSearchDbHandle;
+  fileSearchProjectBaseDir?: string;
   [storeKey]?: true;
 }
 
@@ -71,7 +75,10 @@ export function openNativeStore(options: NativeStoreOptions): NativeStore {
   const filePath = resolve(options.baseDir, options.storeFile ?? 'native-store.json');
   const { sidecar, mutator: sidecarMutator } = openSqliteSidecarInternal(options);
   const fileSearchDb = openFileSearchDb({
-    baseDir: options.baseDir,
+    baseDir: options.fileSearchProjectBaseDir ?? options.baseDir,
+    projectBaseDir: options.fileSearchProjectBaseDir ?? options.baseDir,
+    dbFile: options.fileSearchDbFile,
+    dbBaseDir: options.fileSearchDbBaseDir,
     embeddingBaseUrl: options.embeddingBaseUrl,
     embeddingModel: options.embeddingModel,
     embeddingDimension: options.embeddingDimension,
@@ -89,6 +96,7 @@ export function openNativeStore(options: NativeStoreOptions): NativeStore {
     baseDir: options.baseDir,
     sidecar,
     fileSearchDb,
+    fileSearchProjectBaseDir: resolve(options.fileSearchProjectBaseDir ?? options.baseDir),
     [storeKey]: true,
     async write(intent: WriteIntent): Promise<MemoryRecord> {
       const normalized = normalizeWriteIntent(intent);

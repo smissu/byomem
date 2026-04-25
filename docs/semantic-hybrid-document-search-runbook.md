@@ -1,7 +1,7 @@
 # Semantic / Hybrid Document Search Runbook
 
 ## Status
-Sprint 32 adds semantic and hybrid search over the BYOMem file-search DB. The file-search stack remains physically separate from the memories DB and keeps SQLite FTS as the lexical baseline.
+Sprint 32 adds semantic and hybrid search over the BYOMem file-search DB. Sprint 36 makes file-search DB storage global by default while preserving per-project `project_key` partitioning. The file-search stack remains physically separate from the memories DB and keeps SQLite FTS as the lexical baseline.
 
 ## Prerequisites
 For real Ollama-backed semantic search, install/pull the embedding model:
@@ -23,6 +23,18 @@ http://localhost:11434
 ```
 
 Automated tests use mocked embeddings and do not require live Ollama.
+
+
+## File-search DB location and project scoping
+By default, file-search commands store their physical SQLite DB globally at:
+
+```text
+${BYOMEM_RUNTIME_BASE_DIR:-~/.byomem/runtime}/byomem-file-search.sqlite
+```
+
+`--base-dir <project>` is the scan/search project root. It is used to walk files, derive the `project_key`, scope `file-search` results, and report scanner `baseDir`; it is **not** the default DB storage directory. Running `file-search-scan --base-dir /path/to/project` should not create `/path/to/project/byomem-file-search.sqlite` unless an explicit DB override is used by tests/dev tooling.
+
+Legacy project-local `byomem-file-search.sqlite` files are left in place and ignored by the new default. There is no automatic migration, import, or deletion in Sprint 36. To troubleshoot or intentionally use a legacy/local DB, pass an explicit DB override through the runtime API (`fileSearchDbFile`/`fileSearchDbBaseDir` on `openNativeStore`, or `dbFile`/`dbBaseDir` on `openFileSearchDb`). Guards still reject memory-store paths such as `byomem-index.sqlite` and `native-store.json`.
 
 ## Modes
 Document/file search supports:
@@ -92,6 +104,15 @@ node ts/packages/runtime/dist/cli.js \
 
 Use `--limit <positive-integer>` to bound `file-search` result count. If omitted, the CLI keeps the default limit of 10. Invalid limits fail closed with a JSON CLI error.
 
+## File-search DB location
+File-search storage is global by default. `--base-dir` identifies the project to scan/search, but the physical file-search SQLite DB defaults to:
+
+```text
+${BYOMEM_RUNTIME_BASE_DIR:-~/.byomem/runtime}/byomem-file-search.sqlite
+```
+
+The scanner still walks the project passed with `--base-dir`, derives `project_key` from that project, and stores scanner status with the project path as `baseDir`. Multiple projects can share the same global file-search DB through `project_key` partitioning, while searches remain scoped to the active project. Existing project-local `byomem-file-search.sqlite` files are ignored by default; they are not migrated or deleted automatically.
+
 ## Indexing / refresh model
 The scanner is not a background daemon. File scanning remains synchronous/on-open or explicit via `scanAndIndex()`. Semantic embedding generation is async and explicit:
 
@@ -120,7 +141,7 @@ To explicitly refresh the file-search index without running a search query, use:
 node ts/packages/runtime/dist/cli.js file-search-scan --base-dir /path/to/project --json
 ```
 
-`file-search-scan` opens status with scan-on-open disabled, invokes the same synchronous `scanAndIndex()` path, and returns the resulting scanner status with trigger `manual`. It does not start semantic embedding refreshes; run semantic refresh/search separately when needed.
+`file-search-scan` opens file-search with scan-on-open disabled, invokes the same synchronous `scanAndIndex()` path against the project passed by `--base-dir`, and returns the resulting scanner status with trigger `manual`. It does not start semantic embedding refreshes; run semantic refresh/search separately when needed.
 
 Scanner status fields include:
 

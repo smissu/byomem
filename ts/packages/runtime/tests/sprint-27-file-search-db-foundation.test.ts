@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,11 +18,20 @@ function tempDir(): string {
 
 describe('Sprint 27 file search DB foundation', () => {
   const dirs: string[] = [];
+  const originalRuntimeBase = process.env.BYOMEM_RUNTIME_BASE_DIR;
+
+  beforeEach(() => {
+    const runtimeDir = tempDir();
+    dirs.push(runtimeDir);
+    process.env.BYOMEM_RUNTIME_BASE_DIR = runtimeDir;
+  });
 
   afterEach(() => {
     while (dirs.length) {
       rmSync(dirs.pop()!, { recursive: true, force: true });
     }
+    if (originalRuntimeBase === undefined) delete process.env.BYOMEM_RUNTIME_BASE_DIR;
+    else process.env.BYOMEM_RUNTIME_BASE_DIR = originalRuntimeBase;
   });
 
   it('keeps the file-search DB physically separate from the memories DB', () => {

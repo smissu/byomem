@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,11 +26,20 @@ function mockEmbeddings(): { calls: string[]; restore: () => void } {
 describe('Sprint 32 file-search semantic schema and lifecycle', () => {
   const dirs: string[] = [];
   const stores: Store[] = [];
+  const originalRuntimeBase = process.env.BYOMEM_RUNTIME_BASE_DIR;
+
+  beforeEach(() => {
+    const runtimeDir = tempDir();
+    dirs.push(runtimeDir);
+    process.env.BYOMEM_RUNTIME_BASE_DIR = runtimeDir;
+  });
 
   afterEach(() => {
     vi.restoreAllMocks();
     while (stores.length) stores.pop()?.close();
     while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+    if (originalRuntimeBase === undefined) delete process.env.BYOMEM_RUNTIME_BASE_DIR;
+    else process.env.BYOMEM_RUNTIME_BASE_DIR = originalRuntimeBase;
   });
 
   it('stores chunk embeddings in the file-search DB, not the memories sidecar', async () => {

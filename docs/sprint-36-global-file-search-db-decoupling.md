@@ -43,16 +43,16 @@ That does not scale across many projects. If the file-search/scan app gains new 
 - Existing Sprint 27 docs called the file-search DB "global" conceptually, but current implementation made it physically local when callers used project `baseDir`.
 
 ## Acceptance Criteria
-- [ ] **AC36-1:** Default file-search DB storage is global, not project-local. Running `file-search-scan --base-dir <project>` does not create `<project>/byomem-file-search.sqlite` by default.
-- [ ] **AC36-2:** Scan root remains the provided project directory. The scanner walks `--base-dir <project>`, records scanner status `baseDir` as that project path, and derives `project_key` from that project path, not from the global DB directory.
-- [ ] **AC36-3:** Two different project roots can scan into the same physical global file-search DB without path collisions, row overwrites, or project-key leakage.
-- [ ] **AC36-4:** Project-scoped `file-search` queries return only results for the current scan/search project even when multiple projects share the same global DB.
-- [ ] **AC36-5:** `file-search-status --base-dir <project>` reads the status partition for that project from the global DB without scanning and without reporting the global DB directory as the scanned project.
-- [ ] **AC36-6:** Explicit file-search DB path override remains supported for tests/dev/legacy use and still enforces guards against memories DB paths (`byomem-index.sqlite`, `native-store.json`) and unsafe collisions.
-- [ ] **AC36-7:** Legacy project-local `byomem-file-search.sqlite` behavior is deterministic and documented: the new default ignores local DBs unless an explicit override points to them; no automatic destructive migration or deletion occurs in this sprint.
-- [ ] **AC36-8:** If the explicit DB path is inside the scanned project by override, internal DB files and SQLite companions remain ignored by the scanner.
-- [ ] **AC36-9:** Existing Sprint 27–35 file-search scanner/search/status/CLI regressions remain green after expectation updates.
-- [ ] **AC36-10:** Documentation explains the new global location, override behavior, legacy local DB handling, and why global DB storage reduces per-project migration burden.
+- [x] **AC36-1:** Default file-search DB storage is global, not project-local. Running `file-search-scan --base-dir <project>` does not create `<project>/byomem-file-search.sqlite` by default.
+- [x] **AC36-2:** Scan root remains the provided project directory. The scanner walks `--base-dir <project>`, records scanner status `baseDir` as that project path, and derives `project_key` from that project path, not from the global DB directory.
+- [x] **AC36-3:** Two different project roots can scan into the same physical global file-search DB without path collisions, row overwrites, or project-key leakage.
+- [x] **AC36-4:** Project-scoped `file-search` queries return only results for the current scan/search project even when multiple projects share the same global DB.
+- [x] **AC36-5:** `file-search-status --base-dir <project>` reads the status partition for that project from the global DB without scanning and without reporting the global DB directory as the scanned project.
+- [x] **AC36-6:** Explicit file-search DB path override remains supported for tests/dev/legacy use and still enforces guards against memories DB paths (`byomem-index.sqlite`, `native-store.json`) and unsafe collisions.
+- [x] **AC36-7:** Legacy project-local `byomem-file-search.sqlite` behavior is deterministic and documented: the new default ignores local DBs unless an explicit override points to them; no automatic destructive migration or deletion occurs in this sprint.
+- [x] **AC36-8:** If the explicit DB path is inside the scanned project by override, internal DB files and SQLite companions remain ignored by the scanner.
+- [x] **AC36-9:** Existing Sprint 27–35 file-search scanner/search/status/CLI regressions remain green after expectation updates.
+- [x] **AC36-10:** Documentation explains the new global location, override behavior, legacy local DB handling, and why global DB storage reduces per-project migration burden.
 
 ## Execution Mode
 standard
@@ -95,46 +95,47 @@ The exact names can differ, but tests should prevent recoupling.
 ## Compatibility / Migration Policy
 - No automatic migration of existing project-local `byomem-file-search.sqlite` files in Sprint 36.
 - New default behavior uses the global DB path and rebuilds/reindexes project partitions there on the next scan/search.
+- File-search project keys now include a short canonical project-root hash to avoid same-basename collisions in the global DB. Older rows/status partitions keyed only as `project:<basename>` are not migrated in Sprint 36 and will be ignored/rebuilt under the new hash-suffixed key on the next scan.
 - Existing local DBs are left in place and ignored by default.
 - Users/tests can opt into a local/legacy DB only by explicit DB path override.
 - A future migration/import sprint may add safe import tooling if needed.
 
 ## Phases & Tasks
 ### Phase 0 — RED Tests / Contract Locking
-- [ ] **0.1** Add failing default-global-path tests in `ts/packages/runtime/tests/sprint-36-global-file-search-db-decoupling.test.ts`.
+- [x] **0.1** Add failing default-global-path tests in `ts/packages/runtime/tests/sprint-36-global-file-search-db-decoupling.test.ts`.
   - Role: test-engineer
   - Deliverable: tests proving file-search DB path is not `<project>/byomem-file-search.sqlite` by default and resolves to the global runtime/storage location.
   - Depends on: none
   - Verify: `npm test -- --run ts/packages/runtime/tests/sprint-36-global-file-search-db-decoupling.test.ts` fails before implementation.
 
-- [ ] **0.2** Add failing scan-root-vs-DB-location tests.
+- [x] **0.2** Add failing scan-root-vs-DB-location tests.
   - Role: test-engineer
   - Deliverable: tests proving scanner walks `projectBaseDir`, scanner status reports project `baseDir`, and `project_key` derives from project root while DB file lives elsewhere.
   - Depends on: 0.1
   - Verify: focused Sprint 36 test fails before implementation.
 
-- [ ] **0.3** Add failing cross-project partition/query isolation tests.
+- [x] **0.3** Add failing cross-project partition/query isolation tests.
   - Role: test-engineer
   - Deliverable: tests that scan two temp project roots into one physical DB and prove project A search/status cannot see project B rows.
   - Depends on: 0.1
   - Targets: `ts/packages/runtime/tests/sprint-36-global-file-search-db-decoupling.test.ts`, possibly `sprint-29-file-search-mvp.test.ts`.
   - Verify: focused tests fail before query/scanner plumbing is updated.
 
-- [ ] **0.4** Add failing CLI default-global-location tests.
+- [x] **0.4** Add failing CLI default-global-location tests.
   - Role: test-engineer
   - Deliverable: CLI tests proving `file-search-scan --base-dir <project>` indexes project files but does not create `<project>/byomem-file-search.sqlite`, and `file-search --base-dir <project>` queries the shared global DB partition.
   - Depends on: 0.1, 0.3
   - Target: `ts/packages/runtime/tests/cli.test.ts` or focused Sprint 36 CLI test.
   - Verify: CLI tests fail before implementation.
 
-- [ ] **0.5** Add failing override/guard compatibility tests.
+- [x] **0.5** Add failing override/guard compatibility tests.
   - Role: test-engineer
   - Deliverable: tests proving explicit DB path override works, guards still reject memories DB/snapshot paths, and explicit local override keeps scanner ignoring DB companion files.
   - Depends on: 0.1
   - Targets: `sprint-27-file-search-db-foundation.test.ts`, Sprint 36 test file.
   - Verify: tests fail before new option plumbing.
 
-- [ ] **0.6** Add failing no-side-effect validation tests for invalid `file-search` inputs if not already covered.
+- [x] **0.6** Add failing no-side-effect validation tests for invalid `file-search` inputs if not already covered.
   - Role: test-engineer
   - Deliverable: tests for missing `--query` and invalid `--mode` proving no project-local or global file-search DB is created/opened when validation fails.
   - Depends on: none
@@ -142,21 +143,21 @@ The exact names can differ, but tests should prevent recoupling.
   - Verify: targeted CLI tests fail until validation-path expectations are complete.
 
 ### Phase 1 — Path Resolver and API Split
-- [ ] **1.1** Add a canonical global file-search DB path resolver.
+- [x] **1.1** Add a canonical global file-search DB path resolver.
   - Role: typescript-coder
   - Deliverable: helper that resolves default global `byomem-file-search.sqlite` under the BYOMem runtime/storage root, creates parent directories safely, and can be reused by CLI/runtime tests.
   - Depends on: 0.1
   - Likely files: `ts/packages/runtime/src/file-search-db.ts` or new `ts/packages/runtime/src/runtime-paths.ts`.
   - Verify: default-global-path tests begin passing.
 
-- [ ] **1.2** Split `openFileSearchDb(...)` options into scan root and DB storage location.
+- [x] **1.2** Split `openFileSearchDb(...)` options into scan root and DB storage location.
   - Role: typescript-coder
   - Deliverable: file-search DB can be opened with `projectBaseDir`/scan root separate from physical `dbFile`/storage root; scanner status `baseDir` remains project root.
   - Depends on: 1.1, 0.2
   - Likely file: `ts/packages/runtime/src/file-search-db.ts`.
   - Verify: scan-root-vs-DB-location tests pass.
 
-- [ ] **1.3** Update file-search boundary guards for explicit DB paths.
+- [x] **1.3** Update file-search boundary guards for explicit DB paths.
   - Role: typescript-coder
   - Deliverable: guards reject memories DB/snapshot paths whether overrides are absolute or relative, and still protect DB companion files from scanning.
   - Depends on: 1.2, 0.5
@@ -164,28 +165,28 @@ The exact names can differ, but tests should prevent recoupling.
   - Verify: Sprint 27 foundation and Sprint 36 override tests pass.
 
 ### Phase 2 — Runtime / CLI / Query Integration
-- [ ] **2.1** Thread scan-root and DB-location options through `openNativeStore(...)`.
+- [x] **2.1** Thread scan-root and DB-location options through `openNativeStore(...)`.
   - Role: typescript-coder
   - Deliverable: `NativeStoreOptions` supports file-search scan root and DB storage override without recoupling them to `baseDir`; `NativeStore` exposes enough scan-root context for search scoping.
   - Depends on: 1.2
   - Likely file: `ts/packages/runtime/src/store.ts`.
   - Verify: runtime decoupling tests pass.
 
-- [ ] **2.2** Update `file-search-query.ts` to scope by file-search project root/project key, not native store storage root.
+- [x] **2.2** Update `file-search-query.ts` to scope by file-search project root/project key, not native store storage root.
   - Role: typescript-coder
   - Deliverable: project-scoped search uses the same project identity as scanner/status when DB is global.
   - Depends on: 2.1, 0.3
   - Likely files: `ts/packages/runtime/src/file-search-query.ts`, `store.ts`.
   - Verify: cross-project query isolation tests pass.
 
-- [ ] **2.3** Update CLI file-search commands to use global DB by default.
+- [x] **2.3** Update CLI file-search commands to use global DB by default.
   - Role: typescript-coder
   - Deliverable: `file-search`, `file-search-scan`, and `file-search-status` treat `--base-dir` as project root and open file-search DB at global default path; optional explicit DB override can be added if exposed publicly.
   - Depends on: 2.1, 2.2, 0.4
   - Likely file: `ts/packages/runtime/src/cli.ts`.
   - Verify: CLI Sprint 34/35/36 tests pass.
 
-- [ ] **2.4** Update scheduler/status interactions for global DB.
+- [x] **2.4** Update scheduler/status interactions for global DB.
   - Role: typescript-coder
   - Deliverable: scheduler-triggered scans use project scan root for `project_key` and status trigger/source; status reads remain per-project and no-scan.
   - Depends on: 2.1
@@ -193,20 +194,20 @@ The exact names can differ, but tests should prevent recoupling.
   - Verify: Sprint 30 scheduler and Sprint 33 status tests pass.
 
 ### Phase 3 — Docs / Regression / Closeout
-- [ ] **3.1** Update Sprint 27 foundation docs and runbook language.
+- [x] **3.1** Update Sprint 27 foundation docs and runbook language.
   - Role: documenter
   - Deliverable: docs explain physically global file-search DB, `project_key` partitioning, and distinction between project scan root and DB storage root.
   - Depends on: implementation stable.
   - Files: `docs/sprint-27-global-file-search-db-foundation.md`, `docs/semantic-hybrid-document-search-runbook.md`.
   - Verify: docs match implemented behavior.
 
-- [ ] **3.2** Update docs index and roadmap with Sprint 36.
+- [x] **3.2** Update docs index and roadmap with Sprint 36.
   - Role: documenter
   - Deliverable: links in `docs/README.md` and `docs/pi-memory-roadmap.md`.
   - Depends on: 0.1 / sprint artifact creation.
   - Verify: docs links resolve.
 
-- [ ] **3.3** Run targeted file-search regression.
+- [x] **3.3** Run targeted file-search regression.
   - Role: test-engineer
   - Deliverable: Sprint 27–36 file-search tests pass.
   - Depends on: Phase 2 complete.
@@ -226,7 +227,7 @@ The exact names can differ, but tests should prevent recoupling.
       ts/packages/runtime/tests/sprint-36-global-file-search-db-decoupling.test.ts
     ```
 
-- [ ] **3.4** Run full validation and independent review.
+- [x] **3.4** Run full validation and independent review.
   - Role: test-engineer + code-reviewer
   - Deliverable: full suite/build green and review sign-off.
   - Depends on: 3.3
@@ -241,8 +242,8 @@ The exact names can differ, but tests should prevent recoupling.
 - **Risk: project scoping drift.** Moving the DB global while leaving query/status code tied to native store `baseDir` could leak or hide results.
   - Mitigation: RED tests for two projects sharing one DB with strict project-scoped search/status assertions.
 
-- **Risk: legacy local DB split-brain.** Existing project-local DBs may appear stale or confusing after defaults move global.
-  - Mitigation: deterministic policy: ignore local DB by default; allow explicit override; document that first global scan rebuilds index in global DB; no destructive deletion.
+- **Risk: legacy local DB/key split-brain.** Existing project-local DBs or old global rows keyed as plain `project:<basename>` may appear stale or confusing after defaults move global and file-search keys gain path hashes.
+  - Mitigation: deterministic policy: ignore local DB and old key partitions by default; allow explicit DB override for local DB troubleshooting; document that first global scan rebuilds index in the global DB under the new key; no destructive deletion.
 
 - **Risk: memories DB collision.** New path options could accidentally point file-search at `byomem-index.sqlite` or `native-store.json`.
   - Mitigation: update existing boundary guards and tests for absolute/relative overrides.
@@ -256,14 +257,19 @@ The exact names can differ, but tests should prevent recoupling.
 - **Risk: scheduler semantics.** Scheduler currently owns one `FileSearchDbHandle`/baseDir. Global DB should not make scheduler scan the global DB directory.
   - Mitigation: update scheduler tests to assert scan root remains project root.
 
-## Open Questions
-- What exact global default should be used by the CLI when no runtime env override is set: `~/.byomem/runtime/byomem-file-search.sqlite`, `~/.byomem/file-search/byomem-file-search.sqlite`, or the same global runtime base used by the Pi extension?
-- Should CLI expose an explicit flag such as `--file-search-db` or keep the override internal/test-only for now?
-- Should a future sprint add a migration/import command for legacy project-local file-search DBs?
-- Should memory `store`/`search` CLI commands keep current `--base-dir` storage semantics while only file-search commands use global file-search DB storage?
+## Resolved Decisions / Follow-Up Questions
+- **Resolved:** the default global file-search DB path is `${BYOMEM_RUNTIME_BASE_DIR:-~/.byomem/runtime}/byomem-file-search.sqlite`.
+- **Follow-up:** decide whether CLI should expose an explicit flag such as `--file-search-db`, or keep the override API/test-only for now.
+- **Follow-up:** decide whether a future sprint should add a migration/import command for legacy project-local file-search DBs.
+- **Resolved:** memory `store`/`search` CLI commands keep current `--base-dir` storage semantics; Sprint 36 changes only file-search DB storage behavior.
+
+## Implementation Summary
+Sprint 36 decoupled file-search storage from scan roots by adding explicit file-search DB storage options and a global default resolver. `openFileSearchDb()` now uses `baseDir`/`projectBaseDir` as the scan and project-identity root while resolving the physical SQLite path from `dbBaseDir`/`dbFile` or `${BYOMEM_RUNTIME_BASE_DIR:-~/.byomem/runtime}/byomem-file-search.sqlite`. File-search project keys now include the normalized project leaf plus a short hash of the canonical project root path, preventing same-basename project collisions in the shared global DB. `openNativeStore()` now threads file-search-specific scan/storage options and exposes `fileSearchProjectBaseDir` so `file-search-query.ts` scopes searches using the same project identity as scanner/status. CLI `file-search`, `file-search-scan`, and `file-search-status` therefore use a global file-search DB by default while preserving project-scoped results.
+
+New Sprint 36 tests cover global default path resolution, scan-root/status semantics, two same-basename projects sharing one DB without query leakage, CLI no project-local DB creation, explicit DB storage overrides, memories-DB guard compatibility, and invalid query/mode no-DB side effects. Existing file-search tests were isolated from the real user runtime path by using temp `BYOMEM_RUNTIME_BASE_DIR` values where needed.
 
 ## Verification
-Planned verification after implementation:
+Verification after implementation:
 
 ```bash
 npm test -- --run ts/packages/runtime/tests/sprint-36-global-file-search-db-decoupling.test.ts
@@ -275,13 +281,13 @@ git diff --check
 ```
 
 ## Definition of Done
-- [ ] Sprint 36 artifact is linked from docs index and roadmap.
-- [ ] File-search DB defaults to a global physical path independent of scanned project root.
-- [ ] CLI file-search scan/search/status do not create project-local `byomem-file-search.sqlite` by default.
-- [ ] Scanner/status/query project identity derives from scanned project root.
-- [ ] Two projects can share one global DB without search/status leakage.
-- [ ] Explicit DB override and memories-DB guards are tested.
-- [ ] Legacy local DB behavior is documented and non-destructive.
-- [ ] Sprint 27–36 file-search regression passes.
-- [ ] Full test suite and build pass.
-- [ ] Independent code review signs off.
+- [x] Sprint 36 artifact is linked from docs index and roadmap.
+- [x] File-search DB defaults to a global physical path independent of scanned project root.
+- [x] CLI file-search scan/search/status do not create project-local `byomem-file-search.sqlite` by default.
+- [x] Scanner/status/query project identity derives from scanned project root.
+- [x] Two projects can share one global DB without search/status leakage.
+- [x] Explicit DB override and memories-DB guards are tested.
+- [x] Legacy local DB behavior is documented and non-destructive.
+- [x] Sprint 27–36 file-search regression passes.
+- [x] Full test suite and build pass.
+- [x] Independent code review signs off.

@@ -1,7 +1,7 @@
 import type { MemoryRecord } from './contracts.js';
 import type { NativeStore } from './store.js';
 import { normalizeIdentity } from './identity.js';
-import { resolveProjectContext } from './project-context.js';
+import { resolveFileSearchProjectKey } from './file-search-db.js';
 import { cosineSimilarity, decodeEmbedding } from './embedding-vector.js';
 
 export interface FileSearchQuery {
@@ -36,7 +36,7 @@ type FileSearchRow = {
 type ScoredRow = FileSearchRow & { lexicalScore?: number; semanticScore?: number; score?: number };
 
 function canonicalProjectKey(baseDir: string): string {
-  return `project:${resolveProjectContext({}, baseDir).projectKey}`;
+  return resolveFileSearchProjectKey(baseDir);
 }
 
 function tokenize(query: string): string[] {
@@ -141,7 +141,7 @@ export async function searchIndex(store: NativeStore, query: FileSearchQuery): P
   if (!fileDb) return [];
   if (query.scope && query.scope !== 'project') return [];
   const limit = query.limit ?? 10;
-  const projectKey = canonicalProjectKey(store.baseDir);
+  const projectKey = canonicalProjectKey(store.fileSearchProjectBaseDir ?? store.baseDir);
   const mode = query.mode ?? 'hybrid';
   const ftsRows = queryFts(fileDb.db, projectKey, query.query, mode === 'hybrid' ? limit * 2 : limit);
   if (mode === 'fts') return ftsRows.slice(0, limit).map(buildHit);

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,11 +11,20 @@ function tempDir(): string {
 describe('runtime cli', () => {
   const dirs: string[] = [];
   const originalFetch = globalThis.fetch;
+  const originalRuntimeBase = process.env.BYOMEM_RUNTIME_BASE_DIR;
+
+  beforeEach(() => {
+    const runtimeDir = tempDir();
+    dirs.push(runtimeDir);
+    process.env.BYOMEM_RUNTIME_BASE_DIR = runtimeDir;
+  });
 
   afterEach(() => {
     while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
     globalThis.fetch = originalFetch;
     vi.restoreAllMocks();
+    if (originalRuntimeBase === undefined) delete process.env.BYOMEM_RUNTIME_BASE_DIR;
+    else process.env.BYOMEM_RUNTIME_BASE_DIR = originalRuntimeBase;
     process.exitCode = undefined;
   });
 

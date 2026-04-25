@@ -1,11 +1,12 @@
 # Sprint 27: Global File Search DB Foundation
 
 ## Objective
-Establish the global file-search database foundation as a physically separate store from the memories DB. This sprint creates the schema, migrations, and boundary guards needed to support project-partitioned file search without mixing file-search data into the memory store.
+Establish the global file-search database foundation as a physically separate store from the memories DB. This sprint creates the schema, migrations, and boundary guards needed to support project-partitioned file search without mixing file-search data into the memory store. Sprint 36 later completed the physical decoupling so the default file-search DB now lives under the global runtime directory instead of each scanned project root.
 
 ## Scope
 ### In scope
 - Create the global file-search DB as a separate physical database from the memories DB
+- Current default after Sprint 36: `${BYOMEM_RUNTIME_BASE_DIR:-~/.byomem/runtime}/byomem-file-search.sqlite`; scanned project roots are partitioned by `project_key` inside that DB
 - Define the initial file-search schema and migrations
 - Partition file-search records by `project_key`
 - Add physical boundary guards that prevent file-search code from reading or writing the memories DB
@@ -17,6 +18,7 @@ Establish the global file-search database foundation as a physically separate st
 - Search ranking or retrieval UX
 - Scheduler, freshness, or watch-mode behavior
 - Cross-project search aggregation beyond global DB partitioning
+- Automatic migration/deletion of legacy project-local `byomem-file-search.sqlite` files
 - Any memory-store schema changes unrelated to the file-search foundation
 
 ## Dependencies
@@ -29,6 +31,7 @@ Establish the global file-search database foundation as a physically separate st
 
 ## Investigation Summary
 - The BYOMem memory store already has a global, queue-first, single-writer shape; file search must not reuse that database physically.
+- Sprint 36 separates scan/search project roots from physical file-search DB storage: `--base-dir` identifies the project; DB storage defaults to the global runtime directory.
 - File search is intended to be global at the DB level but logically partitioned by `project_key`.
 - The main risk is accidental coupling between the memories schema and the new file-search schema.
 - This sprint should establish the database boundary first so later scanner/indexer and search work can build on a stable foundation.
@@ -90,6 +93,9 @@ Rationale: this is a shared-foundation sprint with a small number of tightly cou
   - Mitigation: keep the initial schema minimal and partition-centric.
 - Risk: unclear DB ownership could blur the separation boundary.
   - Mitigation: document the physical separation explicitly in this sprint and the roadmap.
+
+## Sprint 36 update
+Sprint 36 completed the physical-location side of this foundation: file-search DB storage now defaults to a global runtime location instead of the scanned project root, while rows remain partitioned by `project_key`. `--base-dir` and `FileSearchDbOptions.baseDir` identify the project scan/search root; the physical DB path defaults to `${BYOMEM_RUNTIME_BASE_DIR:-~/.byomem/runtime}/byomem-file-search.sqlite` unless an explicit file-search DB storage override is provided. Legacy project-local `byomem-file-search.sqlite` files are not automatically migrated or deleted.
 
 ## Definition of Done
 - [ ] File-search DB exists as a separate physical store from memories DB
