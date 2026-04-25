@@ -20,6 +20,7 @@ export interface NativeStoreOptions {
   embeddingRequireRemote?: boolean;
   fileSearchSemanticEnabled?: boolean;
   fileSearchEmbeddingBatchSize?: number;
+  fileSearchScanOnOpen?: boolean;
 }
 
 export const storeKey = Symbol.for('byomem.runtime.nativeStore.singleWriter');
@@ -78,6 +79,7 @@ export function openNativeStore(options: NativeStoreOptions): NativeStore {
     embeddingRequireRemote: options.embeddingRequireRemote,
     semanticSearchEnabled: options.fileSearchSemanticEnabled,
     embeddingBatchSize: options.fileSearchEmbeddingBatchSize,
+    scanOnOpen: options.fileSearchScanOnOpen,
   });
   const sidecarOwner = Object.freeze({ kind: 'native-store' as const });
   const snapshot = loadSnapshot(filePath);

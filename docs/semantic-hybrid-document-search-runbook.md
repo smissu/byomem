@@ -86,8 +86,11 @@ node ts/packages/runtime/dist/cli.js \
   file-search \
   --base-dir /path/to/project \
   --mode fts \
-  --query "exact lexical terms"
+  --query "exact lexical terms" \
+  --limit 10
 ```
+
+Use `--limit <positive-integer>` to bound `file-search` result count. If omitted, the CLI keeps the default limit of 10. Invalid limits fail closed with a JSON CLI error.
 
 ## Indexing / refresh model
 The scanner is not a background daemon. File scanning remains synchronous/on-open or explicit via `scanAndIndex()`. Semantic embedding generation is async and explicit:
@@ -99,13 +102,44 @@ await store.fileSearchDb?.refreshSemanticIndex();
 This avoids hidden fire-and-forget embedding work inside synchronous scanner calls.
 
 ## Diagnostics
-Use:
+Use scanner status for file discovery/indexing visibility:
+
+```js
+store.fileSearchDb?.getScannerStatus();
+```
+
+CLI status is available without running a search query:
+
+```bash
+node ts/packages/runtime/dist/cli.js file-search-status --base-dir /path/to/project --json
+```
+
+To explicitly refresh the file-search index without running a search query, use:
+
+```bash
+node ts/packages/runtime/dist/cli.js file-search-scan --base-dir /path/to/project --json
+```
+
+`file-search-scan` opens status with scan-on-open disabled, invokes the same synchronous `scanAndIndex()` path, and returns the resulting scanner status with trigger `manual`. It does not start semantic embedding refreshes; run semantic refresh/search separately when needed.
+
+Scanner status fields include:
+
+- state: `idle`, `running`, `completed`, `failed`, or `abandoned`
+- runId and trigger/source (`open`, `manual`, `scheduler-activation`, `scheduler-post-activity`, `scheduler-backstop`)
+- startedAt, completedAt, durationMs, and lastError
+- progress counters: discoveredFiles, scannedFiles, indexedFiles, unchangedFiles, changedFiles, deletedFiles, ignoredFiles, errorFiles, chunksWritten, bytesRead, filesRemaining (`ignoredFiles` is a coarse ignored file/directory entry count)
+- database counts: indexedFiles, indexedChunks, changedRows, reconciledRows, projects
+- read-only embedding diagnostics when available
+
+Progress is intentionally narrow: the scanner remains synchronous, so a separate CLI process should be treated as reading the latest persisted scan snapshot. `file-search-status` opens the DB with open-time scanning disabled, so it does not walk/read/hash the project just to report status. Status reads do not start semantic embedding refreshes or hidden async scanner work.
+
+Use embedding diagnostics for semantic chunk coverage:
 
 ```js
 store.fileSearchDb?.getEmbeddingDiagnostics();
 ```
 
-Diagnostic fields include:
+Embedding diagnostic fields include:
 
 - enabled
 - model
@@ -118,7 +152,7 @@ Diagnostic fields include:
 
 ## Failure behavior
 - FTS mode remains usable without Ollama.
-- Semantic/hybrid modes require semantic search to be enabled and chunk embeddings to be present.
+- Semantic mode requires semantic search to be enabled and ready chunk embeddings to return semantic results. Hybrid mode uses semantic candidates when available and falls back to FTS candidates when semantic search is disabled, unconfigured, or has no ready embeddings.
 - When remote embeddings are not required, the embedding client may use deterministic fallback embeddings for test/dev mechanics.
 - When `embeddingRequireRemote` is true, remote embedding failures fail loudly.
 

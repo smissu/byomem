@@ -45,7 +45,14 @@ export class FileIndexScheduler {
   }
 
   scheduleRefresh(event: FileSearchRefreshEvent): void {
-    const projectKey = event.projectKey ?? this.defaultProjectKey;
+    // A scheduler instance owns one FileSearchDbHandle/baseDir, so scan work is always
+    // scoped to the default project for that handle. External projectKey values are
+    // intentionally not treated as alternate scan targets.
+    const projectKey = this.defaultProjectKey;
+    if (!this.projects.has(projectKey) && this.projects.size >= this.maxActiveProjects) {
+      this.metrics.skips += 1;
+      return;
+    }
     const state = this.ensureState(projectKey);
     const now = Date.now();
 
@@ -83,13 +90,9 @@ export class FileIndexScheduler {
       this.metrics.skips += 1;
       return;
     }
-    if (this.projects.size > this.maxActiveProjects && !this.projects.has(projectKey)) {
-      this.metrics.skips += 1;
-      return;
-    }
 
     try {
-      this.db.scanAndIndex();
+      this.db.scanAndIndex({ trigger: `scheduler-${state.pending.kind}` as 'scheduler-activation' | 'scheduler-post-activity' | 'scheduler-backstop' });
       const now = new Date();
       state.lastRefreshAt = now.getTime();
       state.pending = undefined;

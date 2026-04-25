@@ -64,6 +64,10 @@ Memories move through a simple state model:
 - [Sprint 30] sprint-30-file-index-scheduler-and-hardening.md — scheduler/freshness/hardening
 - [Sprint 31] sprint-31-file-search-refinement-and-cleanup.md — refinement and cleanup
 - [Sprint 32] sprint-32-semantic-hybrid-document-search.md — semantic/hybrid document search
+- [Sprint 33] sprint-33-file-search-scanner-status-progress.md — scanner status/progress
+- [Sprint 34] sprint-34-file-search-scan-command.md — explicit file-search scan command
+- [Sprint 35] sprint-35-file-search-cli-result-controls.md — file-search CLI result limit controls
+- [Sprint 36] sprint-36-global-file-search-db-decoupling.md — decouple global file-search DB storage from scanned project roots
 
 
 ## Cross-sprint dependencies

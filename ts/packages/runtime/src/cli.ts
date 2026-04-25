@@ -31,7 +31,7 @@ type CliOptions = {
 type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
 
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'file-search', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'file-search', 'file-search-scan', 'file-search-status', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
@@ -66,6 +66,8 @@ function parseWatchMode(flags: { watch: boolean; watchInterval?: string }, json:
   return { enabled: true, intervalSeconds };
 }
 
+type FileSearchCliRequest = { query: string; mode: 'fts' | 'semantic' | 'hybrid'; limit: number };
+
 function parseArgs(argv: string[]): { command?: string; options: CliOptions; payload: Record<string, string>; flags: { watch: boolean; watchInterval?: string } } {
   const payload: Record<string, string> = {};
   const flags = { watch: false, watchInterval: undefined as string | undefined };
@@ -94,11 +96,24 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--id') { payload.id = requireValue(next, '--id'); i += 1; }
     else if (arg === '--scope') { payload.scope = requireValue(next, '--scope'); i += 1; }
     else if (arg === '--mode') { payload.mode = requireValue(next, '--mode'); i += 1; }
+    else if (arg === '--limit') { payload.limit = requireValue(next, '--limit'); i += 1; }
     else if (arg === '--semantic-file-search') { options.fileSearchSemanticEnabled = true; }
     else if (arg === '--prompt') { payload.prompt = requireValue(next, '--prompt'); i += 1; }
     else if (arg === '--text') { payload.text = requireValue(next, '--text'); i += 1; }
   }
   return { command, options, payload, flags };
+}
+
+function parseFileSearchRequest(payload: Record<string, string>): FileSearchCliRequest {
+  const query = payload.query?.trim();
+  if (!query) throw new Error('Missing --query for file-search');
+  const mode = (payload.mode?.trim() || 'hybrid') as 'fts' | 'semantic' | 'hybrid';
+  if (mode !== 'fts' && mode !== 'semantic' && mode !== 'hybrid') throw new Error('--mode must be fts, semantic, or hybrid');
+  const limitRaw = payload.limit?.trim() || '10';
+  if (!/^[1-9]\d*$/.test(limitRaw)) throw new Error('--limit must be a positive integer');
+  const limit = Number(limitRaw);
+  if (!Number.isSafeInteger(limit)) throw new Error('--limit must be a positive integer');
+  return { query, mode, limit };
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -115,16 +130,23 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   const isGenerationCommand = GENERATION_COMMANDS.has(command);
   const isObserverCommand = OBSERVER_COMMANDS.has(command);
-  const isFileSearchCommand = command === 'file-search';
-  const store = isGenerationCommand || isObserverCommand
-    ? undefined
-    : openNativeStore({
-      ...options,
-      embeddingRequireRemote: isFileSearchCommand ? options.embeddingRequireRemote : true,
-      fileSearchSemanticEnabled: isFileSearchCommand ? Boolean(options.fileSearchSemanticEnabled || options.embeddingBaseUrl) : options.fileSearchSemanticEnabled,
-    });
-  const queueRuntime = store ? openQueueRuntime(store, { baseDir: options.baseDir }) : undefined;
+  const isFileSearchCommand = command === 'file-search' || command === 'file-search-scan' || command === 'file-search-status';
+  const isFileSearchScanCommand = command === 'file-search-scan';
+  const isFileSearchStatusCommand = command === 'file-search-status';
+  let store: ReturnType<typeof openNativeStore> | undefined;
+  let queueRuntime: ReturnType<typeof openQueueRuntime> | undefined;
+  let fileSearchRequest: FileSearchCliRequest | undefined;
   try {
+    fileSearchRequest = command === 'file-search' ? parseFileSearchRequest(payload) : undefined;
+    store = isGenerationCommand || isObserverCommand
+      ? undefined
+      : openNativeStore({
+        ...options,
+        embeddingRequireRemote: isFileSearchCommand ? options.embeddingRequireRemote : true,
+        fileSearchSemanticEnabled: isFileSearchCommand ? Boolean(options.fileSearchSemanticEnabled || options.embeddingBaseUrl) : options.fileSearchSemanticEnabled,
+        fileSearchScanOnOpen: isFileSearchStatusCommand || isFileSearchScanCommand ? false : undefined,
+      });
+    queueRuntime = store ? openQueueRuntime(store, { baseDir: options.baseDir }) : undefined;
     if (command === 'store') {
       if (!store) throw new Error('Missing native store');
       if (!payload.input) throw new Error('Missing --input for store');
@@ -140,14 +162,25 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       console.log(JSON.stringify({ results: await searchIndex(store, { query, scope: payload.scope?.trim() as 'project' | 'user' | undefined }) }, null, 2));
       return;
     }
+    if (command === 'file-search-status') {
+      if (!store) throw new Error('Missing native store');
+      const scanner = store.fileSearchDb?.getScannerStatus();
+      console.log(JSON.stringify({ scanner, status: scanner }, null, 2));
+      return;
+    }
+    if (command === 'file-search-scan') {
+      if (!store) throw new Error('Missing native store');
+      store.fileSearchDb?.scanAndIndex();
+      const scanner = store.fileSearchDb?.getScannerStatus();
+      console.log(JSON.stringify({ scanner, status: scanner }, null, 2));
+      return;
+    }
     if (command === 'file-search') {
       if (!store) throw new Error('Missing native store');
-      const query = payload.query?.trim();
-      if (!query) throw new Error('Missing --query for file-search');
-      const mode = (payload.mode?.trim() || 'hybrid') as 'fts' | 'semantic' | 'hybrid';
-      if (mode !== 'fts' && mode !== 'semantic' && mode !== 'hybrid') throw new Error('--mode must be fts, semantic, or hybrid');
+      if (!fileSearchRequest) throw new Error('Missing file-search request');
+      const { query, mode, limit } = fileSearchRequest;
       if (mode !== 'fts') await store.fileSearchDb?.refreshSemanticIndex();
-      console.log(JSON.stringify({ results: await searchFileIndex(store, { query, mode, limit: 10 }) }, null, 2));
+      console.log(JSON.stringify({ results: await searchFileIndex(store, { query, mode, limit }) }, null, 2));
       return;
     }
     if (command === 'prune') {

@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, resolve, relative, sep, join, basename } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { resolveProjectContext } from './project-context.js';
 import { FileIndexScheduler } from './file-index-scheduler.js';
@@ -18,6 +18,8 @@ export interface FileSearchDbOptions {
   embeddingRequireRemote?: boolean;
   semanticSearchEnabled?: boolean;
   embeddingBatchSize?: number;
+  scanOnOpen?: boolean;
+  scannerStaleAfterMs?: number;
 }
 
 export interface FileSearchEmbeddingDiagnostics {
@@ -36,11 +38,55 @@ export interface FileSearchRefreshEvent {
   projectKey?: string;
 }
 
+export type FileSearchScannerState = 'idle' | 'running' | 'completed' | 'failed' | 'abandoned';
+export type FileSearchScannerTrigger = 'open' | 'manual' | 'scheduler-activation' | 'scheduler-post-activity' | 'scheduler-backstop';
+
+export interface FileSearchScannerProgress {
+  discoveredFiles: number;
+  scannedFiles: number;
+  indexedFiles: number;
+  unchangedFiles: number;
+  changedFiles: number;
+  deletedFiles: number;
+  ignoredFiles: number;
+  errorFiles: number;
+  chunksWritten: number;
+  bytesRead?: number;
+  filesRemaining?: number;
+}
+
+export interface FileSearchScannerDatabaseCounts {
+  indexedFiles: number;
+  indexedChunks: number;
+  changedRows: number;
+  reconciledRows: number;
+  projects: Array<{ projectKey: string; files: number }>;
+}
+
+export interface FileSearchScannerStatus {
+  state: FileSearchScannerState;
+  projectKey: string;
+  baseDir: string;
+  runId?: string;
+  trigger?: FileSearchScannerTrigger;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  currentPath?: string;
+  lastPath?: string;
+  lastError?: string;
+  updatedAt?: string;
+  progress: FileSearchScannerProgress;
+  database: FileSearchScannerDatabaseCounts;
+  embeddings?: FileSearchEmbeddingDiagnostics;
+}
+
 export interface FileSearchDbHandle {
   path: string;
   db: BetterSqliteDatabase;
   close(): void;
-  scanAndIndex(): void;
+  scanAndIndex(options?: { trigger?: FileSearchScannerTrigger }): void;
+  getScannerStatus(): FileSearchScannerStatus;
   refreshSemanticIndex(options?: { limit?: number }): Promise<FileSearchEmbeddingDiagnostics>;
   getEmbeddingDiagnostics(): FileSearchEmbeddingDiagnostics;
   embedQuery(text: string): Promise<number[] | undefined>;
@@ -59,6 +105,7 @@ const MAX_ACTIVE_PROJECTS = 3;
 const DEBOUNCE_WINDOW_MS = 250;
 const BACKSTOP_WINDOW_MS = 60_000;
 const DEFAULT_EMBEDDING_MODEL = 'nomic-embed-text';
+const DEFAULT_SCANNER_STALE_AFTER_MS = 5 * 60_000;
 
 function isSQLiteCompanion(filePath: string): boolean {
   return /-(wal|shm)$/.test(filePath);
@@ -307,6 +354,26 @@ function ensureScannerIndexerSchema(db: BetterSqliteDatabase): void {
   `);
 }
 
+function ensureScannerStatusSchema(db: BetterSqliteDatabase): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS file_search_scanner_status (
+      project_key TEXT PRIMARY KEY,
+      state TEXT NOT NULL,
+      run_id TEXT,
+      trigger TEXT,
+      base_dir TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT,
+      duration_ms INTEGER,
+      current_path TEXT,
+      last_path TEXT,
+      last_error TEXT,
+      progress_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+}
+
 function hashContent(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
@@ -315,8 +382,14 @@ function chunkContent(content: string): string[] {
   return content.split(/\r?\n/).filter((line) => line.trim().length > 0);
 }
 
-function walkFiles(rootDir: string): string[] {
+interface WalkFilesResult {
+  files: string[];
+  ignoredFiles: number;
+}
+
+function walkFiles(rootDir: string): WalkFilesResult {
   const files: string[] = [];
+  let ignoredFiles = 0;
   const queue: Array<{ dir: string; rules: GitignoreRule[] }> = [{ dir: rootDir, rules: [] }];
   while (queue.length) {
     const current = queue.shift()!;
@@ -326,12 +399,18 @@ function walkFiles(rootDir: string): string[] {
       const relativePath = relative(rootDir, fullPath);
       if (entry.isDirectory()) {
         if (!IGNORED_DIRS.has(entry.name) && !isGitignored(gitignoreRules, relativePath, true)) queue.push({ dir: fullPath, rules: gitignoreRules });
+        else ignoredFiles += 1;
         continue;
       }
-      if (entry.isFile() && !isIgnoredInternalFile(fullPath) && !isGitignored(gitignoreRules, relativePath, false)) files.push(fullPath);
+      if (!entry.isFile()) continue;
+      if (isIgnoredInternalFile(fullPath) || isGitignored(gitignoreRules, relativePath, false)) {
+        ignoredFiles += 1;
+        continue;
+      }
+      files.push(fullPath);
     }
   }
-  return files;
+  return { files, ignoredFiles };
 }
 
 function deriveProjectKey(baseDir: string): string {
@@ -343,18 +422,109 @@ function relPath(baseDir: string, filePath: string): string {
   return relative(baseDir, filePath) || basename(filePath);
 }
 
+function emptyScannerProgress(overrides: Partial<FileSearchScannerProgress> = {}): FileSearchScannerProgress {
+  return {
+    discoveredFiles: 0,
+    scannedFiles: 0,
+    indexedFiles: 0,
+    unchangedFiles: 0,
+    changedFiles: 0,
+    deletedFiles: 0,
+    ignoredFiles: 0,
+    errorFiles: 0,
+    chunksWritten: 0,
+    filesRemaining: 0,
+    ...overrides,
+  };
+}
+
+function scannerDatabaseCounts(db: BetterSqliteDatabase, projectKey: string): FileSearchScannerDatabaseCounts {
+  const indexedFiles = db.prepare('SELECT COUNT(*) AS count FROM indexed_files WHERE project_key = ?').get(projectKey) as { count: number };
+  const indexedChunks = db.prepare('SELECT COUNT(*) AS count FROM indexed_chunks WHERE project_key = ?').get(projectKey) as { count: number };
+  const changedRows = db.prepare('SELECT COUNT(*) AS count FROM changed_files WHERE project_key = ?').get(projectKey) as { count: number };
+  const reconciledRows = db.prepare('SELECT COUNT(*) AS count FROM reconciled_files WHERE project_key = ?').get(projectKey) as { count: number };
+  const projects = db.prepare('SELECT project_key AS projectKey, COUNT(*) AS files FROM indexed_files GROUP BY project_key ORDER BY project_key').all() as Array<{ projectKey: string; files: number }>;
+  return { indexedFiles: indexedFiles.count, indexedChunks: indexedChunks.count, changedRows: changedRows.count, reconciledRows: reconciledRows.count, projects };
+}
+
+function normalizeProgress(value: string | null | undefined): FileSearchScannerProgress {
+  if (!value) return emptyScannerProgress();
+  try {
+    const parsed = JSON.parse(value) as Partial<FileSearchScannerProgress>;
+    return emptyScannerProgress(parsed);
+  } catch {
+    return emptyScannerProgress();
+  }
+}
+
+function persistScannerStatus(db: BetterSqliteDatabase, projectKey: string, status: Omit<FileSearchScannerStatus, 'database' | 'embeddings'>): void {
+  const updatedAt = new Date().toISOString();
+  db.prepare(`INSERT OR REPLACE INTO file_search_scanner_status
+    (project_key, state, run_id, trigger, base_dir, started_at, completed_at, duration_ms, current_path, last_path, last_error, progress_json, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(
+      projectKey,
+      status.state,
+      status.runId ?? null,
+      status.trigger ?? null,
+      status.baseDir,
+      status.startedAt ?? null,
+      status.completedAt ?? null,
+      status.durationMs ?? null,
+      status.currentPath ?? null,
+      status.lastPath ?? null,
+      status.lastError ?? null,
+      JSON.stringify(status.progress),
+      updatedAt,
+    );
+}
+
+function readPersistedScannerStatus(db: BetterSqliteDatabase, projectKey: string): (Omit<FileSearchScannerStatus, 'database' | 'embeddings'> & { progress: FileSearchScannerProgress }) | undefined {
+  const row = db.prepare('SELECT * FROM file_search_scanner_status WHERE project_key = ?').get(projectKey) as {
+    project_key: string;
+    state: FileSearchScannerState;
+    run_id?: string | null;
+    trigger?: FileSearchScannerTrigger | null;
+    base_dir: string;
+    started_at?: string | null;
+    completed_at?: string | null;
+    duration_ms?: number | null;
+    current_path?: string | null;
+    last_path?: string | null;
+    last_error?: string | null;
+    progress_json?: string | null;
+    updated_at?: string | null;
+  } | undefined;
+  if (!row) return undefined;
+  return {
+    state: row.state,
+    projectKey: row.project_key,
+    baseDir: row.base_dir,
+    runId: row.run_id ?? undefined,
+    trigger: row.trigger ?? undefined,
+    startedAt: row.started_at ?? undefined,
+    completedAt: row.completed_at ?? undefined,
+    durationMs: row.duration_ms ?? undefined,
+    currentPath: row.current_path ?? undefined,
+    lastPath: row.last_path ?? undefined,
+    lastError: row.last_error ?? undefined,
+    updatedAt: row.updated_at ?? undefined,
+    progress: normalizeProgress(row.progress_json),
+  };
+}
+
 function upsertRow(db: BetterSqliteDatabase, sql: string, params: unknown[]): void {
   db.prepare(sql).run(...params.map((value) => (typeof value === 'boolean' ? (value ? 1 : 0) : value)));
 }
 
-function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel: string, filePath: string, contentHash: string, stats: { mtimeMs: number; size: number }, content: string, now: string): void {
+function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel: string, filePath: string, contentHash: string, stats: { mtimeMs: number; size: number }, content: string, now: string): { changed: boolean; chunksWritten: number } {
   const recordId = `file-record:${projectKey}:${rel}`;
   const current = db.prepare('SELECT * FROM file_records WHERE id = ?').get(recordId) as { content_hash?: string | null; mtime_ms?: number | null; size_bytes?: number | null; created_at?: string | null } | undefined;
   const isNew = !current;
   const metadataChanged = Boolean(current && (current.mtime_ms !== stats.mtimeMs || current.size_bytes !== stats.size));
   const hashConfirmed = !current || current.content_hash !== contentHash || metadataChanged;
 
-  if (current && current.content_hash === contentHash && current.mtime_ms === stats.mtimeMs && current.size_bytes === stats.size) return;
+  if (current && current.content_hash === contentHash && current.mtime_ms === stats.mtimeMs && current.size_bytes === stats.size) return { changed: false, chunksWritten: 0 };
 
   upsertRow(db, 'INSERT OR REPLACE INTO file_records (id, project_key, path, content_hash, mtime_ms, size_bytes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [
     recordId,
@@ -402,41 +572,67 @@ function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel
       now,
     ]);
   });
+  return { changed: true, chunksWritten: chunks.length };
 }
 
-function scanAndIndexFiles(db: BetterSqliteDatabase, baseDir: string): void {
+function scanAndIndexFiles(db: BetterSqliteDatabase, baseDir: string, progress: FileSearchScannerProgress, onProgress?: (currentPath?: string, lastPath?: string) => void): { lastPath?: string } {
   const projectKey = deriveProjectKey(baseDir);
   const now = new Date().toISOString();
-  const files = walkFiles(baseDir).filter((filePath) => !isIgnoredInternalFile(filePath));
+  const walked = walkFiles(baseDir);
+  const files = walked.files.filter((filePath) => !isIgnoredInternalFile(filePath));
   const seen = new Set<string>();
+  let lastPath: string | undefined;
+  progress.discoveredFiles = files.length;
+  progress.ignoredFiles = walked.ignoredFiles;
+  progress.filesRemaining = files.length;
+  onProgress?.();
 
   for (const filePath of files) {
     const rel = relPath(baseDir, filePath);
-    seen.add(rel);
-    const stats = statSync(filePath);
-    const prefilterId = `prefilter:${projectKey}:${rel}`;
-    const content = readFileSync(filePath, 'utf8');
-    const contentHash = hashContent(content);
-    const current = db.prepare('SELECT * FROM file_records WHERE id = ?').get(`file-record:${projectKey}:${rel}`) as { mtime_ms?: number | null; size_bytes?: number | null } | undefined;
-    const prefilterMatches = Boolean(current && current.mtime_ms === stats.mtimeMs && current.size_bytes === stats.size);
+    try {
+      lastPath = rel;
+      onProgress?.(rel, lastPath);
+      seen.add(rel);
+      const stats = statSync(filePath);
+      const prefilterId = `prefilter:${projectKey}:${rel}`;
+      const content = readFileSync(filePath, 'utf8');
+      progress.bytesRead = (progress.bytesRead ?? 0) + Buffer.byteLength(content, 'utf8');
+      const contentHash = hashContent(content);
+      const current = db.prepare('SELECT * FROM file_records WHERE id = ?').get(`file-record:${projectKey}:${rel}`) as { mtime_ms?: number | null; size_bytes?: number | null } | undefined;
+      const prefilterMatches = Boolean(current && current.mtime_ms === stats.mtimeMs && current.size_bytes === stats.size);
 
-    upsertRow(db, 'INSERT OR REPLACE INTO scan_prefilter_events (id, project_key, file_path, reason, confirmed, created_at) VALUES (?, ?, ?, ?, ?, ?)', [
-      prefilterId,
-      projectKey,
-      filePath,
-      'mtime-size',
-      prefilterMatches,
-      now,
-    ]);
-    upsertRow(db, 'INSERT OR REPLACE INTO content_hash_checks (id, project_key, file_path, content_hash, confirmed, created_at) VALUES (?, ?, ?, ?, ?, ?)', [
-      `hash:${projectKey}:${rel}`,
-      projectKey,
-      filePath,
-      contentHash,
-      true,
-      now,
-    ]);
-    ensureIndexedSnapshot(db, projectKey, rel, filePath, contentHash, { mtimeMs: stats.mtimeMs, size: stats.size }, content, now);
+      upsertRow(db, 'INSERT OR REPLACE INTO scan_prefilter_events (id, project_key, file_path, reason, confirmed, created_at) VALUES (?, ?, ?, ?, ?, ?)', [
+        prefilterId,
+        projectKey,
+        filePath,
+        'mtime-size',
+        prefilterMatches,
+        now,
+      ]);
+      upsertRow(db, 'INSERT OR REPLACE INTO content_hash_checks (id, project_key, file_path, content_hash, confirmed, created_at) VALUES (?, ?, ?, ?, ?, ?)', [
+        `hash:${projectKey}:${rel}`,
+        projectKey,
+        filePath,
+        contentHash,
+        true,
+        now,
+      ]);
+      const result = ensureIndexedSnapshot(db, projectKey, rel, filePath, contentHash, { mtimeMs: stats.mtimeMs, size: stats.size }, content, now);
+      progress.scannedFiles += 1;
+      progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
+      if (!result.changed) progress.unchangedFiles += 1;
+      else {
+        progress.indexedFiles += 1;
+        progress.changedFiles += 1;
+        progress.chunksWritten += result.chunksWritten;
+      }
+      if (progress.scannedFiles === 1 || progress.scannedFiles % 25 === 0 || progress.filesRemaining === 0) onProgress?.(rel, lastPath);
+    } catch (error) {
+      progress.errorFiles += 1;
+      progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
+      onProgress?.(rel, lastPath);
+      throw error;
+    }
   }
 
   const existing = db.prepare('SELECT id, path, file_record_id, project_key FROM indexed_files WHERE project_key = ?').all(projectKey) as Array<{ id: string; path: string; file_record_id: string; project_key: string }>;
@@ -454,7 +650,9 @@ function scanAndIndexFiles(db: BetterSqliteDatabase, baseDir: string): void {
     db.prepare('DELETE FROM indexed_files WHERE id = ?').run(row.id);
     db.prepare('DELETE FROM file_records WHERE id = ?').run(row.file_record_id);
     db.prepare('INSERT OR REPLACE INTO changed_files (id, project_key, file_path, change_state, created_at) VALUES (?, ?, ?, ?, ?)').run(`changed:${projectKey}:${relativePath}:deleted`, projectKey, row.path, 'deleted', now);
+    progress.deletedFiles += 1;
   }
+  return { lastPath };
 }
 
 function embeddingModel(options: FileSearchDbOptions): string {
@@ -531,6 +729,84 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
   const db = new Database(path);
   ensureFoundationSchema(db);
   ensureScannerIndexerSchema(db);
+  ensureScannerStatusSchema(db);
+  const projectKey = deriveProjectKey(options.baseDir);
+  const scanOnOpen = options.scanOnOpen ?? true;
+  const scannerStaleAfterMs = options.scannerStaleAfterMs ?? DEFAULT_SCANNER_STALE_AFTER_MS;
+  const runningOnOpen = readPersistedScannerStatus(db, projectKey)?.state === 'running';
+  let activeRunId: string | undefined;
+  const isStaleRunning = (status: Omit<FileSearchScannerStatus, 'database' | 'embeddings'> & { progress: FileSearchScannerProgress }): boolean => {
+    const updatedAt = status.updatedAt ?? status.startedAt;
+    if (!updatedAt) return true;
+    const updatedMs = Date.parse(updatedAt);
+    if (!Number.isFinite(updatedMs)) return true;
+    return Date.now() - updatedMs >= scannerStaleAfterMs;
+  };
+  const buildScannerStatus = (): FileSearchScannerStatus => {
+    const persisted = readPersistedScannerStatus(db, projectKey);
+    if (!persisted) {
+      return { state: 'idle', projectKey, baseDir: options.baseDir, progress: emptyScannerProgress(), database: scannerDatabaseCounts(db, projectKey), embeddings: embeddingDiagnostics(db, options) };
+    }
+    if (persisted.state === 'running' && persisted.runId !== activeRunId && isStaleRunning(persisted)) {
+      const completedAt = new Date().toISOString();
+      const durationMs = persisted.startedAt ? Math.max(0, Date.parse(completedAt) - Date.parse(persisted.startedAt)) : undefined;
+      const abandoned = {
+        ...persisted,
+        state: 'abandoned' as const,
+        completedAt,
+        durationMs,
+        currentPath: undefined,
+        lastError: persisted.lastError ?? 'Scanner run abandoned: stale running snapshot from an interrupted process',
+      };
+      persistScannerStatus(db, projectKey, abandoned);
+      return { ...abandoned, database: scannerDatabaseCounts(db, projectKey), embeddings: embeddingDiagnostics(db, options) };
+    }
+    return { ...persisted, database: scannerDatabaseCounts(db, projectKey), embeddings: embeddingDiagnostics(db, options) };
+  };
+  const runScan = (trigger: FileSearchScannerTrigger): void => {
+    const runId = randomUUID();
+    const startedAt = new Date().toISOString();
+    const progress = emptyScannerProgress();
+    activeRunId = runId;
+    const persistRunning = (currentPath?: string, lastPath?: string): void => {
+      persistScannerStatus(db, projectKey, { state: 'running', projectKey, baseDir: options.baseDir, runId, trigger, startedAt, currentPath, lastPath, progress: { ...progress } });
+    };
+    persistRunning();
+    try {
+      const result = scanAndIndexFiles(db, options.baseDir, progress, persistRunning);
+      const completedAt = new Date().toISOString();
+      persistScannerStatus(db, projectKey, {
+        state: 'completed',
+        projectKey,
+        baseDir: options.baseDir,
+        runId,
+        trigger,
+        startedAt,
+        completedAt,
+        durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
+        lastPath: result.lastPath,
+        progress: { ...progress, filesRemaining: 0 },
+      });
+    } catch (error) {
+      const completedAt = new Date().toISOString();
+      const message = error instanceof Error ? error.message : String(error);
+      persistScannerStatus(db, projectKey, {
+        state: 'failed',
+        projectKey,
+        baseDir: options.baseDir,
+        runId,
+        trigger,
+        startedAt,
+        completedAt,
+        durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
+        lastError: message,
+        progress,
+      });
+      throw error;
+    } finally {
+      activeRunId = undefined;
+    }
+  };
   const embeddingClient = openEmbeddingClient({
     baseUrl: options.embeddingBaseUrl,
     model: options.embeddingModel,
@@ -539,7 +815,7 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
     requireRemote: options.embeddingRequireRemote,
   });
   const scheduler = new FileIndexScheduler({
-    scanAndIndex: () => scanAndIndexFiles(db, options.baseDir),
+    scanAndIndex: (scanOptions?: { trigger?: FileSearchScannerTrigger }) => runScan(scanOptions?.trigger ?? 'manual'),
   } as FileSearchDbHandle, options.baseDir, { maxActiveProjects: MAX_ACTIVE_PROJECTS, debounceWindowMs: DEBOUNCE_WINDOW_MS, backstopWindowMs: BACKSTOP_WINDOW_MS });
 
   const handle: FileSearchDbHandle = {
@@ -549,8 +825,11 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
     embeddingModel: embeddingModel(options),
     embeddingConfiguredDimension: embeddingConfiguredDimension(options),
     refreshMetrics: scheduler.refreshMetrics,
-    scanAndIndex(): void {
-      scanAndIndexFiles(db, options.baseDir);
+    scanAndIndex(scanOptions?: { trigger?: FileSearchScannerTrigger }): void {
+      runScan(scanOptions?.trigger ?? 'manual');
+    },
+    getScannerStatus(): FileSearchScannerStatus {
+      return buildScannerStatus();
     },
     refreshSemanticIndex(refreshOptions?: { limit?: number }): Promise<FileSearchEmbeddingDiagnostics> {
       return refreshSemanticIndex(db, options, embeddingClient, refreshOptions);
@@ -573,6 +852,7 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
       db.close();
     },
   };
-  handle.scanAndIndex();
+  if (runningOnOpen || !scanOnOpen) buildScannerStatus();
+  else handle.scanAndIndex({ trigger: 'open' });
   return handle;
 }

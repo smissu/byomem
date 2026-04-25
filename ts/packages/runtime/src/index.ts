@@ -28,4 +28,6 @@ export * from './embedding-client.js';
 export * from './embedding-vector.js';
 export { searchIndex as searchFileIndex } from './file-search-query.js';
 export type { FileSearchHit, FileSearchQuery } from './file-search-query.js';
+export { openFileSearchDb } from './file-search-db.js';
+export type { FileSearchDbHandle, FileSearchDbOptions, FileSearchEmbeddingDiagnostics, FileSearchRefreshEvent, FileSearchScannerDatabaseCounts, FileSearchScannerProgress, FileSearchScannerState, FileSearchScannerStatus, FileSearchScannerTrigger } from './file-search-db.js';
 export { openSharedCorpusStore, resolveCorpusPath } from './shared-corpus.js';

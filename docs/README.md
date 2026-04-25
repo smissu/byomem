@@ -20,6 +20,10 @@
 - [Sprint 30 — File Index Scheduler and Hardening](./sprint-30-file-index-scheduler-and-hardening.md)
 - [Sprint 31 — File Search Refinement and Cleanup](./sprint-31-file-search-refinement-and-cleanup.md)
 - [Sprint 32 — Semantic / Hybrid Document Search](./sprint-32-semantic-hybrid-document-search.md)
+- [Sprint 33 — File Search Scanner Status and Progress](./sprint-33-file-search-scanner-status-progress.md)
+- [Sprint 34 — File Search Scan Command](./sprint-34-file-search-scan-command.md)
+- [Sprint 35 — File Search CLI Result Controls](./sprint-35-file-search-cli-result-controls.md)
+- [Sprint 36 — Global File Search DB Decoupling](./sprint-36-global-file-search-db-decoupling.md)
 - [Semantic / Hybrid Document Search Runbook](./semantic-hybrid-document-search-runbook.md)
 - [Pi memory implementation backlog](./pi-memory-implementation-backlog.md)
 
