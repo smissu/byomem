@@ -1,7 +1,7 @@
 # Semantic / Hybrid Document Search Runbook
 
 ## Status
-Sprint 32 adds semantic and hybrid search over the BYOMem file-search DB. Sprint 36 makes file-search DB storage global by default while preserving per-project `project_key` partitioning. The file-search stack remains physically separate from the memories DB and keeps SQLite FTS as the lexical baseline.
+Sprint 32 adds semantic and hybrid search over the BYOMem file-search DB. Sprint 36 makes file-search DB storage global by default while preserving per-project `project_key` partitioning. Sprint 37 adds an explicit file-search project registry with `seen`, `enabled`, and `disabled` states for future scanner automation. The file-search stack remains physically separate from the memories DB and keeps SQLite FTS as the lexical baseline.
 
 ## Prerequisites
 For real Ollama-backed semantic search, install/pull the embedding model:
@@ -35,6 +35,25 @@ ${BYOMEM_RUNTIME_BASE_DIR:-~/.byomem/runtime}/byomem-file-search.sqlite
 `--base-dir <project>` is the scan/search project root. It is used to walk files, derive the `project_key`, scope `file-search` results, and report scanner `baseDir`; it is **not** the default DB storage directory. Running `file-search-scan --base-dir /path/to/project` should not create `/path/to/project/byomem-file-search.sqlite` unless an explicit DB override is used by tests/dev tooling.
 
 Legacy project-local `byomem-file-search.sqlite` files are left in place and ignored by the new default. There is no automatic migration, import, or deletion in Sprint 36. To troubleshoot or intentionally use a legacy/local DB, pass an explicit DB override through the runtime API (`fileSearchDbFile`/`fileSearchDbBaseDir` on `openNativeStore`, or `dbFile`/`dbBaseDir` on `openFileSearchDb`). Guards still reject memory-store paths such as `byomem-index.sqlite` and `native-store.json`.
+
+## File-search project registry
+Sprint 37 stores file-search project registry rows in the global file-search DB. The registry is separate from memories and is not inferred from saved memory records, `native-store.json`, `byomem-index.sqlite`, existing `byomem-file-search.sqlite` files, or memory search/write/prune activity.
+
+Registry states:
+
+- `seen` — the project was observed through explicit file-search scan/search/status, but is not eligible for future automation. Internal open-time scans do not opt projects into registry `seen` state.
+- `enabled` — the project was explicitly registered and is eligible for future polling automation when that feature is implemented.
+- `disabled` — the project was explicitly unregistered; the row is retained, but it is not eligible for automation.
+
+Manual registry commands:
+
+```bash
+node ts/packages/runtime/dist/cli.js file-search-project-register --base-dir /path/to/project
+node ts/packages/runtime/dist/cli.js file-search-project-list --json
+node ts/packages/runtime/dist/cli.js file-search-project-unregister --base-dir /path/to/project
+```
+
+`file-search-project-register` and `file-search-project-unregister` require an explicit `--base-dir`; they fail instead of operating on a generated temporary directory when the flag is omitted. `file-search-project-list --json` returns all states in stable `base_dir` order and does not require `--base-dir`. Registry commands use a registry-only global DB open path; they do not create project-local memory stores, do not scan project files, and do not instantiate scheduler polling, watchers, daemons, or background scans.
 
 ## Modes
 Document/file search supports:

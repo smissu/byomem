@@ -68,6 +68,7 @@ Memories move through a simple state model:
 - [Sprint 34] sprint-34-file-search-scan-command.md — explicit file-search scan command
 - [Sprint 35] sprint-35-file-search-cli-result-controls.md — file-search CLI result limit controls
 - [Sprint 36] sprint-36-global-file-search-db-decoupling.md — decouple global file-search DB storage from scanned project roots
+- [Sprint 37] sprint-37-file-search-project-registry-and-registration-skill.md — explicit file-search project registry and agent registration skill
 
 
 ## Cross-sprint dependencies

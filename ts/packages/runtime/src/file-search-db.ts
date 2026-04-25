@@ -8,6 +8,7 @@ import { resolveProjectContext } from './project-context.js';
 import { FileIndexScheduler } from './file-index-scheduler.js';
 import { openEmbeddingClient, type EmbeddingClient } from './embedding-client.js';
 import { DEFAULT_EMBEDDING_DIMENSION, encodeEmbedding, truncateEmbeddingText } from './embedding-vector.js';
+import { ensureFileSearchProjectRegistrySchema, markFileSearchProjectSeen } from './file-search-project-registry.js';
 
 export interface FileSearchDbOptions {
   /** Project root to scan and use for project_key/status identity. */
@@ -85,6 +86,12 @@ export interface FileSearchScannerStatus {
   progress: FileSearchScannerProgress;
   database: FileSearchScannerDatabaseCounts;
   embeddings?: FileSearchEmbeddingDiagnostics;
+}
+
+export interface FileSearchRegistryDbHandle {
+  path: string;
+  db: BetterSqliteDatabase;
+  close(): void;
 }
 
 export interface FileSearchDbHandle {
@@ -754,6 +761,24 @@ async function refreshSemanticIndex(db: BetterSqliteDatabase, options: FileSearc
   return embeddingDiagnostics(db, options);
 }
 
+export function openFileSearchRegistryDb(options: Pick<FileSearchDbOptions, 'dbBaseDir' | 'dbFile'> = {}): FileSearchRegistryDbHandle {
+  const path = resolveDefaultFileSearchDbPath(options);
+  const canonicalPath = resolve(path);
+  assertFileSearchDbPath(canonicalPath);
+  mkdirSync(dirname(canonicalPath), { recursive: true });
+  const db = new Database(canonicalPath);
+  ensureFoundationSchema(db);
+  ensureFileSearchProjectRegistrySchema(db);
+  return {
+    path: canonicalPath,
+    db,
+    close(): void {
+      assertFileSearchDbPath(canonicalPath);
+      db.close();
+    },
+  };
+}
+
 export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHandle {
   const projectBaseDir = resolveProjectBaseDir(options);
   const path = resolveFileSearchDbPath(options, projectBaseDir);
@@ -762,6 +787,7 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
   ensureFoundationSchema(db);
   ensureScannerIndexerSchema(db);
   ensureScannerStatusSchema(db);
+  ensureFileSearchProjectRegistrySchema(db);
   const projectKey = deriveProjectKey(projectBaseDir);
   const scanOnOpen = options.scanOnOpen ?? true;
   const scannerStaleAfterMs = options.scannerStaleAfterMs ?? DEFAULT_SCANNER_STALE_AFTER_MS;
@@ -858,7 +884,9 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
     embeddingConfiguredDimension: embeddingConfiguredDimension(options),
     refreshMetrics: scheduler.refreshMetrics,
     scanAndIndex(scanOptions?: { trigger?: FileSearchScannerTrigger }): void {
-      runScan(scanOptions?.trigger ?? 'manual');
+      const trigger = scanOptions?.trigger ?? 'manual';
+      runScan(trigger);
+      if (trigger === 'manual') markFileSearchProjectSeen(db, projectBaseDir, 'manual-scan');
     },
     getScannerStatus(): FileSearchScannerStatus {
       return buildScannerStatus();

@@ -24,6 +24,7 @@
 - [Sprint 34 — File Search Scan Command](./sprint-34-file-search-scan-command.md)
 - [Sprint 35 — File Search CLI Result Controls](./sprint-35-file-search-cli-result-controls.md)
 - [Sprint 36 — Global File Search DB Decoupling](./sprint-36-global-file-search-db-decoupling.md)
+- [Sprint 37 — File Search Project Registry and Registration Skill](./sprint-37-file-search-project-registry-and-registration-skill.md)
 - [Semantic / Hybrid Document Search Runbook](./semantic-hybrid-document-search-runbook.md)
 - [Pi memory implementation backlog](./pi-memory-implementation-backlog.md)
 

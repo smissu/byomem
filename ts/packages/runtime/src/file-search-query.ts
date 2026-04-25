@@ -2,6 +2,7 @@ import type { MemoryRecord } from './contracts.js';
 import type { NativeStore } from './store.js';
 import { normalizeIdentity } from './identity.js';
 import { resolveFileSearchProjectKey } from './file-search-db.js';
+import { markFileSearchProjectSeen } from './file-search-project-registry.js';
 import { cosineSimilarity, decodeEmbedding } from './embedding-vector.js';
 
 export interface FileSearchQuery {
@@ -141,7 +142,9 @@ export async function searchIndex(store: NativeStore, query: FileSearchQuery): P
   if (!fileDb) return [];
   if (query.scope && query.scope !== 'project') return [];
   const limit = query.limit ?? 10;
-  const projectKey = canonicalProjectKey(store.fileSearchProjectBaseDir ?? store.baseDir);
+  const projectBaseDir = store.fileSearchProjectBaseDir ?? store.baseDir;
+  markFileSearchProjectSeen(fileDb.db, projectBaseDir, 'manual-search');
+  const projectKey = canonicalProjectKey(projectBaseDir);
   const mode = query.mode ?? 'hybrid';
   const ftsRows = queryFts(fileDb.db, projectKey, query.query, mode === 'hybrid' ? limit * 2 : limit);
   if (mode === 'fts') return ftsRows.slice(0, limit).map(buildHit);

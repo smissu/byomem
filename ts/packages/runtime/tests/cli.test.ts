@@ -233,4 +233,108 @@ describe('runtime cli', () => {
       results: [expect.objectContaining({ file: expect.objectContaining({ path: expect.stringContaining('alpha.txt') }) })],
     });
   });
+
+  it('registers, unregisters, and lists file-search projects explicitly without requiring memories or embeddings', async () => {
+    const parentA = tempDir();
+    const parentB = tempDir();
+    dirs.push(parentA, parentB);
+    const projectB = join(parentB, 'same-project');
+    const projectA = join(parentA, 'same-project');
+    writeFileSync(join(parentA, 'parent-a-sentinel.txt'), 'parent a sentinel\n', 'utf8');
+    writeFileSync(join(parentB, 'parent-b-sentinel.txt'), 'parent b sentinel\n', 'utf8');
+    // Parent directories exist from tempDir(); nested projects intentionally have the same basename.
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    globalThis.fetch = (async () => { throw new Error('registry commands must not request embeddings'); }) as typeof fetch;
+
+    await main(['file-search-project-register', '--base-dir', projectB, '--json']);
+    expect(process.exitCode).toBeUndefined();
+    const registeredB = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'));
+    expect(registeredB).toMatchObject({
+      project: {
+        project_key: expect.stringMatching(/^project:same-project-[a-f0-9]{12}$/),
+        base_dir: projectB,
+        display_name: 'same-project',
+        state: 'enabled',
+        source: 'manual-register',
+        created_at: expect.any(String),
+        updated_at: expect.any(String),
+        last_seen_at: expect.any(String),
+        registered_at: expect.any(String),
+      },
+    });
+
+    await main(['file-search-project-register', '--base-dir', projectA, '--json']);
+    const registeredA = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'));
+    expect(registeredA.project.project_key).not.toBe(registeredB.project.project_key);
+
+    await main(['file-search-project-unregister', '--base-dir', projectB, '--json']);
+    expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      project: { base_dir: projectB, state: 'disabled', source: 'manual-unregister' },
+    });
+
+    await main(['file-search-project-list', '--json']);
+    const listed = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'));
+    expect(listed.projects).toEqual(expect.arrayContaining([
+      expect.objectContaining({ base_dir: projectA, state: 'enabled', source: 'manual-register' }),
+      expect.objectContaining({ base_dir: projectB, state: 'disabled', source: 'manual-unregister' }),
+    ]));
+    expect(listed.projects.map((entry: { base_dir: string }) => entry.base_dir)).toEqual([projectA, projectB].sort());
+    expect(existsSync(join(projectA, 'native-store.json'))).toBe(false);
+    expect(existsSync(join(projectA, 'byomem-index.sqlite'))).toBe(false);
+    expect(existsSync(join(projectA, 'byomem-file-search.sqlite'))).toBe(false);
+    expect(existsSync(join(projectB, 'native-store.json'))).toBe(false);
+    expect(existsSync(join(projectB, 'byomem-index.sqlite'))).toBe(false);
+    expect(existsSync(join(projectB, 'byomem-file-search.sqlite'))).toBe(false);
+  });
+
+  it('file-search project registry CLI requires explicit base-dir for register and unregister', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await main(['file-search-project-register', '--json']);
+    expect(JSON.parse(String(errSpy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      error: 'Missing --base-dir for file-search-project-register',
+      command: 'file-search-project-register',
+    });
+    process.exitCode = undefined;
+
+    await main(['file-search-project-unregister', '--json']);
+    expect(JSON.parse(String(errSpy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      error: 'Missing --base-dir for file-search-project-unregister',
+      command: 'file-search-project-unregister',
+    });
+  });
+
+  it('file-search project registry CLI is idempotent, soft-disables rows, and never starts polling or scans', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    writeFileSync(join(dir, 'not-scanned.txt'), 'registry commands must not scan this file\n', 'utf8');
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+    globalThis.fetch = (async () => { throw new Error('registry commands must not request embeddings'); }) as typeof fetch;
+
+    await main(['file-search-project-register', '--base-dir', join(dir, '.'), '--json']);
+    const first = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}')).project;
+    await main(['file-search-project-register', '--base-dir', dir, '--json']);
+    const second = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}')).project;
+    expect(second).toMatchObject({ project_key: first.project_key, base_dir: dir, state: 'enabled', source: 'manual-register' });
+
+    await main(['file-search-project-unregister', '--base-dir', dir, '--json']);
+    const disabled = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}')).project;
+    expect(disabled).toMatchObject({ project_key: first.project_key, base_dir: dir, state: 'disabled', source: 'manual-unregister' });
+
+    await main(['file-search-project-list', '--json']);
+    const listed = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}')).projects;
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({ project_key: first.project_key, base_dir: dir, state: 'disabled' });
+
+    const runtimeFileSearchDb = join(process.env.BYOMEM_RUNTIME_BASE_DIR ?? '', 'byomem-file-search.sqlite');
+    expect(existsSync(runtimeFileSearchDb)).toBe(true);
+    expect(existsSync(join(dir, 'byomem-file-search.sqlite'))).toBe(false);
+    // Registry commands may create only the registry DB/table; they must not scan/index project files, create memory stores, or start scheduler timers.
+    expect(existsSync(join(dir, 'native-store.json'))).toBe(false);
+    expect(existsSync(join(dir, 'byomem-index.sqlite'))).toBe(false);
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+  });
+
 });

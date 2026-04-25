@@ -3,6 +3,8 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openNativeStore } from './store.js';
+import { openFileSearchRegistryDb } from './file-search-db.js';
+import { listFileSearchProjects, markFileSearchProjectSeen, registerFileSearchProject, unregisterFileSearchProject } from './file-search-project-registry.js';
 import { openQueueRuntime } from './queue-runtime.js';
 import { searchIndex } from './search-index.js';
 import { searchIndex as searchFileIndex } from './file-search-query.js';
@@ -31,7 +33,7 @@ type CliOptions = {
 type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
 
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'file-search', 'file-search-scan', 'file-search-status', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'file-search', 'file-search-scan', 'file-search-status', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
@@ -68,9 +70,41 @@ function parseWatchMode(flags: { watch: boolean; watchInterval?: string }, json:
 
 type FileSearchCliRequest = { query: string; mode: 'fts' | 'semantic' | 'hybrid'; limit: number };
 
-function parseArgs(argv: string[]): { command?: string; options: CliOptions; payload: Record<string, string>; flags: { watch: boolean; watchInterval?: string } } {
+type CliFileSearchProject = {
+  project_key: string;
+  base_dir: string;
+  display_name: string;
+  state: ReturnType<typeof registerFileSearchProject>['state'];
+  source: ReturnType<typeof registerFileSearchProject>['source'];
+  poll_interval_seconds?: number;
+  created_at: string;
+  updated_at: string;
+  last_seen_at: string;
+  registered_at?: string;
+  last_scan_at?: string;
+  last_error?: string;
+};
+
+function serializeFileSearchProject(project: ReturnType<typeof registerFileSearchProject>): CliFileSearchProject {
+  return {
+    project_key: project.projectKey,
+    base_dir: project.baseDir,
+    display_name: project.displayName,
+    state: project.state,
+    source: project.source,
+    poll_interval_seconds: project.pollIntervalSeconds,
+    created_at: project.createdAt,
+    updated_at: project.updatedAt,
+    last_seen_at: project.lastSeenAt,
+    registered_at: project.registeredAt,
+    last_scan_at: project.lastScanAt,
+    last_error: project.lastError,
+  };
+}
+
+function parseArgs(argv: string[]): { command?: string; options: CliOptions; payload: Record<string, string>; flags: { watch: boolean; watchInterval?: string; baseDirProvided: boolean } } {
   const payload: Record<string, string> = {};
-  const flags = { watch: false, watchInterval: undefined as string | undefined };
+  const flags = { watch: false, watchInterval: undefined as string | undefined, baseDirProvided: false };
   const options: CliOptions = { baseDir: mkdtempSync(join(tmpdir(), 'byomem-cli-')) };
   let command: string | undefined;
   for (let i = 0; i < argv.length; i += 1) {
@@ -78,7 +112,7 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     const next = argv[i + 1];
     if (!command && !arg.startsWith('--')) { command = arg; continue; }
     if (arg === '--help' || arg === '-h') return { command: 'help', options, payload, flags };
-    if (arg === '--base-dir') { options.baseDir = requireValue(next, '--base-dir'); i += 1; }
+    if (arg === '--base-dir') { options.baseDir = requireValue(next, '--base-dir'); flags.baseDirProvided = true; i += 1; }
     else if (arg === '--embedding-base-url') { options.embeddingBaseUrl = requireValue(next, '--embedding-base-url'); i += 1; }
     else if (arg === '--embedding-model') { options.embeddingModel = requireValue(next, '--embedding-model'); i += 1; }
     else if (arg === '--embedding-timeout-ms') { options.embeddingTimeoutMs = Number(requireValue(next, '--embedding-timeout-ms')); i += 1; }
@@ -131,6 +165,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const isGenerationCommand = GENERATION_COMMANDS.has(command);
   const isObserverCommand = OBSERVER_COMMANDS.has(command);
   const isFileSearchCommand = command === 'file-search' || command === 'file-search-scan' || command === 'file-search-status';
+  const isFileSearchRegistryCommand = command === 'file-search-project-register' || command === 'file-search-project-unregister' || command === 'file-search-project-list';
   const isFileSearchScanCommand = command === 'file-search-scan';
   const isFileSearchStatusCommand = command === 'file-search-status';
   let store: ReturnType<typeof openNativeStore> | undefined;
@@ -138,6 +173,26 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   let fileSearchRequest: FileSearchCliRequest | undefined;
   try {
     fileSearchRequest = command === 'file-search' ? parseFileSearchRequest(payload) : undefined;
+    if (isFileSearchRegistryCommand) {
+      if ((command === 'file-search-project-register' || command === 'file-search-project-unregister') && !flags.baseDirProvided) {
+        throw new Error(`Missing --base-dir for ${command}`);
+      }
+      const registryDb = openFileSearchRegistryDb();
+      try {
+        if (command === 'file-search-project-register') {
+          console.log(JSON.stringify({ project: serializeFileSearchProject(registerFileSearchProject(registryDb.db, options.baseDir)) }, null, 2));
+          return;
+        }
+        if (command === 'file-search-project-unregister') {
+          console.log(JSON.stringify({ project: serializeFileSearchProject(unregisterFileSearchProject(registryDb.db, options.baseDir)) }, null, 2));
+          return;
+        }
+        console.log(JSON.stringify({ projects: listFileSearchProjects(registryDb.db).map(serializeFileSearchProject) }, null, 2));
+        return;
+      } finally {
+        registryDb.close();
+      }
+    }
     store = isGenerationCommand || isObserverCommand
       ? undefined
       : openNativeStore({
@@ -164,6 +219,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
     if (command === 'file-search-status') {
       if (!store) throw new Error('Missing native store');
+      if (store.fileSearchDb) markFileSearchProjectSeen(store.fileSearchDb.db, store.fileSearchProjectBaseDir ?? store.baseDir, 'manual-status');
       const scanner = store.fileSearchDb?.getScannerStatus();
       console.log(JSON.stringify({ scanner, status: scanner }, null, 2));
       return;
