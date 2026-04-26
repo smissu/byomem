@@ -15,6 +15,14 @@ The Sprint 37 global skill can teach agents how to use the CLI, but direct tools
   - `byomem_file_search_project_register`
   - `byomem_file_search_project_list`
   - `byomem_file_search_project_unregister`
+
+Sprint 39 adds polling-specific tools alongside these Sprint 38 tools:
+
+- `byomem_file_search_polling_status`
+- `byomem_file_search_polling_enable`
+- `byomem_file_search_polling_disable`
+
+The original Sprint 38 search/status/scan/registry tools remain non-polling by default; only the Sprint 39 polling-specific enable tool starts a session-owned timer.
 - Keep the tool style similar to existing memory tools:
   - registered via `pi.registerTool(...)`
   - strict JSON parameter schemas
@@ -28,7 +36,7 @@ The Sprint 37 global skill can teach agents how to use the CLI, but direct tools
 - Update docs and the global `file-search-project-registration` skill to prefer direct tools and use CLI only as fallback.
 
 ### Out of scope
-- Background polling loop implementation.
+- Background polling loop implementation. (Implemented later in Sprint 39 as explicit active-project polling tools only, not hidden polling in Sprint 38 tools.)
 - Filesystem watchers/daemons.
 - Automatic rescans after every file edit.
 - Cross-project aggregate search UX.
@@ -125,7 +133,7 @@ Semantics:
 - Defaults to active project when `baseDir` is omitted.
 - Uses explicit `baseDir` when provided.
 - Opens file-search with scan-on-open disabled.
-- Must not scan, schedule polling, start watchers, refresh embeddings, or create project-local memory stores.
+- Must not scan, schedule polling, start watchers, refresh embeddings, or create project-local memory stores. Sprint 39 preserves this behavior; polling status/enable/disable use separate tool names.
 - Returns scanner/status DTO consistent with CLI `file-search-status`, using this top-level shape:
   ```json
   {

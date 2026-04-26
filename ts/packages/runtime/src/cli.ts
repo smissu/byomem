@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openNativeStore } from './store.js';
 import { openFileSearchRegistryDb } from './file-search-db.js';
-import { listFileSearchProjects, markFileSearchProjectSeen, registerFileSearchProject, unregisterFileSearchProject } from './file-search-project-registry.js';
+import { listFileSearchProjects, markFileSearchProjectSeen, normalizeFileSearchPollingDisabledReason, registerFileSearchProject, unregisterFileSearchProject } from './file-search-project-registry.js';
+import { configureFileSearchPolling, disableFileSearchPolling, getFileSearchPollingStatus } from './file-search-active-poller.js';
 import { openQueueRuntime } from './queue-runtime.js';
 import { searchIndex } from './search-index.js';
 import { searchIndex as searchFileIndex } from './file-search-query.js';
@@ -33,7 +34,7 @@ type CliOptions = {
 type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
 
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'file-search', 'file-search-scan', 'file-search-status', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'file-search', 'file-search-scan', 'file-search-status', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
@@ -77,6 +78,12 @@ type CliFileSearchProject = {
   state: ReturnType<typeof registerFileSearchProject>['state'];
   source: ReturnType<typeof registerFileSearchProject>['source'];
   poll_interval_seconds?: number;
+  polling_enabled: boolean;
+  last_poll_at?: string;
+  next_poll_at?: string;
+  consecutive_no_change_polls: number;
+  idle_disable_after_polls?: number;
+  polling_disabled_reason?: string;
   created_at: string;
   updated_at: string;
   last_seen_at: string;
@@ -93,6 +100,12 @@ function serializeFileSearchProject(project: ReturnType<typeof registerFileSearc
     state: project.state,
     source: project.source,
     poll_interval_seconds: project.pollIntervalSeconds,
+    polling_enabled: project.pollingEnabled,
+    last_poll_at: project.lastPollAt,
+    next_poll_at: project.nextPollAt,
+    consecutive_no_change_polls: project.consecutiveNoChangePolls,
+    idle_disable_after_polls: project.idleDisableAfterPolls,
+    polling_disabled_reason: project.pollingDisabledReason,
     created_at: project.createdAt,
     updated_at: project.updatedAt,
     last_seen_at: project.lastSeenAt,
@@ -125,6 +138,9 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--json') { payload.json = 'true'; }
     else if (arg === '--watch') { flags.watch = true; }
     else if (arg === '--watch-interval') { flags.watchInterval = requireValue(next, '--watch-interval'); i += 1; }
+    else if (arg === '--poll-interval-seconds') { payload.pollIntervalSeconds = requireValue(next, '--poll-interval-seconds'); i += 1; }
+    else if (arg === '--idle-disable-after-polls') { payload.idleDisableAfterPolls = requireValue(next, '--idle-disable-after-polls'); i += 1; }
+    else if (arg === '--reason') { payload.reason = requireValue(next, '--reason'); i += 1; }
     else if (arg === '--history') { payload.history = requireValue(next, '--history'); i += 1; }
     else if (arg === '--query') { payload.query = requireValue(next, '--query'); i += 1; }
     else if (arg === '--id') { payload.id = requireValue(next, '--id'); i += 1; }
@@ -136,6 +152,18 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--text') { payload.text = requireValue(next, '--text'); i += 1; }
   }
   return { command, options, payload, flags };
+}
+
+function parsePositiveIntegerFlag(payload: Record<string, string>, key: string, flag: string): number {
+  const raw = payload[key]?.trim();
+  if (!raw || !/^[1-9]\d*$/.test(raw)) throw new Error(`${flag} must be a positive integer`);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) throw new Error(`${flag} must be a positive integer`);
+  return value;
+}
+
+function parseOptionalPositiveIntegerFlag(payload: Record<string, string>, key: string, flag: string): number | undefined {
+  return payload[key] === undefined ? undefined : parsePositiveIntegerFlag(payload, key, flag);
 }
 
 function parseFileSearchRequest(payload: Record<string, string>): FileSearchCliRequest {
@@ -165,6 +193,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const isGenerationCommand = GENERATION_COMMANDS.has(command);
   const isObserverCommand = OBSERVER_COMMANDS.has(command);
   const isFileSearchCommand = command === 'file-search' || command === 'file-search-scan' || command === 'file-search-status';
+  const isFileSearchPollingCommand = command === 'file-search-polling-status' || command === 'file-search-polling-enable' || command === 'file-search-polling-disable';
   const isFileSearchRegistryCommand = command === 'file-search-project-register' || command === 'file-search-project-unregister' || command === 'file-search-project-list';
   const isFileSearchScanCommand = command === 'file-search-scan';
   const isFileSearchStatusCommand = command === 'file-search-status';
@@ -173,6 +202,25 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   let fileSearchRequest: FileSearchCliRequest | undefined;
   try {
     fileSearchRequest = command === 'file-search' ? parseFileSearchRequest(payload) : undefined;
+    if (isFileSearchPollingCommand) {
+      if (!flags.baseDirProvided) throw new Error(`Missing --base-dir for ${command}`);
+      if (command === 'file-search-polling-status') {
+        const polling = getFileSearchPollingStatus(options.baseDir);
+        console.log(JSON.stringify({ polling, status: polling }, null, 2));
+        return;
+      }
+      if (command === 'file-search-polling-enable') {
+        const pollIntervalSeconds = parsePositiveIntegerFlag(payload, 'pollIntervalSeconds', '--poll-interval-seconds');
+        const idleDisableAfterPolls = parseOptionalPositiveIntegerFlag(payload, 'idleDisableAfterPolls', '--idle-disable-after-polls');
+        const polling = configureFileSearchPolling(options.baseDir, { pollIntervalSeconds, idleDisableAfterPolls });
+        console.log(JSON.stringify({ polling, status: polling }, null, 2));
+        return;
+      }
+      const reason = normalizeFileSearchPollingDisabledReason(payload.reason?.trim() || 'manually-disabled');
+      const polling = disableFileSearchPolling(options.baseDir, reason);
+      console.log(JSON.stringify({ polling, status: polling }, null, 2));
+      return;
+    }
     if (isFileSearchRegistryCommand) {
       if ((command === 'file-search-project-register' || command === 'file-search-project-unregister') && !flags.baseDirProvided) {
         throw new Error(`Missing --base-dir for ${command}`);

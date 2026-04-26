@@ -8,7 +8,7 @@ import { resolveProjectContext } from './project-context.js';
 import { FileIndexScheduler } from './file-index-scheduler.js';
 import { openEmbeddingClient, type EmbeddingClient } from './embedding-client.js';
 import { DEFAULT_EMBEDDING_DIMENSION, encodeEmbedding, truncateEmbeddingText } from './embedding-vector.js';
-import { ensureFileSearchProjectRegistrySchema, markFileSearchProjectSeen } from './file-search-project-registry.js';
+import { ensureFileSearchProjectRegistrySchema, getFileSearchProject, markFileSearchProjectSeen, serializeFileSearchPollingStatus } from './file-search-project-registry.js';
 
 export interface FileSearchDbOptions {
   /** Project root to scan and use for project_key/status identity. */
@@ -47,7 +47,7 @@ export interface FileSearchRefreshEvent {
 }
 
 export type FileSearchScannerState = 'idle' | 'running' | 'completed' | 'failed' | 'abandoned';
-export type FileSearchScannerTrigger = 'open' | 'manual' | 'scheduler-activation' | 'scheduler-post-activity' | 'scheduler-backstop';
+export type FileSearchScannerTrigger = 'open' | 'manual' | 'poll' | 'scheduler-activation' | 'scheduler-post-activity' | 'scheduler-backstop';
 
 export interface FileSearchScannerProgress {
   discoveredFiles: number;
@@ -75,6 +75,14 @@ export interface FileSearchScannerStatus {
   state: FileSearchScannerState;
   projectKey: string;
   baseDir: string;
+  polling_enabled: boolean;
+  poll_interval_seconds: number | null;
+  last_poll_at: string | null;
+  next_poll_at: string | null;
+  consecutive_no_change_polls: number;
+  idle_disable_after_polls: number | null;
+  polling_disabled_reason: string | null;
+  last_scan_at: string | null;
   runId?: string;
   trigger?: FileSearchScannerTrigger;
   startedAt?: string;
@@ -89,6 +97,19 @@ export interface FileSearchScannerStatus {
   embeddings?: FileSearchEmbeddingDiagnostics;
 }
 
+type FileSearchPersistedScannerStatus = Omit<FileSearchScannerStatus,
+  | 'database'
+  | 'embeddings'
+  | 'polling_enabled'
+  | 'poll_interval_seconds'
+  | 'last_poll_at'
+  | 'next_poll_at'
+  | 'consecutive_no_change_polls'
+  | 'idle_disable_after_polls'
+  | 'polling_disabled_reason'
+  | 'last_scan_at'
+>;
+
 export interface FileSearchRegistryDbHandle {
   path: string;
   db: BetterSqliteDatabase;
@@ -99,7 +120,7 @@ export interface FileSearchDbHandle {
   path: string;
   db: BetterSqliteDatabase;
   close(): void;
-  scanAndIndex(options?: { trigger?: FileSearchScannerTrigger }): void;
+  scanAndIndex(options?: { trigger?: FileSearchScannerTrigger }): FileSearchScannerStatus;
   getScannerStatus(): FileSearchScannerStatus;
   refreshSemanticIndex(options?: { limit?: number }): Promise<FileSearchEmbeddingDiagnostics>;
   getEmbeddingDiagnostics(): FileSearchEmbeddingDiagnostics;
@@ -496,7 +517,7 @@ function normalizeProgress(value: string | null | undefined): FileSearchScannerP
   }
 }
 
-function persistScannerStatus(db: BetterSqliteDatabase, projectKey: string, status: Omit<FileSearchScannerStatus, 'database' | 'embeddings'>): void {
+function persistScannerStatus(db: BetterSqliteDatabase, projectKey: string, status: FileSearchPersistedScannerStatus): void {
   const updatedAt = new Date().toISOString();
   db.prepare(`INSERT OR REPLACE INTO file_search_scanner_status
     (project_key, state, run_id, trigger, base_dir, started_at, completed_at, duration_ms, current_path, last_path, last_error, progress_json, updated_at)
@@ -518,7 +539,7 @@ function persistScannerStatus(db: BetterSqliteDatabase, projectKey: string, stat
     );
 }
 
-function readPersistedScannerStatus(db: BetterSqliteDatabase, projectKey: string): (Omit<FileSearchScannerStatus, 'database' | 'embeddings'> & { progress: FileSearchScannerProgress }) | undefined {
+function readPersistedScannerStatus(db: BetterSqliteDatabase, projectKey: string): (FileSearchPersistedScannerStatus & { progress: FileSearchScannerProgress }) | undefined {
   const row = db.prepare('SELECT * FROM file_search_scanner_status WHERE project_key = ?').get(projectKey) as {
     project_key: string;
     state: FileSearchScannerState;
@@ -795,17 +816,33 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
   const scannerStaleAfterMs = options.scannerStaleAfterMs ?? DEFAULT_SCANNER_STALE_AFTER_MS;
   const runningOnOpen = readPersistedScannerStatus(db, projectKey)?.state === 'running';
   let activeRunId: string | undefined;
-  const isStaleRunning = (status: Omit<FileSearchScannerStatus, 'database' | 'embeddings'> & { progress: FileSearchScannerProgress }): boolean => {
+  const isStaleRunning = (status: FileSearchPersistedScannerStatus & { progress: FileSearchScannerProgress }): boolean => {
     const updatedAt = status.updatedAt ?? status.startedAt;
     if (!updatedAt) return true;
     const updatedMs = Date.parse(updatedAt);
     if (!Number.isFinite(updatedMs)) return true;
     return Date.now() - updatedMs >= scannerStaleAfterMs;
   };
+  const withPollingFields = (status: Omit<FileSearchScannerStatus, 'database' | 'embeddings' | 'polling_enabled' | 'poll_interval_seconds' | 'last_poll_at' | 'next_poll_at' | 'consecutive_no_change_polls' | 'idle_disable_after_polls' | 'polling_disabled_reason' | 'last_scan_at'> & { database: FileSearchScannerDatabaseCounts; embeddings?: FileSearchEmbeddingDiagnostics }): FileSearchScannerStatus => {
+    const entry = getFileSearchProject(db, projectBaseDir);
+    const polling = entry
+      ? serializeFileSearchPollingStatus(entry)
+      : {
+          polling_enabled: false,
+          poll_interval_seconds: null,
+          last_poll_at: null,
+          next_poll_at: null,
+          consecutive_no_change_polls: 0,
+          idle_disable_after_polls: null,
+          polling_disabled_reason: 'default-off' as const,
+          last_scan_at: null,
+        };
+    return { ...status, ...polling };
+  };
   const buildScannerStatus = (): FileSearchScannerStatus => {
     const persisted = readPersistedScannerStatus(db, projectKey);
     if (!persisted) {
-      return { state: 'idle', projectKey, baseDir: projectBaseDir, progress: emptyScannerProgress(), database: scannerDatabaseCounts(db, projectKey), embeddings: embeddingDiagnostics(db, options) };
+      return withPollingFields({ state: 'idle', projectKey, baseDir: projectBaseDir, progress: emptyScannerProgress(), database: scannerDatabaseCounts(db, projectKey), embeddings: embeddingDiagnostics(db, options) });
     }
     if (persisted.state === 'running' && persisted.runId !== activeRunId && isStaleRunning(persisted)) {
       const completedAt = new Date().toISOString();
@@ -819,11 +856,11 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
         lastError: persisted.lastError ?? 'Scanner run abandoned: stale running snapshot from an interrupted process',
       };
       persistScannerStatus(db, projectKey, abandoned);
-      return { ...abandoned, database: scannerDatabaseCounts(db, projectKey), embeddings: embeddingDiagnostics(db, options) };
+      return withPollingFields({ ...abandoned, database: scannerDatabaseCounts(db, projectKey), embeddings: embeddingDiagnostics(db, options) });
     }
-    return { ...persisted, database: scannerDatabaseCounts(db, projectKey), embeddings: embeddingDiagnostics(db, options) };
+    return withPollingFields({ ...persisted, database: scannerDatabaseCounts(db, projectKey), embeddings: embeddingDiagnostics(db, options) });
   };
-  const runScan = (trigger: FileSearchScannerTrigger): void => {
+  const runScan = (trigger: FileSearchScannerTrigger): FileSearchScannerStatus => {
     const runId = randomUUID();
     const startedAt = new Date().toISOString();
     const progress = emptyScannerProgress();
@@ -847,6 +884,7 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
         lastPath: result.lastPath,
         progress: { ...progress, filesRemaining: 0 },
       });
+      return buildScannerStatus();
     } catch (error) {
       const completedAt = new Date().toISOString();
       const message = error instanceof Error ? error.message : String(error);
@@ -887,10 +925,11 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
     embeddingModel: embeddingModel(options),
     embeddingConfiguredDimension: embeddingConfiguredDimension(options),
     refreshMetrics: scheduler?.refreshMetrics ?? { runs: 0, failures: 0, skips: 0, retries: 0 },
-    scanAndIndex(scanOptions?: { trigger?: FileSearchScannerTrigger }): void {
+    scanAndIndex(scanOptions?: { trigger?: FileSearchScannerTrigger }): FileSearchScannerStatus {
       const trigger = scanOptions?.trigger ?? 'manual';
       runScan(trigger);
       if (trigger === 'manual') markFileSearchProjectSeen(db, projectBaseDir, 'manual-scan');
+      return buildScannerStatus();
     },
     getScannerStatus(): FileSearchScannerStatus {
       return buildScannerStatus();

@@ -15,8 +15,9 @@ import { searchIndex as searchFileIndexForTool } from './file-search-query.js';
 import { captureSessionCheckpoint, type SessionCaptureInput } from './session-capture.js';
 import { openNativeStore } from './store.js';
 import { resolveActiveProjectContext } from './identity.js';
-import { listFileSearchProjects, markFileSearchProjectSeen, registerFileSearchProject, unregisterFileSearchProject } from './file-search-project-registry.js';
+import { listFileSearchProjects, markFileSearchProjectSeen, normalizeFileSearchPollingDisabledReason, registerFileSearchProject, unregisterFileSearchProject, type FileSearchPollingDisabledReason } from './file-search-project-registry.js';
 import { openFileSearchDb, openFileSearchRegistryDb, type FileSearchDbHandle } from './file-search-db.js';
+import { FileSearchActivePoller, disableFileSearchPolling, getFileSearchPollingStatus } from './file-search-active-poller.js';
 
 function resolveDefaultRuntimeBaseDir(): string {
   return resolve(homedir(), '.byomem', 'runtime');
@@ -39,6 +40,8 @@ const readPath = openReadPath(nativeStore);
 const queueRuntime = openQueueRuntime(nativeStore, { baseDir: runtimeBaseDir });
 const debugLogPath = join(runtimeBaseDir, 'queue', 'debug', 'byomem-turn-end.jsonl');
 let shouldInjectInitialContext = true;
+let activeFileSearchPoller: FileSearchActivePoller | undefined;
+let activeFileSearchPollingBaseDir: string | undefined;
 
 function logTurnEndDebug(entry: Record<string, unknown>): void {
   try {
@@ -178,6 +181,29 @@ function resolveFileSearchTargetBaseDir(baseDir?: unknown): string {
   return resolve(resolved);
 }
 
+function normalizePositiveInteger(value: unknown, name: string, fallback?: number): number {
+  if (value === undefined) {
+    if (fallback !== undefined) return fallback;
+    throw new Error(`Invalid ${name}: value is required`);
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) throw new Error(`Invalid ${name}: must be a positive integer`);
+  return value;
+}
+
+function resolveActivePollingTargetBaseDir(baseDir?: unknown): string {
+  const cwd = process.cwd();
+  if (!cwd.trim()) throw new Error('no-active-project: unable to resolve active project for file-search polling');
+  const activeProject = resolveActiveProjectContext(process.env, cwd);
+  const activeBaseDir = normalizeText(activeProject.repoRoot);
+  if (!activeBaseDir) throw new Error('no-active-project: unable to resolve active project for file-search polling');
+  if (baseDir === undefined) return resolve(activeBaseDir);
+  const explicitBaseDir = normalizeText(baseDir);
+  if (!explicitBaseDir) throw new Error('Invalid file-search project baseDir');
+  const resolvedExplicit = resolve(explicitBaseDir);
+  if (resolvedExplicit !== resolve(activeBaseDir)) throw new Error('not-active-project: file-search polling can only be enabled for the active project');
+  return resolvedExplicit;
+}
+
 function openDirectFileSearchDb(targetBaseDir: string) {
   return openFileSearchDb({ baseDir: targetBaseDir, projectBaseDir: targetBaseDir, scanOnOpen: false, schedulerEnabled: false });
 }
@@ -230,6 +256,12 @@ function serializeProjectEntry(entry: ReturnType<typeof listFileSearchProjects>[
     state: entry.state,
     source: entry.source,
     poll_interval_seconds: entry.pollIntervalSeconds,
+    polling_enabled: entry.pollingEnabled,
+    last_poll_at: entry.lastPollAt,
+    next_poll_at: entry.nextPollAt,
+    consecutive_no_change_polls: entry.consecutiveNoChangePolls,
+    idle_disable_after_polls: entry.idleDisableAfterPolls,
+    polling_disabled_reason: entry.pollingDisabledReason,
     created_at: entry.createdAt,
     updated_at: entry.updatedAt,
     last_seen_at: entry.lastSeenAt,
@@ -594,9 +626,20 @@ export default function (pi: ExtensionAPI) {
   pi.on?.('session_before_switch', async (event, ctx) => {
     await captureSessionFromHook('session_before_switch', ctx as Record<string, unknown>, event as TurnEndEvent);
   });
+  const cleanupPollingForSessionEnd = async () => {
+    if (!activeFileSearchPoller) return;
+    activeFileSearchPoller.close('session-ended');
+    activeFileSearchPoller = undefined;
+    activeFileSearchPollingBaseDir = undefined;
+  };
   pi.on?.('session_shutdown', async (event, ctx) => {
     await captureSessionFromHook('session_shutdown', ctx as Record<string, unknown>, event as TurnEndEvent);
+    await cleanupPollingForSessionEnd();
   });
+  pi.on?.('session:end', cleanupPollingForSessionEnd);
+  pi.on?.('runtime:end', cleanupPollingForSessionEnd);
+  pi.on?.('shutdown', cleanupPollingForSessionEnd);
+  pi.on?.('dispose', cleanupPollingForSessionEnd);
 
   pi.registerTool?.({
     name: 'byomem_runtime_status',
@@ -781,6 +824,78 @@ export default function (pi: ExtensionAPI) {
       } finally {
         fileDb.close();
       }
+    },
+  });
+
+  pi.registerTool?.({
+    name: 'byomem_file_search_polling_status',
+    label: 'BYOMem File Search Polling Status',
+    description: 'Inspect active-project file-search polling state without scanning.',
+    parameters: { type: 'object', properties: { baseDir: { type: 'string' } }, additionalProperties: false },
+    async execute(_toolCallId: string, params: unknown) {
+      const targetBaseDir = resolveFileSearchTargetBaseDir((params as { baseDir?: unknown })?.baseDir);
+      const polling = getFileSearchPollingStatus(targetBaseDir, { dbBaseDir: process.env.BYOMEM_RUNTIME_BASE_DIR ?? runtimeBaseDir });
+      const payload = { polling, status: polling };
+      return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
+    },
+  });
+
+  pi.registerTool?.({
+    name: 'byomem_file_search_polling_enable',
+    label: 'BYOMem File Search Polling Enable',
+    description: 'Enable session-owned active-project file-search polling.',
+    parameters: {
+      type: 'object',
+      properties: {
+        baseDir: { type: 'string' },
+        pollIntervalSeconds: { type: 'integer', minimum: 1 },
+        idleDisableAfterPolls: { type: 'integer', minimum: 1 },
+      },
+      additionalProperties: false,
+    },
+    async execute(_toolCallId: string, params: unknown) {
+      const intent = params as { baseDir?: unknown; pollIntervalSeconds?: unknown; idleDisableAfterPolls?: unknown };
+      const targetBaseDir = resolveActivePollingTargetBaseDir(intent?.baseDir);
+      const pollIntervalSeconds = normalizePositiveInteger(intent?.pollIntervalSeconds, 'pollIntervalSeconds', 60);
+      const idleDisableAfterPolls = intent?.idleDisableAfterPolls === undefined ? undefined : normalizePositiveInteger(intent.idleDisableAfterPolls, 'idleDisableAfterPolls');
+      if (activeFileSearchPoller) activeFileSearchPoller.stop(activeFileSearchPollingBaseDir === targetBaseDir ? 'manually-disabled' : 'not-active-project');
+      activeFileSearchPoller = new FileSearchActivePoller({
+        baseDir: targetBaseDir,
+        pollIntervalSeconds,
+        idleDisableAfterPolls,
+        dbBaseDir: process.env.BYOMEM_RUNTIME_BASE_DIR ?? runtimeBaseDir,
+        embeddingBaseUrl: embeddingConfig.embeddingBaseUrl,
+        embeddingModel: embeddingConfig.embeddingModel,
+        embeddingTimeoutMs: embeddingConfig.embeddingTimeoutMs,
+        embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
+        semanticSearchEnabled: false,
+      });
+      activeFileSearchPollingBaseDir = targetBaseDir;
+      const polling = activeFileSearchPoller.start();
+      const payload = { polling, status: polling };
+      return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
+    },
+  });
+
+  pi.registerTool?.({
+    name: 'byomem_file_search_polling_disable',
+    label: 'BYOMem File Search Polling Disable',
+    description: 'Disable session-owned active-project file-search polling.',
+    parameters: { type: 'object', properties: { baseDir: { type: 'string' }, reason: { type: 'string' } }, additionalProperties: false },
+    async execute(_toolCallId: string, params: unknown) {
+      const intent = params as { baseDir?: unknown; reason?: unknown };
+      const targetBaseDir = resolveActivePollingTargetBaseDir(intent?.baseDir);
+      const reasonText = normalizeText(intent?.reason);
+      const reason = reasonText ? normalizeFileSearchPollingDisabledReason(reasonText) : 'manually-disabled';
+      const polling = activeFileSearchPoller && activeFileSearchPollingBaseDir === targetBaseDir
+        ? activeFileSearchPoller.stop(reason)
+        : disableFileSearchPolling(targetBaseDir, reason, { dbBaseDir: process.env.BYOMEM_RUNTIME_BASE_DIR ?? runtimeBaseDir });
+      if (activeFileSearchPollingBaseDir === targetBaseDir) {
+        activeFileSearchPoller = undefined;
+        activeFileSearchPollingBaseDir = undefined;
+      }
+      const payload = { polling, status: polling };
+      return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
     },
   });
 

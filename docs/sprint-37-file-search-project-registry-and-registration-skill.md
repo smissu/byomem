@@ -17,6 +17,7 @@ The global file-search DB from Sprint 36 allows many projects to share one physi
   - source (`manual-register`, `manual-scan`, `manual-search`, `manual-status`, etc.)
   - timestamps such as `created_at`, `last_seen_at`, `registered_at`, `updated_at`
   - optional future-ready fields such as `poll_interval_seconds`, `last_scan_at`, `last_error`
+  - Sprint 39 polling fields: `polling_enabled`, `last_poll_at`, `next_poll_at`, `consecutive_no_change_polls`, `idle_disable_after_polls`, `polling_disabled_reason`
 - Record **seen** entries from explicit file-search interactions such as scan/search/status without enabling automation.
 - Add manual registry CLI commands:
   - `file-search-project-register --base-dir <project>`
@@ -55,6 +56,9 @@ The global file-search DB from Sprint 36 allows many projects to share one physi
 - [x] **AC37-12:** Registry commands do not start polling, watchers, daemons, background scans, or automatic project scans in this sprint.
 - [x] **AC37-13:** Existing Sprint 27–36 file-search behavior remains green.
 - [x] **AC37-14:** Docs clearly state polling/automation execution is deferred to a future sprint.
+
+## Sprint 39 update
+Sprint 39 implemented opt-in active-project polling on top of the registry. Registration alone still does **not** start scanning or polling. Polling requires explicit polling-specific Pi tools or CLI commands and remains process/session-owned, one-project-at-a-time, with no global loop over registered projects. Registry entries now also expose polling observability/config fields: `polling_enabled`, `poll_interval_seconds`, `last_poll_at`, `next_poll_at`, `consecutive_no_change_polls`, `idle_disable_after_polls`, `polling_disabled_reason`, and `last_scan_at`.
 
 ## Execution Mode
 standard

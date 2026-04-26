@@ -1,7 +1,7 @@
 # Semantic / Hybrid Document Search Runbook
 
 ## Status
-Sprint 32 adds semantic and hybrid search over the BYOMem file-search DB. Sprint 36 makes file-search DB storage global by default while preserving per-project `project_key` partitioning. Sprint 37 adds an explicit file-search project registry with `seen`, `enabled`, and `disabled` states for future scanner automation. Sprint 38 adds direct Pi extension file-search tools for search, status, manual scan, and registry management. The file-search stack remains physically separate from the memories DB and keeps SQLite FTS as the lexical baseline. Semantic and hybrid file-search are enabled by default, and when no remote embedding endpoint is configured the runtime uses deterministic fallback embeddings so semantic/hybrid search still works.
+Sprint 32 adds semantic and hybrid search over the BYOMem file-search DB. Sprint 36 makes file-search DB storage global by default while preserving per-project `project_key` partitioning. Sprint 37 adds an explicit file-search project registry with `seen`, `enabled`, and `disabled` states for future scanner automation. Sprint 38 adds direct Pi extension file-search tools for search, status, manual scan, and registry management. Sprint 39 adds explicit active-project file-search polling controls that remain default/global off. The file-search stack remains physically separate from the memories DB and keeps SQLite FTS as the lexical baseline. Semantic and hybrid file-search are enabled by default, and when no remote embedding endpoint is configured the runtime uses deterministic fallback embeddings so semantic/hybrid search still works.
 
 ## Prerequisites
 For real Ollama-backed semantic search, install/pull the embedding model:
@@ -46,6 +46,12 @@ Sprint 38 exposes direct Pi tools with these exact names:
 - `byomem_file_search_project_list`
 - `byomem_file_search_project_unregister`
 
+Sprint 39 adds polling-specific Pi tools:
+
+- `byomem_file_search_polling_status`
+- `byomem_file_search_polling_enable`
+- `byomem_file_search_polling_disable`
+
 These tools are the preferred agent interface when available. They use the target project root for identity and the global file-search DB for storage. `baseDir` always means the project root to search/scan/register, not the runtime DB directory.
 
 ### Active project / default `baseDir`
@@ -60,6 +66,7 @@ These tools are the preferred agent interface when available. They use the targe
 - `byomem_file_search_scan` performs one explicit synchronous manual scan so the index can catch up after known file edits.
 - Registry tools are explicit opt-in/soft-disable operations and do not scan or start background workers.
 - The direct tools do not rely on hidden polling, file watchers, or daemons.
+- Existing direct search/status/scan and registry tools remain non-polling by default. Polling only starts through the polling-specific enable surface.
 
 ### CLI fallback
 When the direct Pi tools are not available in the current session, use the CLI fallback below.
@@ -82,13 +89,71 @@ node ts/packages/runtime/dist/cli.js file-search-scan --base-dir /path/to/projec
 
 The file-search stack remains physically separate from the memories DB and keeps SQLite FTS as the lexical baseline.
 
+
+## Active-project file-search polling
+Sprint 39 adds opt-in polling for one active project in the current process/session. Polling is **default/global off**: opening BYOMem, using memory tools, using registry tools, and using existing file-search search/status/scan tools does not start a timer.
+
+### Pi polling tools
+
+Use these tools only when you intentionally want session-owned polling:
+
+- `byomem_file_search_polling_status` — read polling state for a project without scanning. `baseDir` is optional and defaults to the active project.
+- `byomem_file_search_polling_enable` — enable polling for the active project. `baseDir` is optional, but if provided it must match the active project. Parameters:
+  - `pollIntervalSeconds` — positive integer interval in seconds; defaults to `60` when omitted in the Pi tool.
+  - `idleDisableAfterPolls` — optional positive integer; after this many consecutive successful no-change poll scans, polling disables itself.
+- `byomem_file_search_polling_disable` — disable polling for a project. `baseDir` is optional and defaults to the active project; `reason` is optional and defaults to `manually-disabled`.
+
+Pi polling enable is active-project-gated. If no active project can be resolved, enable fails closed with a `no-active-project` error. If an explicit `baseDir` differs from the active project, enable fails closed with `not-active-project`. The status/disable tools use the normal file-search active-project defaulting behavior when `baseDir` is omitted.
+
+### CLI polling commands
+
+The CLI polling commands require an explicit `--base-dir`; they do not infer the active project and do not fall back to a temporary/runtime directory:
+
+```bash
+node ts/packages/runtime/dist/cli.js file-search-polling-status --base-dir /path/to/project --json
+node ts/packages/runtime/dist/cli.js file-search-polling-enable \
+  --base-dir /path/to/project \
+  --poll-interval-seconds 60 \
+  --idle-disable-after-polls 5 \
+  --json
+node ts/packages/runtime/dist/cli.js file-search-polling-disable --base-dir /path/to/project --json
+```
+
+CLI responses use the top-level shape `{ "polling": ..., "status": ... }`, where both values contain the same polling DTO. `--poll-interval-seconds` is required for CLI enable and must be a positive integer. `--idle-disable-after-polls` is optional and must be a positive integer when supplied.
+
+### Polling fields
+
+Polling status and registry serialization use stable snake_case fields:
+
+- `project_key` — collision-safe file-search project key for the target `base_dir`.
+- `base_dir` — canonical project root being polled or inspected.
+- `display_name` — display name derived from the project root.
+- `polling_enabled` — `true` only while polling is currently enabled for the project.
+- `poll_interval_seconds` — configured polling interval, or `null` when not configured.
+- `last_poll_at` — timestamp for the most recent poll attempt start, or `null` before the first poll.
+- `next_poll_at` — next scheduled poll timestamp while polling remains enabled; cleared to `null` when polling disables.
+- `consecutive_no_change_polls` — number of consecutive successful poll-triggered scans that found no indexed content changes. It resets to `0` when a poll detects changes.
+- `idle_disable_after_polls` — configured no-change shutoff threshold, or `null` when idle shutoff is not configured.
+- `polling_disabled_reason` — deterministic reason for a disabled state, such as `default-off`, `idle-no-changes`, `manually-disabled`, `session-ended`, `project-disabled`, `no-active-project`, `not-active-project`, `unregistered-project`, or `poll-error`.
+- `last_scan_at` — timestamp of the last successful completed scan recorded for polling/status purposes. Poll failures do not advance it.
+
+A no-change poll is counted only after a successful poll-triggered scan with `changedFiles === 0`, `deletedFiles === 0`, and `chunksWritten === 0`. Failed poll scans do not increment the no-change counter; failures disable polling with `poll-error`, clear `next_poll_at`, and surface through existing scanner/registry error fields.
+
+### Process/session ownership and operational expectations
+
+Polling is owned by the current Pi extension runtime/session or the explicit CLI command process that enabled/configured it. It does not create a detached daemon, launch agent, cross-session worker, filesystem watcher, or `fs.watch` listener. It targets exactly one project per owning process/session and never loops over all registered projects.
+
+When polling starts through the Pi tool, BYOMem records configuration in the registry, performs a baseline manual scan, and then uses an in-process timer for later poll scans. When the session/runtime ends, cleanup clears the active timer, clears `next_poll_at`, and records `session-ended`. Explicit disable clears the timer, clears `next_poll_at`, and records `manually-disabled` unless another reason is supplied. If idle shutoff reaches `idle_disable_after_polls`, polling disables itself with `idle-no-changes` and no later polls run until explicitly re-enabled.
+
+Polling is a freshness convenience, not a durable background indexing service. For deterministic one-off refreshes, continue to use `byomem_file_search_scan` or `file-search-scan`.
+
 ## File-search project registry
 Sprint 37 stores file-search project registry rows in the global file-search DB. The registry is separate from memories and is not inferred from saved memory records, `native-store.json`, `byomem-index.sqlite`, existing `byomem-file-search.sqlite` files, or memory search/write/prune activity.
 
 Registry states:
 
 - `seen` — the project was observed through explicit file-search scan/search/status, but is not eligible for future automation. Internal open-time scans do not opt projects into registry `seen` state.
-- `enabled` — the project was explicitly registered and is eligible for future polling automation when that feature is implemented.
+- `enabled` — the project was explicitly registered and is eligible for opt-in active-project polling. Registration alone does not start polling; a polling-specific enable tool/command is still required.
 - `disabled` — the project was explicitly unregistered; the row is retained, but it is not eligible for automation.
 
 Manual registry commands:
@@ -99,7 +164,7 @@ node ts/packages/runtime/dist/cli.js file-search-project-list --json
 node ts/packages/runtime/dist/cli.js file-search-project-unregister --base-dir /path/to/project
 ```
 
-`file-search-project-register` and `file-search-project-unregister` require an explicit `--base-dir`; they fail instead of operating on a generated temporary directory when the flag is omitted. `file-search-project-list --json` returns all states in stable `base_dir` order and does not require `--base-dir`. Registry commands use a registry-only global DB open path; they do not create project-local memory stores, do not scan project files, and do not instantiate scheduler polling, watchers, daemons, or background scans. The direct Pi registry tools follow the same rule.
+`file-search-project-register` and `file-search-project-unregister` require an explicit `--base-dir`; they fail instead of operating on a generated temporary directory when the flag is omitted. `file-search-project-list --json` returns all states in stable `base_dir` order and does not require `--base-dir`. Registry commands use a registry-only global DB open path; they do not create project-local memory stores, do not scan project files, and do not instantiate polling timers, watchers, daemons, or background scans. The direct Pi registry tools follow the same rule. Active-project polling must be enabled separately with the polling-specific Pi tools or CLI commands.
 
 ## Modes
 Document/file search supports:
@@ -178,13 +243,13 @@ ${BYOMEM_RUNTIME_BASE_DIR:-~/.byomem/runtime}/byomem-file-search.sqlite
 The scanner still walks the project passed with `--base-dir`, derives `project_key` from that project, and stores scanner status with the project path as `baseDir`. Multiple projects can share the same global file-search DB through `project_key` partitioning, while searches remain scoped to the active project. Existing project-local `byomem-file-search.sqlite` files are ignored by default; they are not migrated or deleted automatically.
 
 ## Indexing / refresh model
-The scanner is not a background daemon. File scanning remains synchronous/on-open or explicit via `scanAndIndex()`. Semantic embedding generation is async and explicit:
+The scanner is not a background daemon. File scanning remains synchronous/on-open, explicit via `scanAndIndex()`, or opt-in active-project polling while the current process/session owns a polling timer. Semantic embedding generation is async and explicit:
 
 ```js
 await store.fileSearchDb?.refreshSemanticIndex();
 ```
 
-This avoids hidden fire-and-forget embedding work inside synchronous scanner calls.
+This avoids hidden fire-and-forget embedding work inside synchronous scanner calls. Poll-triggered scans also do not perform hidden semantic embedding refreshes.
 
 ## Diagnostics
 Use scanner status for file discovery/indexing visibility:
@@ -215,6 +280,7 @@ Scanner status fields include:
 - progress counters: discoveredFiles, scannedFiles, indexedFiles, unchangedFiles, changedFiles, deletedFiles, ignoredFiles, errorFiles, chunksWritten, bytesRead, filesRemaining (`ignoredFiles` is a coarse ignored file/directory entry count)
 - database counts: indexedFiles, indexedChunks, changedRows, reconciledRows, projects
 - read-only embedding diagnostics when available
+- polling fields: polling_enabled, poll_interval_seconds, last_poll_at, next_poll_at, consecutive_no_change_polls, idle_disable_after_polls, polling_disabled_reason, last_scan_at
 
 Progress is intentionally narrow: the scanner remains synchronous, so a separate CLI process should be treated as reading the latest persisted scan snapshot. `file-search-status` opens the DB with open-time scanning disabled, so it does not walk/read/hash the project just to report status. Status reads do not start semantic embedding refreshes or hidden async scanner work.
 
