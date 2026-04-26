@@ -24,6 +24,7 @@
 
 ## Retrieval order
 - Keep memory retrieval separate from code search/indexing.
+- When investigating the codebase, prefer semantic search before `grep`, `find`, or other broad text searches.
 - Use canonical native BYOMem records as the source of truth.
 
 ## BYOMem extension policy

@@ -13,6 +13,8 @@ export interface FileSearchActivePollerOptions {
   embeddingTimeoutMs?: number;
   embeddingRequireRemote?: boolean;
   semanticSearchEnabled?: boolean;
+  scannerExcludedExtensions?: string[];
+  scannerBinaryDetectionEnabled?: boolean;
 }
 
 function validatePositiveInteger(value: number, name: string): number {
@@ -117,6 +119,8 @@ export class FileSearchActivePoller {
       semanticSearchEnabled: this.options.semanticSearchEnabled,
       scanOnOpen: false,
       schedulerEnabled: false,
+      scannerExcludedExtensions: this.options.scannerExcludedExtensions,
+      scannerBinaryDetectionEnabled: this.options.scannerBinaryDetectionEnabled,
     });
   }
 

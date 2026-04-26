@@ -10,6 +10,15 @@ function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'byomem-cli-'));
 }
 
+function indexedPaths(dir: string): string[] {
+  const fileDb = openFileSearchDb({ baseDir: dir, scanOnOpen: false, schedulerEnabled: false, semanticSearchEnabled: false });
+  try {
+    return (fileDb.db.prepare('SELECT path FROM indexed_files ORDER BY path').all() as Array<{ path: string }>).map((row) => row.path);
+  } finally {
+    fileDb.close();
+  }
+}
+
 describe('runtime cli', () => {
   const dirs: string[] = [];
   const originalFetch = globalThis.fetch;
@@ -161,6 +170,58 @@ describe('runtime cli', () => {
       },
       status: expect.objectContaining({ state: 'completed', trigger: 'manual' }),
     });
+  });
+
+  it('honors file-search scanner flags for explicit replacement semantics and binary opt-out', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    writeFileSync(join(dir, 'keep.txt'), 'keep body\n', 'utf8');
+    writeFileSync(join(dir, 'keep.db'), 'keep db body\n', 'utf8');
+    writeFileSync(join(dir, 'binary.bin'), Buffer.from([0x00, 0x01, 0x02, 0x61, 0x62, 0x63]));
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await main(['file-search-scan', '--base-dir', dir, '--json']);
+    expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      scanner: {
+        progress: expect.objectContaining({ errorFiles: 0 }),
+        database: expect.objectContaining({ indexedFiles: 1 }),
+      },
+    });
+    expect(indexedPaths(dir)).toEqual([join(dir, 'keep.txt')]);
+
+    await main(['file-search-scan', '--base-dir', dir, '--file-search-excluded-extensions', 'txt', '--file-search-binary-detection', 'false', '--json']);
+    expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      scanner: {
+        progress: expect.objectContaining({ errorFiles: 0, deletedFiles: expect.any(Number) }),
+      },
+    });
+    expect(indexedPaths(dir)).toEqual(expect.arrayContaining([join(dir, 'keep.db'), join(dir, 'binary.bin')]));
+    expect(indexedPaths(dir)).not.toEqual(expect.arrayContaining([join(dir, 'keep.txt')]));
+  });
+
+  it('treats an explicitly empty file-search exclusion env var as disabling defaults', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    writeFileSync(join(dir, 'keep.txt'), 'keep body\n', 'utf8');
+    writeFileSync(join(dir, 'keep.db'), 'keep db body\n', 'utf8');
+    const originalExcludedExtensions = process.env.BYOMEM_FILE_SEARCH_EXCLUDED_EXTENSIONS;
+    process.env.BYOMEM_FILE_SEARCH_EXCLUDED_EXTENSIONS = '';
+    try {
+      const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await main(['file-search-scan', '--base-dir', dir, '--json']);
+
+      expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+        scanner: {
+          progress: expect.objectContaining({ errorFiles: 0 }),
+          database: expect.objectContaining({ indexedFiles: 2 }),
+        },
+      });
+      expect(indexedPaths(dir)).toEqual(expect.arrayContaining([join(dir, 'keep.txt'), join(dir, 'keep.db')]));
+    } finally {
+      if (originalExcludedExtensions === undefined) delete process.env.BYOMEM_FILE_SEARCH_EXCLUDED_EXTENSIONS;
+      else process.env.BYOMEM_FILE_SEARCH_EXCLUDED_EXTENSIONS = originalExcludedExtensions;
+    }
   });
 
   it('updates explicit file-search scan counters after file changes and deletions', async () => {

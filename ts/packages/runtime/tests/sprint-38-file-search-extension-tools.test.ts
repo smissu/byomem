@@ -200,6 +200,33 @@ describe('Sprint 38 file-search extension direct tool contract RED tests', () =>
     expect(scan.scanner).not.toHaveProperty('database.projects');
   });
 
+  it('skips default database extensions and binary content through the direct Pi scan tool', async () => {
+    const projectDir = tempDir('byomem-s38-scan-');
+    const runtimeDir = tempDir('byomem-s38-scan-runtime-');
+    dirs.push(projectDir, runtimeDir);
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', runtimeDir);
+    writeFileSync(join(projectDir, 'keep.txt'), 'keep body\n', 'utf8');
+    writeFileSync(join(projectDir, 'artifact.db'), 'artifact body\n', 'utf8');
+    writeFileSync(join(projectDir, 'binary.bin'), Buffer.from([0x00, 0x01, 0x02, 0x61, 0x62, 0x63]));
+
+    const mod = await loadExtension();
+    const mock = makeMockPi();
+    mod.default(mock.api as never);
+
+    const scanTool = mock.tools.find((tool) => tool.name === 'byomem_file_search_scan')!;
+    const result = await scanTool.execute('1', { baseDir: projectDir }) as { scanner?: { progress?: { ignoredFiles?: number; errorFiles?: number } } };
+
+    const fileDb = openFileSearchDb({ baseDir: projectDir, dbBaseDir: runtimeDir, scanOnOpen: false, schedulerEnabled: false, semanticSearchEnabled: false });
+    try {
+      const indexedPaths = (fileDb.db.prepare('SELECT path FROM indexed_files ORDER BY path').all() as Array<{ path: string }>).map((row) => row.path);
+      expect(indexedPaths).toEqual([join(projectDir, 'keep.txt')]);
+      expect(result.scanner?.progress).toMatchObject({ ignoredFiles: expect.any(Number), errorFiles: 0 });
+      expect(result.scanner?.progress?.ignoredFiles).toBeGreaterThanOrEqual(2);
+    } finally {
+      fileDb.close();
+    }
+  });
+
   it('does not create a registry row when file-search status is invoked for a previously unseen temp baseDir', async () => {
     const projectDir = tempDir('byomem-s38-unseen-status-');
     dirs.push(projectDir);

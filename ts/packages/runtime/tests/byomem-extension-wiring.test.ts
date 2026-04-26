@@ -605,6 +605,59 @@ describe('byomem extension wiring', () => {
     });
   });
 
+  it('parses file_search excluded_extensions YAML forms without embedded quotes and keeps empty config lists disabling defaults', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
+
+    const bracketedConfigPath = join(dir, 'file-search-bracketed.yaml');
+    writeConfig(bracketedConfigPath, [
+      'file_search:',
+      '  excluded_extensions: [\'txt\', ".db"]',
+    ]);
+    vi.stubEnv('BYOMEM_CONFIG_PATH', bracketedConfigPath);
+    vi.resetModules();
+
+    let { byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts');
+    expect(statusFn()).toMatchObject({
+      fileSearchConfigSource: 'config',
+      fileSearchConfigPath: bracketedConfigPath,
+      fileSearchScannerExcludedExtensions: ['txt', '.db'],
+    });
+
+    const blockConfigPath = join(dir, 'file-search-block.yaml');
+    writeConfig(blockConfigPath, [
+      'file_search:',
+      '  excluded_extensions:',
+      "    - 'txt'",
+      '    - ".db"',
+    ]);
+    vi.stubEnv('BYOMEM_CONFIG_PATH', blockConfigPath);
+    vi.resetModules();
+
+    ({ byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts'));
+    expect(statusFn()).toMatchObject({
+      fileSearchConfigSource: 'config',
+      fileSearchConfigPath: blockConfigPath,
+      fileSearchScannerExcludedExtensions: ['txt', '.db'],
+    });
+
+    const emptyConfigPath = join(dir, 'file-search-empty.yaml');
+    writeConfig(emptyConfigPath, [
+      'file_search:',
+      '  excluded_extensions: []',
+    ]);
+    vi.stubEnv('BYOMEM_CONFIG_PATH', emptyConfigPath);
+    vi.resetModules();
+
+    ({ byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts'));
+    expect(statusFn()).toMatchObject({
+      fileSearchConfigSource: 'config',
+      fileSearchConfigPath: emptyConfigPath,
+      fileSearchScannerExcludedExtensions: [],
+    });
+  });
+
   it('returns a minimal DTO for byomem_search results and omits support fields', async () => {
     const mock = makeMockPi();
     extensionModule(mock.api as never);

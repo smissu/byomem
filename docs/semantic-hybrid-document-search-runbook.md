@@ -242,6 +242,18 @@ ${BYOMEM_RUNTIME_BASE_DIR:-~/.byomem/runtime}/byomem-file-search.sqlite
 
 The scanner still walks the project passed with `--base-dir`, derives `project_key` from that project, and stores scanner status with the project path as `baseDir`. Multiple projects can share the same global file-search DB through `project_key` partitioning, while searches remain scoped to the active project. Existing project-local `byomem-file-search.sqlite` files are ignored by default; they are not migrated or deleted automatically.
 
+## Scanner exclusions and binary handling
+
+The scanner now skips common database files by default before any UTF-8 content read:
+
+- `.db`
+- `.sqlite`
+- `.sqlite3`
+
+Scanner extension exclusions are case-insensitive and dot-normalized. An explicit configured list replaces the default list instead of merging with it, so `scannerExcludedExtensions: ['txt']` means only `.txt` is excluded. The same behavior applies through the CLI `--file-search-excluded-extensions` flag, the `BYOMEM_FILE_SEARCH_EXCLUDED_EXTENSIONS` environment variable, and the Pi extension `file_search.excluded_extensions` config key.
+
+Binary detection is enabled by default and runs before the full UTF-8 read so binary files are skipped without scanner failures. It can be disabled explicitly through `scannerBinaryDetectionEnabled`, the CLI `--file-search-binary-detection false` flag, the `BYOMEM_FILE_SEARCH_BINARY_DETECTION` environment variable, or the Pi extension `file_search.binary_detection` config key.
+
 ## Indexing / refresh model
 The scanner is not a background daemon. File scanning remains synchronous/on-open, explicit via `scanAndIndex()`, or opt-in active-project polling while the current process/session owns a polling timer. Semantic embedding generation is async and explicit:
 

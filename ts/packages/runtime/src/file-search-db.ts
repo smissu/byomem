@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, resolve, relative, sep, join, basename } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -28,6 +28,8 @@ export interface FileSearchDbOptions {
   scanOnOpen?: boolean;
   schedulerEnabled?: boolean;
   scannerStaleAfterMs?: number;
+  scannerExcludedExtensions?: string[];
+  scannerBinaryDetectionEnabled?: boolean;
 }
 
 export interface FileSearchEmbeddingDiagnostics {
@@ -154,6 +156,54 @@ const DEFAULT_SCANNER_STALE_AFTER_MS = 5 * 60_000;
 
 function isSQLiteCompanion(filePath: string): boolean {
   return /-(wal|shm)$/.test(filePath);
+}
+
+const DEFAULT_SCANNER_EXCLUDED_EXTENSIONS = ['.db', '.sqlite', '.sqlite3'];
+const SCANNER_BINARY_SAMPLE_BYTES = 4096;
+const SCANNER_BINARY_CONTROL_RATIO = 0.3;
+
+function normalizeScannerExcludedExtension(extension: string): string | undefined {
+  const trimmed = extension.trim().toLowerCase();
+  if (!trimmed) return undefined;
+  return trimmed.startsWith('.') ? trimmed : `.${trimmed}`;
+}
+
+function resolveScannerExcludedExtensions(options: FileSearchDbOptions): Set<string> {
+  const configured = options.scannerExcludedExtensions;
+  const raw = configured === undefined ? DEFAULT_SCANNER_EXCLUDED_EXTENSIONS : configured;
+  return new Set(raw.map((extension) => normalizeScannerExcludedExtension(extension)).filter((extension): extension is string => Boolean(extension)));
+}
+
+function matchesScannerExcludedExtension(filePath: string, extensions: Set<string>): boolean {
+  if (!extensions.size) return false;
+  const name = basename(filePath).toLowerCase();
+  for (const extension of extensions) {
+    if (name.endsWith(extension)) return true;
+  }
+  return false;
+}
+
+function readFileSample(filePath: string, sampleSize = SCANNER_BINARY_SAMPLE_BYTES): Buffer {
+  const handle = openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(sampleSize);
+    const bytesRead = readSync(handle, buffer, 0, sampleSize, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    closeSync(handle);
+  }
+}
+
+function isLikelyBinaryFile(filePath: string): boolean {
+  const sample = readFileSample(filePath);
+  if (sample.length === 0) return false;
+  if (sample.includes(0)) return true;
+  let suspicious = 0;
+  for (const byte of sample) {
+    if (byte === 9 || byte === 10 || byte === 12 || byte === 13) continue;
+    if (byte < 32) suspicious += 1;
+  }
+  return suspicious / sample.length > SCANNER_BINARY_CONTROL_RATIO;
 }
 
 export function isIgnoredFileSearchArtifact(filePath: string, baseDir?: string): boolean {
@@ -675,12 +725,14 @@ function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel
   return { changed: true, chunksWritten: chunks.length };
 }
 
-function scanAndIndexFiles(db: BetterSqliteDatabase, baseDir: string, progress: FileSearchScannerProgress, onProgress?: (currentPath?: string, lastPath?: string) => void): { lastPath?: string } {
+function scanAndIndexFiles(db: BetterSqliteDatabase, baseDir: string, progress: FileSearchScannerProgress, options: FileSearchDbOptions, onProgress?: (currentPath?: string, lastPath?: string) => void): { lastPath?: string } {
   const projectKey = deriveProjectKey(baseDir);
   const now = new Date().toISOString();
   const walked = walkFiles(baseDir);
   const files = walked.files.filter((filePath) => !isIgnoredInternalFile(filePath, baseDir));
   const seen = new Set<string>();
+  const excludedExtensions = resolveScannerExcludedExtensions(options);
+  const binaryDetectionEnabled = options.scannerBinaryDetectionEnabled ?? true;
   let lastPath: string | undefined;
   progress.discoveredFiles = files.length;
   progress.ignoredFiles = walked.ignoredFiles;
@@ -694,6 +746,18 @@ function scanAndIndexFiles(db: BetterSqliteDatabase, baseDir: string, progress: 
       onProgress?.(rel, lastPath);
       const stats = statSync(filePath);
       const prefilterId = `prefilter:${projectKey}:${rel}`;
+      if (matchesScannerExcludedExtension(filePath, excludedExtensions)) {
+        progress.ignoredFiles += 1;
+        progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
+        onProgress?.(rel, lastPath);
+        continue;
+      }
+      if (binaryDetectionEnabled && isLikelyBinaryFile(filePath)) {
+        progress.ignoredFiles += 1;
+        progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
+        onProgress?.(rel, lastPath);
+        continue;
+      }
       const content = readFileSync(filePath, 'utf8');
       progress.bytesRead = (progress.bytesRead ?? 0) + Buffer.byteLength(content, 'utf8');
       if (containsSensitiveFileSearchContent(content)) {
@@ -997,7 +1061,7 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
     };
     persistRunning();
     try {
-      const result = scanAndIndexFiles(db, projectBaseDir, progress, persistRunning);
+      const result = scanAndIndexFiles(db, projectBaseDir, progress, options, persistRunning);
       const completedAt = new Date().toISOString();
       persistScannerStatus(db, projectKey, {
         state: 'completed',

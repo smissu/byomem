@@ -25,6 +25,8 @@ type CliOptions = {
   embeddingTimeoutMs?: number;
   embeddingRequireRemote?: boolean;
   fileSearchSemanticEnabled?: boolean;
+  fileSearchScannerExcludedExtensions?: string[];
+  fileSearchBinaryDetectionEnabled?: boolean;
   generationBaseUrl?: string;
   generationModel?: string;
   generationTimeoutMs?: number;
@@ -119,7 +121,11 @@ function serializeFileSearchProject(project: ReturnType<typeof registerFileSearc
 function parseArgs(argv: string[]): { command?: string; options: CliOptions; payload: Record<string, string>; flags: { watch: boolean; watchInterval?: string; baseDirProvided: boolean } } {
   const payload: Record<string, string> = {};
   const flags = { watch: false, watchInterval: undefined as string | undefined, baseDirProvided: false };
-  const options: CliOptions = { baseDir: mkdtempSync(join(tmpdir(), 'byomem-cli-')) };
+  const options: CliOptions = {
+    baseDir: mkdtempSync(join(tmpdir(), 'byomem-cli-')),
+    fileSearchScannerExcludedExtensions: parseExtensionList(process.env.BYOMEM_FILE_SEARCH_EXCLUDED_EXTENSIONS),
+    fileSearchBinaryDetectionEnabled: parseBooleanFlag(process.env.BYOMEM_FILE_SEARCH_BINARY_DETECTION, 'BYOMEM_FILE_SEARCH_BINARY_DETECTION'),
+  };
   let command: string | undefined;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -150,6 +156,8 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--mode') { payload.mode = requireValue(next, '--mode'); i += 1; }
     else if (arg === '--limit') { payload.limit = requireValue(next, '--limit'); i += 1; }
     else if (arg === '--semantic-file-search') { options.fileSearchSemanticEnabled = true; }
+    else if (arg === '--file-search-excluded-extensions') { if (next === undefined) throw new Error('Missing value for --file-search-excluded-extensions'); options.fileSearchScannerExcludedExtensions = parseExtensionList(next); i += 1; }
+    else if (arg === '--file-search-binary-detection') { options.fileSearchBinaryDetectionEnabled = parseBooleanFlag(requireValue(next, '--file-search-binary-detection'), '--file-search-binary-detection'); i += 1; }
     else if (arg === '--prompt') { payload.prompt = requireValue(next, '--prompt'); i += 1; }
     else if (arg === '--text') { payload.text = requireValue(next, '--text'); i += 1; }
   }
@@ -162,6 +170,19 @@ function parsePositiveIntegerFlag(payload: Record<string, string>, key: string, 
   const value = Number(raw);
   if (!Number.isSafeInteger(value)) throw new Error(`${flag} must be a positive integer`);
   return value;
+}
+
+function parseBooleanFlag(value: string | undefined, flag: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  throw new Error(`${flag} must be true or false`);
+}
+
+function parseExtensionList(value: string | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  return value.split(',').map((part) => part.trim()).filter(Boolean);
 }
 
 function parseOptionalPositiveIntegerFlag(payload: Record<string, string>, key: string, flag: string): number | undefined {

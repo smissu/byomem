@@ -27,6 +27,7 @@ const runtimeBaseDir = process.env.BYOMEM_RUNTIME_BASE_DIR ?? resolveDefaultRunt
 const embeddingConfig = resolveEmbeddingConfig();
 const sessionCaptureConfig = resolveSessionCaptureConfig();
 const summarizerConfig = resolveSummarizerConfig();
+const fileSearchConfig = resolveFileSearchConfig();
 const nativeStore = openNativeStore({
   baseDir: runtimeBaseDir,
   embeddingBaseUrl: embeddingConfig.embeddingBaseUrl,
@@ -36,6 +37,8 @@ const nativeStore = openNativeStore({
   embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
   fileSearchScanOnOpen: false,
   fileSearchSchedulerEnabled: false,
+  fileSearchScannerExcludedExtensions: fileSearchConfig.excludedExtensions,
+  fileSearchBinaryDetectionEnabled: fileSearchConfig.binaryDetectionEnabled,
 });
 const readPath = openReadPath(nativeStore);
 const queueRuntime = openQueueRuntime(nativeStore, { baseDir: runtimeBaseDir });
@@ -82,6 +85,13 @@ export interface ByomemEmbeddingConfig {
   embeddingModel?: string;
   embeddingDimension?: number;
   embeddingTimeoutMs?: number;
+}
+
+export interface ByomemFileSearchConfig {
+  source: 'config' | 'env' | 'default';
+  configPath?: string;
+  excludedExtensions?: string[];
+  binaryDetectionEnabled?: boolean;
 }
 
 const SENSITIVE_OUTPUT_KEYS = new Set(['thinkingSignature', 'textSignature', 'encrypted_content', 'encryptedContent']);
@@ -235,6 +245,8 @@ function openDirectFileSearchDb(targetBaseDir: string) {
     embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
     scanOnOpen: false,
     schedulerEnabled: false,
+    scannerExcludedExtensions: fileSearchConfig.excludedExtensions,
+    scannerBinaryDetectionEnabled: fileSearchConfig.binaryDetectionEnabled,
   });
 }
 
@@ -401,6 +413,84 @@ function parsePositiveSafeIntegerConfig(value: string | undefined, name: string)
   const parsed = Number(raw);
   if (!Number.isSafeInteger(parsed)) throw new Error(`${name} must be a positive integer`);
   return parsed;
+}
+
+function parseBooleanText(value: string | undefined, name: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  throw new Error(`${name} must be true or false`);
+}
+
+function parseCommaSeparatedTextList(value: string | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  return value.split(',').map((part) => part.trim()).filter(Boolean);
+}
+
+function parseYamlListToken(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const quoted = trimmed.match(/^(['"])(.*)\1$/s)?.[2]?.trim();
+  return quoted !== undefined ? quoted : trimmed;
+}
+
+function parseYamlListTokens(value: string | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  return value.split(',').map((part) => parseYamlListToken(part)).filter((part): part is string => Boolean(part));
+}
+
+function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string[]; binaryDetectionEnabled?: boolean } {
+  const binaryDetectionEnabled = parseBooleanText(block.match(/binary_detection:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.binary_detection');
+  const bracketed = block.match(/excluded_extensions:\s*\[(.*?)\]/s)?.[1];
+  if (bracketed !== undefined) {
+    return {
+      excludedExtensions: parseYamlListTokens(bracketed),
+      ...(binaryDetectionEnabled !== undefined ? { binaryDetectionEnabled } : {}),
+    };
+  }
+  const multiline = block.match(/excluded_extensions:\s*\n((?:\s*-\s*.*\n?)+)/)?.[1];
+  if (multiline) {
+    return {
+      excludedExtensions: multiline
+        .split(/\r?\n/)
+        .map((line) => line.replace(/^\s*-\s*/, '').trim())
+        .map((line) => parseYamlListToken(line))
+        .filter((line): line is string => Boolean(line)),
+      ...(binaryDetectionEnabled !== undefined ? { binaryDetectionEnabled } : {}),
+    };
+  }
+  const inlineExcluded = block.match(/excluded_extensions:\s*([^\n]+)/)?.[1]?.trim();
+  return {
+    ...(inlineExcluded ? { excludedExtensions: parseYamlListTokens(inlineExcluded) } : {}),
+    ...(block.match(/excluded_extensions:\s*$/m) ? { excludedExtensions: [] } : {}),
+    ...(binaryDetectionEnabled !== undefined ? { binaryDetectionEnabled } : {}),
+  };
+}
+
+function resolveFileSearchConfig(): ByomemFileSearchConfig {
+  const configPath = resolveConfigPath();
+  const configContent = existsSync(configPath) ? readFileSync(configPath, 'utf8') : undefined;
+  const configBlock = configContent ? extractYamlBlock(configContent, 'file_search') : undefined;
+  const envExcludedExtensions = process.env.BYOMEM_FILE_SEARCH_EXCLUDED_EXTENSIONS;
+  const envBinaryDetection = process.env.BYOMEM_FILE_SEARCH_BINARY_DETECTION;
+  const hasEnv = envExcludedExtensions !== undefined || envBinaryDetection !== undefined;
+  const parsedConfig = configBlock ? parseFileSearchYamlConfig(configBlock) : undefined;
+  const excludedExtensions = hasEnv
+    ? parseCommaSeparatedTextList(envExcludedExtensions) ?? parsedConfig?.excludedExtensions
+    : parsedConfig?.excludedExtensions;
+  const binaryDetectionEnabled = hasEnv
+    ? parseBooleanText(envBinaryDetection, 'BYOMEM_FILE_SEARCH_BINARY_DETECTION') ?? parsedConfig?.binaryDetectionEnabled
+    : parsedConfig?.binaryDetectionEnabled;
+  if (hasEnv || configBlock) {
+    return {
+      source: hasEnv ? 'env' : 'config',
+      configPath: configBlock ? configPath : undefined,
+      excludedExtensions,
+      binaryDetectionEnabled,
+    };
+  }
+  return { source: 'default' };
 }
 
 function resolveEmbeddingConfig(): ByomemEmbeddingConfig {
@@ -626,6 +716,10 @@ export function byomem_runtime_status() {
     embeddingDimension: embeddingConfig.embeddingDimension,
     embeddingTimeoutMs: embeddingConfig.embeddingTimeoutMs,
     embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
+    fileSearchConfigSource: fileSearchConfig.source,
+    fileSearchConfigPath: fileSearchConfig.configPath,
+    fileSearchScannerExcludedExtensions: fileSearchConfig.excludedExtensions,
+    fileSearchBinaryDetectionEnabled: fileSearchConfig.binaryDetectionEnabled,
     summarizerConfigSource: summarizerConfig.source,
     summarizerConfigPath: summarizerConfig.configPath,
     summarizerBaseUrl: summarizerConfig.generationBaseUrl,
@@ -934,6 +1028,8 @@ export default function (pi: ExtensionAPI) {
         embeddingTimeoutMs: embeddingConfig.embeddingTimeoutMs,
         embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
         semanticSearchEnabled: false,
+        scannerExcludedExtensions: fileSearchConfig.excludedExtensions,
+        scannerBinaryDetectionEnabled: fileSearchConfig.binaryDetectionEnabled,
       });
       activeFileSearchPollingBaseDir = targetBaseDir;
       const polling = activeFileSearchPoller.start();

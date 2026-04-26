@@ -25,6 +25,8 @@ export interface NativeStoreOptions {
   fileSearchDbFile?: string;
   fileSearchDbBaseDir?: string;
   fileSearchSchedulerEnabled?: boolean;
+  fileSearchScannerExcludedExtensions?: string[];
+  fileSearchBinaryDetectionEnabled?: boolean;
 }
 
 export const storeKey = Symbol.for('byomem.runtime.nativeStore.singleWriter');
@@ -89,6 +91,8 @@ export function openNativeStore(options: NativeStoreOptions): NativeStore {
     embeddingBatchSize: options.fileSearchEmbeddingBatchSize,
     scanOnOpen: options.fileSearchScanOnOpen,
     schedulerEnabled: options.fileSearchSchedulerEnabled,
+    scannerExcludedExtensions: options.fileSearchScannerExcludedExtensions,
+    scannerBinaryDetectionEnabled: options.fileSearchBinaryDetectionEnabled,
   });
   const sidecarOwner = Object.freeze({ kind: 'native-store' as const });
   const snapshot = loadSnapshot(filePath);
