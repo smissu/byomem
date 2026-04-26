@@ -198,7 +198,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       : openNativeStore({
         ...options,
         embeddingRequireRemote: isFileSearchCommand ? options.embeddingRequireRemote : true,
-        fileSearchSemanticEnabled: isFileSearchCommand ? Boolean(options.fileSearchSemanticEnabled || options.embeddingBaseUrl) : options.fileSearchSemanticEnabled,
+        fileSearchSemanticEnabled: isFileSearchCommand ? options.fileSearchSemanticEnabled : undefined,
         fileSearchScanOnOpen: isFileSearchStatusCommand || isFileSearchScanCommand ? false : undefined,
       });
     queueRuntime = store ? openQueueRuntime(store, { baseDir: options.baseDir }) : undefined;

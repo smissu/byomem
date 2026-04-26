@@ -26,6 +26,7 @@ export interface FileSearchDbOptions {
   semanticSearchEnabled?: boolean;
   embeddingBatchSize?: number;
   scanOnOpen?: boolean;
+  schedulerEnabled?: boolean;
   scannerStaleAfterMs?: number;
 }
 
@@ -702,7 +703,7 @@ function embeddingConfiguredDimension(options: FileSearchDbOptions): number {
 }
 
 function semanticEnabled(options: FileSearchDbOptions): boolean {
-  return Boolean(options.semanticSearchEnabled || options.embeddingBaseUrl || options.embeddingRequireRemote);
+  return Boolean(options.semanticSearchEnabled ?? true);
 }
 
 function cacheId(textHash: string, model: string, configuredDimension: number): string {
@@ -790,6 +791,7 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
   ensureFileSearchProjectRegistrySchema(db);
   const projectKey = deriveProjectKey(projectBaseDir);
   const scanOnOpen = options.scanOnOpen ?? true;
+  const schedulerEnabled = options.schedulerEnabled ?? true;
   const scannerStaleAfterMs = options.scannerStaleAfterMs ?? DEFAULT_SCANNER_STALE_AFTER_MS;
   const runningOnOpen = readPersistedScannerStatus(db, projectKey)?.state === 'running';
   let activeRunId: string | undefined;
@@ -872,9 +874,11 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
     timeoutMs: options.embeddingTimeoutMs,
     requireRemote: options.embeddingRequireRemote,
   });
-  const scheduler = new FileIndexScheduler({
-    scanAndIndex: (scanOptions?: { trigger?: FileSearchScannerTrigger }) => runScan(scanOptions?.trigger ?? 'manual'),
-  } as FileSearchDbHandle, projectBaseDir, { maxActiveProjects: MAX_ACTIVE_PROJECTS, debounceWindowMs: DEBOUNCE_WINDOW_MS, backstopWindowMs: BACKSTOP_WINDOW_MS });
+  const scheduler = schedulerEnabled
+    ? new FileIndexScheduler({
+        scanAndIndex: (scanOptions?: { trigger?: FileSearchScannerTrigger }) => runScan(scanOptions?.trigger ?? 'manual'),
+      } as FileSearchDbHandle, projectBaseDir, { maxActiveProjects: MAX_ACTIVE_PROJECTS, debounceWindowMs: DEBOUNCE_WINDOW_MS, backstopWindowMs: BACKSTOP_WINDOW_MS })
+    : undefined;
 
   const handle: FileSearchDbHandle = {
     path,
@@ -882,7 +886,7 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
     semanticSearchEnabled: semanticEnabled(options),
     embeddingModel: embeddingModel(options),
     embeddingConfiguredDimension: embeddingConfiguredDimension(options),
-    refreshMetrics: scheduler.refreshMetrics,
+    refreshMetrics: scheduler?.refreshMetrics ?? { runs: 0, failures: 0, skips: 0, retries: 0 },
     scanAndIndex(scanOptions?: { trigger?: FileSearchScannerTrigger }): void {
       const trigger = scanOptions?.trigger ?? 'manual';
       runScan(trigger);
@@ -901,13 +905,13 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
       return semanticEnabled(options) ? embeddingClient.embed(truncateEmbeddingText(text)) : Promise.resolve(undefined);
     },
     scheduleRefresh(event: FileSearchRefreshEvent): void {
-      scheduler.scheduleRefresh(event);
+      scheduler?.scheduleRefresh(event);
     },
     flushScheduledRefreshes(): void {
-      scheduler.flushScheduledRefreshes();
+      scheduler?.flushScheduledRefreshes();
     },
     close(): void {
-      scheduler.close();
+      scheduler?.close();
       assertFileSearchDbPath(handle.path);
       db.close();
     },

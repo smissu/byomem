@@ -11,9 +11,12 @@ import { openQueueRuntime } from './queue-runtime.js';
 import { openReadPath } from './read.js';
 import { resolveRuntimeMode } from './runtime-mode.js';
 import { searchIndex } from './search-index.js';
+import { searchIndex as searchFileIndexForTool } from './file-search-query.js';
 import { captureSessionCheckpoint, type SessionCaptureInput } from './session-capture.js';
 import { openNativeStore } from './store.js';
 import { resolveActiveProjectContext } from './identity.js';
+import { listFileSearchProjects, markFileSearchProjectSeen, registerFileSearchProject, unregisterFileSearchProject } from './file-search-project-registry.js';
+import { openFileSearchDb, openFileSearchRegistryDb, type FileSearchDbHandle } from './file-search-db.js';
 
 function resolveDefaultRuntimeBaseDir(): string {
   return resolve(homedir(), '.byomem', 'runtime');
@@ -29,6 +32,8 @@ const nativeStore = openNativeStore({
   embeddingModel: embeddingConfig.embeddingModel,
   embeddingTimeoutMs: embeddingConfig.embeddingTimeoutMs,
   embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
+  fileSearchScanOnOpen: false,
+  fileSearchSchedulerEnabled: false,
 });
 const readPath = openReadPath(nativeStore);
 const queueRuntime = openQueueRuntime(nativeStore, { baseDir: runtimeBaseDir });
@@ -82,6 +87,12 @@ function normalizeText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length ? trimmed : undefined;
+}
+
+function normalizeRequiredBaseDir(value: unknown): string {
+  const baseDir = normalizeText(value);
+  if (!baseDir) throw new Error('Invalid file-search project baseDir');
+  return baseDir;
 }
 
 function normalizeScope(value: unknown): 'project' | 'dir' | 'user' | 'agent' | undefined {
@@ -155,6 +166,83 @@ function normalizePruneIntent(params: unknown) {
   throw new Error('Invalid byomem_prune intent');
 }
 
+function resolveFileSearchTargetBaseDir(baseDir?: unknown): string {
+  if (baseDir !== undefined) {
+    const explicitBaseDir = normalizeText(baseDir);
+    if (!explicitBaseDir) throw new Error('Invalid file-search project baseDir');
+    return resolve(explicitBaseDir);
+  }
+  const activeProject = resolveActiveProjectContext(process.env, process.cwd());
+  const resolved = normalizeText(activeProject.repoRoot);
+  if (!resolved) throw new Error('Unable to resolve active project for file-search tool; provide baseDir');
+  return resolve(resolved);
+}
+
+function openDirectFileSearchDb(targetBaseDir: string) {
+  return openFileSearchDb({ baseDir: targetBaseDir, projectBaseDir: targetBaseDir, scanOnOpen: false, schedulerEnabled: false });
+}
+
+function openDirectFileSearchRegistryDb() {
+  return openFileSearchRegistryDb({ dbBaseDir: process.env.BYOMEM_RUNTIME_BASE_DIR ?? runtimeBaseDir });
+}
+
+function serializeFileSearchResult(result: { id?: unknown; score?: unknown; file?: { projectKey?: unknown; path?: unknown; chunkIndex?: unknown; chunkText?: unknown; chunkHash?: unknown; lexicalScore?: unknown; semanticScore?: unknown } }) {
+  const file = result.file;
+  return {
+    id: typeof result.id === 'string' ? result.id : undefined,
+    score: typeof result.score === 'number' ? result.score : undefined,
+    file: file ? {
+      project_key: typeof file.projectKey === 'string' ? file.projectKey : undefined,
+      path: typeof file.path === 'string' ? file.path : undefined,
+      chunk_index: typeof file.chunkIndex === 'number' ? file.chunkIndex : undefined,
+      chunk_text: typeof file.chunkText === 'string' ? file.chunkText : undefined,
+      chunk_hash: typeof file.chunkHash === 'string' ? file.chunkHash : undefined,
+      lexical_score: typeof file.lexicalScore === 'number' ? file.lexicalScore : undefined,
+      semantic_score: typeof file.semanticScore === 'number' ? file.semanticScore : undefined,
+    } : undefined,
+  };
+}
+
+async function searchFileIndexDirect(targetBaseDir: string, query: { query: string; mode?: 'fts' | 'semantic' | 'hybrid'; limit?: number }) {
+  const fileDb = openDirectFileSearchDb(targetBaseDir);
+  try {
+    const store = {
+      baseDir: targetBaseDir,
+      fileSearchDb: fileDb,
+      fileSearchProjectBaseDir: targetBaseDir,
+    } as never;
+    const hits = await searchFileIndexForTool(store, query as never);
+    return hits.map(serializeFileSearchResult);
+  } finally {
+    fileDb.close();
+  }
+}
+
+function serializeScannerStatus(status: ReturnType<NonNullable<ReturnType<typeof openFileSearchDb>['getScannerStatus']>>) {
+  return { scanner: status, status };
+}
+
+function serializeProjectEntry(entry: ReturnType<typeof listFileSearchProjects>[number]) {
+  return {
+    project_key: entry.projectKey,
+    base_dir: entry.baseDir,
+    display_name: entry.displayName,
+    state: entry.state,
+    source: entry.source,
+    poll_interval_seconds: entry.pollIntervalSeconds,
+    created_at: entry.createdAt,
+    updated_at: entry.updatedAt,
+    last_seen_at: entry.lastSeenAt,
+    registered_at: entry.registeredAt,
+    last_scan_at: entry.lastScanAt,
+    last_error: entry.lastError,
+  };
+}
+
+function serializeProjectEntryList(entries: ReturnType<typeof listFileSearchProjects>) {
+  return entries.map(serializeProjectEntry);
+}
+
 function extractYamlBlock(content: string, key: string): string | undefined {
   const match = content.match(new RegExp(`${key}:\\s*([\\s\\S]*?)(?:\\n\\S|$)`));
   return match?.[1] ?? undefined;
@@ -187,7 +275,6 @@ function parseConfigYaml(content: string): { embeddings?: { base_url?: string; m
     },
   };
 }
-
 
 function resolveConfigPath(): string {
   return process.env.BYOMEM_CONFIG_PATH ?? resolve(homedir(), '.byomem', 'config.yaml');
@@ -627,6 +714,126 @@ export default function (pi: ExtensionAPI) {
       } as never);
       if (!result?.record) throw new Error('Failed to persist byomem_prune intent');
       return { content: [{ type: 'text', text: safeJson(result) }], details: result };
+    },
+  });
+
+  pi.registerTool?.({
+    name: 'byomem_file_search',
+    label: 'BYOMem File Search',
+    description: 'Search indexed project files.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        mode: { type: 'string', enum: ['fts', 'semantic', 'hybrid'] },
+        limit: { type: 'integer', minimum: 1 },
+        baseDir: { type: 'string' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    async execute(_toolCallId: string, params: unknown) {
+      const intent = params as { query?: unknown; mode?: unknown; limit?: unknown; baseDir?: unknown };
+      const query = normalizeText(intent?.query);
+      if (!query) throw new Error('Invalid byomem_file_search intent: query is required');
+      const mode = intent?.mode === undefined ? 'hybrid' : intent.mode;
+      if (mode !== 'fts' && mode !== 'semantic' && mode !== 'hybrid') throw new Error('Invalid byomem_file_search intent: invalid mode');
+      const limit = intent?.limit === undefined ? 10 : intent.limit;
+      if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1) throw new Error('Invalid byomem_file_search intent: limit must be a positive integer');
+      const targetBaseDir = resolveFileSearchTargetBaseDir(intent?.baseDir);
+      const results = await searchFileIndexDirect(targetBaseDir, { query, mode, limit });
+      return { content: [{ type: 'text', text: safeJson({ results }) }], details: { results }, results };
+    },
+  });
+
+  pi.registerTool?.({
+    name: 'byomem_file_search_status',
+    label: 'BYOMem File Search Status',
+    description: 'Inspect scanner status for a project without scanning.',
+    parameters: { type: 'object', properties: { baseDir: { type: 'string' } }, additionalProperties: false },
+    async execute(_toolCallId: string, params: unknown) {
+      const targetBaseDir = resolveFileSearchTargetBaseDir((params as { baseDir?: unknown })?.baseDir);
+      const fileDb = openDirectFileSearchDb(targetBaseDir);
+      try {
+        const scanner = fileDb.getScannerStatus();
+        markFileSearchProjectSeen(fileDb.db, targetBaseDir, 'manual-status');
+        const payload = serializeScannerStatus(scanner);
+        return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
+      } finally {
+        fileDb.close();
+      }
+    },
+  });
+
+  pi.registerTool?.({
+    name: 'byomem_file_search_scan',
+    label: 'BYOMem File Search Scan',
+    description: 'Trigger one manual file-search scan for a project.',
+    parameters: { type: 'object', properties: { baseDir: { type: 'string' } }, additionalProperties: false },
+    async execute(_toolCallId: string, params: unknown) {
+      const targetBaseDir = resolveFileSearchTargetBaseDir((params as { baseDir?: unknown })?.baseDir);
+      const fileDb = openDirectFileSearchDb(targetBaseDir);
+      try {
+        fileDb.scanAndIndex({ trigger: 'manual' });
+        const scanner = fileDb.getScannerStatus();
+        const payload = serializeScannerStatus(scanner);
+        return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
+      } finally {
+        fileDb.close();
+      }
+    },
+  });
+
+  pi.registerTool?.({
+    name: 'byomem_file_search_project_register',
+    label: 'BYOMem File Search Project Register',
+    description: 'Register a project for file search.',
+    parameters: { type: 'object', properties: { baseDir: { type: 'string' } }, required: ['baseDir'], additionalProperties: false },
+    async execute(_toolCallId: string, params: unknown) {
+      const baseDir = normalizeRequiredBaseDir((params as { baseDir?: unknown })?.baseDir);
+      const registryDb = openDirectFileSearchRegistryDb();
+      try {
+        const project = registerFileSearchProject(registryDb.db, baseDir);
+        const serialized = serializeProjectEntry(project);
+        return { content: [{ type: 'text', text: safeJson(serialized) }], details: serialized, ...serialized };
+      } finally {
+        registryDb.close();
+      }
+    },
+  });
+
+  pi.registerTool?.({
+    name: 'byomem_file_search_project_list',
+    label: 'BYOMem File Search Project List',
+    description: 'List registered file-search projects.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    async execute() {
+      const registryDb = openDirectFileSearchRegistryDb();
+      try {
+        const projects = serializeProjectEntryList(listFileSearchProjects(registryDb.db));
+        const result = { projects };
+        return { content: [{ type: 'text', text: safeJson(result) }], details: result, ...result };
+      } finally {
+        registryDb.close();
+      }
+    },
+  });
+
+  pi.registerTool?.({
+    name: 'byomem_file_search_project_unregister',
+    label: 'BYOMem File Search Project Unregister',
+    description: 'Soft-disable a registered file-search project.',
+    parameters: { type: 'object', properties: { baseDir: { type: 'string' } }, required: ['baseDir'], additionalProperties: false },
+    async execute(_toolCallId: string, params: unknown) {
+      const baseDir = normalizeRequiredBaseDir((params as { baseDir?: unknown })?.baseDir);
+      const registryDb = openDirectFileSearchRegistryDb();
+      try {
+        const project = unregisterFileSearchProject(registryDb.db, baseDir);
+        const serialized = serializeProjectEntry(project);
+        return { content: [{ type: 'text', text: safeJson(serialized) }], details: serialized, ...serialized };
+      } finally {
+        registryDb.close();
+      }
     },
   });
 

@@ -76,17 +76,15 @@ async function querySemantic(store: NativeStore, projectKey: string, query: stri
     JOIN file_records fr ON fr.id = fc.file_record_id
     WHERE e.project_key = ?
       AND e.model = ?
-      AND e.configured_dimension = ?
       AND e.status = 'ready'
       AND e.chunk_hash = fc.chunk_hash
     ORDER BY e.updated_at DESC
-  `).all(projectKey, fileDb.embeddingModel, fileDb.embeddingConfiguredDimension) as Array<FileSearchRow & { embedding: Buffer; dimension: number }>;
+  `).all(projectKey, fileDb.embeddingModel) as Array<FileSearchRow & { embedding: Buffer; dimension: number }>;
   return rows
     .map((row) => {
       const semanticScore = cosineSimilarity(queryVector, decodeEmbedding(row.embedding, row.dimension));
       return { ...row, semanticScore, score: semanticScore };
     })
-    .filter((row) => (row.semanticScore ?? 0) >= 0.35)
     .sort((a, b) => (b.semanticScore ?? 0) - (a.semanticScore ?? 0) || a.path.localeCompare(b.path) || a.chunk_index - b.chunk_index)
     .slice(0, limit);
 }
@@ -152,5 +150,6 @@ export async function searchIndex(store: NativeStore, query: FileSearchQuery): P
   const semanticRows = await querySemantic(store, projectKey, query.query, mode === 'hybrid' ? limit * 2 : limit);
   if (mode === 'semantic') return semanticRows.slice(0, limit).map(buildHit);
   if (!semanticRows.length) return ftsRows.slice(0, limit).map(buildHit);
-  return blendHits(ftsRows, semanticRows, limit).map(buildHit);
+  const blended = blendHits(ftsRows, semanticRows, limit);
+  return (blended.length ? blended : semanticRows.slice(0, limit)).map(buildHit);
 }

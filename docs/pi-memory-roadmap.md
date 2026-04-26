@@ -69,6 +69,7 @@ Memories move through a simple state model:
 - [Sprint 35] sprint-35-file-search-cli-result-controls.md — file-search CLI result limit controls
 - [Sprint 36] sprint-36-global-file-search-db-decoupling.md — decouple global file-search DB storage from scanned project roots
 - [Sprint 37] sprint-37-file-search-project-registry-and-registration-skill.md — explicit file-search project registry and agent registration skill
+- [Sprint 38] sprint-38-pi-extension-file-search-tools.md — direct Pi extension tools for file search, scanner status, explicit scan trigger, and registry management
 
 
 ## Cross-sprint dependencies

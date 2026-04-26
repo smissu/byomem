@@ -46,7 +46,7 @@ async function remoteEmbedding(url: string, model: string, text: string, timeout
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model, prompt: text }),
+      body: JSON.stringify({ model, prompt: text, input: text }),
       signal: controller?.signal,
     });
     if (!response.ok) return undefined;

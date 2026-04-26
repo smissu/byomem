@@ -170,7 +170,7 @@ describe('runtime cli', () => {
     expect(status.progress.deletedFiles).toBeGreaterThanOrEqual(1);
   });
 
-  it('runs file-search without embedding config by degrading default hybrid mode to FTS', async () => {
+  it('runs file-search without embedding config by default in hybrid mode', async () => {
     const dir = tempDir();
     dirs.push(dir);
     writeFileSync(join(dir, 'lexical.txt'), 'lexical only body\n', 'utf8');
@@ -180,6 +180,19 @@ describe('runtime cli', () => {
 
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
       results: [expect.objectContaining({ file: expect.objectContaining({ path: expect.stringContaining('lexical.txt') }) })],
+    });
+  });
+
+  it('runs semantic file-search without --semantic-file-search or embedding base URL', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    writeFileSync(join(dir, 'alpha.txt'), 'alpha target body\n', 'utf8');
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await main(['file-search', '--base-dir', dir, '--mode', 'semantic', '--query', 'alpha target body']);
+
+    expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      results: [expect.objectContaining({ file: expect.objectContaining({ path: expect.stringContaining('alpha.txt') }) })],
     });
   });
 
@@ -227,7 +240,7 @@ describe('runtime cli', () => {
     }) as typeof fetch;
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await main(['file-search', '--base-dir', dir, '--embedding-base-url', 'http://localhost:11434', '--semantic-file-search', '--mode', 'semantic', '--query', 'meaning query']);
+    await main(['file-search', '--base-dir', dir, '--mode', 'semantic', '--query', 'meaning query']);
 
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
       results: [expect.objectContaining({ file: expect.objectContaining({ path: expect.stringContaining('alpha.txt') }) })],

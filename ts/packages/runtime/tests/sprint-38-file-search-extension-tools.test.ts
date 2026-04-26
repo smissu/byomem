@@ -1,0 +1,228 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+function tempDir(prefix = 'byomem-s38-'): string {
+  return mkdtempSync(join(tmpdir(), prefix));
+}
+
+type RegisteredTool = {
+  name: string;
+  label?: string;
+  description?: string;
+  parameters?: unknown;
+  execute: (...args: any[]) => Promise<unknown>;
+};
+
+function makeMockPi() {
+  const tools: RegisteredTool[] = [];
+  const commands: Record<string, { description: string; handler: (...args: any[]) => Promise<void> }> = {};
+  const events: Record<string, Array<(...args: any[]) => any>> = {};
+  return {
+    tools,
+    commands,
+    events,
+    api: {
+      on(name: string, handler: (...args: any[]) => any) {
+        events[name] ??= [];
+        events[name].push(handler);
+      },
+      registerTool(tool: RegisteredTool) {
+        tools.push(tool);
+      },
+      registerCommand(name: string, command: { description: string; handler: (...args: any[]) => Promise<void> }) {
+        commands[name] = command;
+      },
+    },
+  };
+}
+
+async function loadExtension() {
+  vi.resetModules();
+  return import('../src/pi-extension.ts');
+}
+
+describe('Sprint 38 file-search extension direct tool contract RED tests', () => {
+  const dirs: string[] = [];
+  const originalRuntimeBase = process.env.BYOMEM_RUNTIME_BASE_DIR;
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+    if (originalRuntimeBase === undefined) delete process.env.BYOMEM_RUNTIME_BASE_DIR;
+    else process.env.BYOMEM_RUNTIME_BASE_DIR = originalRuntimeBase;
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+
+  it('registers the six direct file-search tools with strict schemas', async () => {
+    const mod = await loadExtension();
+    const mock = makeMockPi();
+    mod.default(mock.api as never);
+
+    expect(mock.tools.map((tool) => tool.name)).toEqual([
+      'byomem_runtime_status',
+      'byomem_search',
+      'byomem_store',
+      'byomem_prune',
+      'byomem_file_search',
+      'byomem_file_search_status',
+      'byomem_file_search_scan',
+      'byomem_file_search_project_register',
+      'byomem_file_search_project_list',
+      'byomem_file_search_project_unregister',
+    ]);
+
+    expect(mock.tools.find((tool) => tool.name === 'byomem_file_search')?.parameters).toEqual({
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        mode: { type: 'string', enum: ['fts', 'semantic', 'hybrid'] },
+        limit: { type: 'integer', minimum: 1 },
+        baseDir: { type: 'string' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    });
+    expect(mock.tools.find((tool) => tool.name === 'byomem_file_search_status')?.parameters).toEqual({
+      type: 'object',
+      properties: { baseDir: { type: 'string' } },
+      additionalProperties: false,
+    });
+    expect(mock.tools.find((tool) => tool.name === 'byomem_file_search_scan')?.parameters).toEqual({
+      type: 'object',
+      properties: { baseDir: { type: 'string' } },
+      additionalProperties: false,
+    });
+    expect(mock.tools.find((tool) => tool.name === 'byomem_file_search_project_register')?.parameters).toEqual({
+      type: 'object',
+      properties: { baseDir: { type: 'string' } },
+      required: ['baseDir'],
+      additionalProperties: false,
+    });
+    expect(mock.tools.find((tool) => tool.name === 'byomem_file_search_project_list')?.parameters).toEqual({
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    });
+    expect(mock.tools.find((tool) => tool.name === 'byomem_file_search_project_unregister')?.parameters).toEqual({
+      type: 'object',
+      properties: { baseDir: { type: 'string' } },
+      required: ['baseDir'],
+      additionalProperties: false,
+    });
+  });
+
+  it('rejects blank or missing active project resolution for file-search tools instead of falling back to runtime storage', async () => {
+    const noProjectDir = tempDir('byomem-s38-no-project-');
+    dirs.push(noProjectDir);
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(noProjectDir);
+    const mod = await loadExtension();
+    const mock = makeMockPi();
+    mod.default(mock.api as never);
+
+    const searchTool = mock.tools.find((tool) => tool.name === 'byomem_file_search')!;
+    await expect(searchTool.execute('2', { query: 'needle', baseDir: '   ' })).rejects.toThrow(/baseDir/i);
+    cwdSpy.mockRestore();
+  });
+
+  it('validates query, mode, and positive integer limit for byomem_file_search', async () => {
+    const validateDir = tempDir('byomem-s38-validate-');
+    dirs.push(validateDir);
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(validateDir);
+    const mod = await loadExtension();
+    const mock = makeMockPi();
+    mod.default(mock.api as never);
+
+    const searchTool = mock.tools.find((tool) => tool.name === 'byomem_file_search')!;
+    await expect(searchTool.execute('1', {})).rejects.toThrow(/query/i);
+    await expect(searchTool.execute('2', { query: '   ' })).rejects.toThrow(/query/i);
+    await expect(searchTool.execute('3', { query: 'needle', mode: 'lexical' })).rejects.toThrow(/mode/i);
+    await expect(searchTool.execute('4', { query: 'needle', limit: 0 })).rejects.toThrow(/limit/i);
+    await expect(searchTool.execute('5', { query: 'needle', limit: 1.5 })).rejects.toThrow(/limit/i);
+    await expect(searchTool.execute('6', { query: 'needle', limit: '2' })).rejects.toThrow(/limit/i);
+    cwdSpy.mockRestore();
+  });
+
+  it('keeps same-basename projects isolated and does not implicitly scan or refresh semantic embeddings on file search', async () => {
+    const projectA = tempDir('byomem-s38-a-');
+    const projectB = tempDir('byomem-s38-b-');
+    dirs.push(projectA, projectB);
+    writeFileSync(join(projectA, 'same.txt'), 'alpha same basename body\n', 'utf8');
+    writeFileSync(join(projectB, 'same.txt'), 'beta same basename body\n', 'utf8');
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', tempDir('byomem-s38-runtime-'));
+
+    const mod = await loadExtension();
+    const mock = makeMockPi();
+    mod.default(mock.api as never);
+
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ embedding: [1, 0, 0] }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const searchTool = mock.tools.find((tool) => tool.name === 'byomem_file_search')!;
+    const result = await searchTool.execute('1', { query: 'same', baseDir: projectA, mode: 'hybrid', limit: 5 }) as { results?: Array<{ file?: { path?: string; project_key?: string } }> };
+
+    expect(result).toMatchObject({ results: expect.any(Array) });
+    expect((result.results ?? []).every((hit) => hit.file && typeof hit.file.project_key === 'string')).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(existsSync(join(projectA, 'byomem-index.sqlite'))).toBe(false);
+    expect(existsSync(join(projectB, 'byomem-index.sqlite'))).toBe(false);
+  });
+
+  it('returns scanner status and manual scan shapes without scheduler timers or scan side effects from status', async () => {
+    const projectDir = tempDir('byomem-s38-status-');
+    dirs.push(projectDir);
+    writeFileSync(join(projectDir, 'status.txt'), 'status body\n', 'utf8');
+
+    const mod = await loadExtension();
+    const mock = makeMockPi();
+    mod.default(mock.api as never);
+
+    const statusTool = mock.tools.find((tool) => tool.name === 'byomem_file_search_status')!;
+    const scanTool = mock.tools.find((tool) => tool.name === 'byomem_file_search_scan')!;
+
+    const status = await statusTool.execute('1', { baseDir: projectDir }) as { scanner?: Record<string, unknown>; status?: Record<string, unknown> };
+    expect(status).toMatchObject({ scanner: expect.any(Object), status: expect.any(Object) });
+    expect(existsSync(join(projectDir, 'native-store.json'))).toBe(false);
+
+    const scan = await scanTool.execute('2', { baseDir: projectDir }) as { scanner?: Record<string, unknown>; status?: Record<string, unknown> };
+    expect(scan).toMatchObject({ scanner: expect.any(Object), status: expect.any(Object) });
+  });
+
+  it('register/list/unregister tools require explicit baseDir on register/unregister and do not enable registry from memory tools', async () => {
+    const projectDir = tempDir('byomem-s38-registry-');
+    const runtimeDir = tempDir('byomem-s38-registry-runtime-');
+    dirs.push(projectDir, runtimeDir);
+    writeFileSync(join(projectDir, 'registry.txt'), 'registry body\n', 'utf8');
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', runtimeDir);
+
+    const mod = await loadExtension();
+    const mock = makeMockPi();
+    mod.default(mock.api as never);
+
+    const registerTool = mock.tools.find((tool) => tool.name === 'byomem_file_search_project_register')!;
+    const listTool = mock.tools.find((tool) => tool.name === 'byomem_file_search_project_list')!;
+    const unregisterTool = mock.tools.find((tool) => tool.name === 'byomem_file_search_project_unregister')!;
+    const storeTool = mock.tools.find((tool) => tool.name === 'byomem_store')!;
+
+    await expect(registerTool.execute('1', {})).rejects.toThrow(/baseDir/i);
+    await expect(registerTool.execute('2', { baseDir: '   ' })).rejects.toThrow(/baseDir/i);
+    await expect(unregisterTool.execute('3', {})).rejects.toThrow(/baseDir/i);
+    await expect(unregisterTool.execute('4', { baseDir: '   ' })).rejects.toThrow(/baseDir/i);
+
+    const listResult = await listTool.execute('5', {}) as { content: { text: string }[]; details?: { projects?: unknown[] } };
+    const list = listResult.details ?? JSON.parse(listResult.content[0].text) as { projects?: unknown[] };
+    expect(list).toMatchObject({ projects: expect.any(Array) });
+
+    await storeTool.execute('6', {
+      scope: 'project',
+      identity: { namespace: 's38', leafName: 'memory-regression', parentContext: 'root' },
+      content: { text: 'memory tool should not create file-search registry entries' },
+      provenance: { source: 'test' },
+    });
+    expect(list.projects ?? []).toEqual([]);
+    expect(existsSync(join(projectDir, 'byomem-file-search.sqlite'))).toBe(false);
+  });
+});

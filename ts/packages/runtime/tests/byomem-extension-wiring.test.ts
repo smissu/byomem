@@ -101,6 +101,12 @@ describe('byomem extension wiring', () => {
       'byomem_search',
       'byomem_store',
       'byomem_prune',
+      'byomem_file_search',
+      'byomem_file_search_status',
+      'byomem_file_search_scan',
+      'byomem_file_search_project_register',
+      'byomem_file_search_project_list',
+      'byomem_file_search_project_unregister',
     ]);
     expect(mock.tools.find((tool) => tool.name === 'byomem_runtime_status')!.parameters).toEqual({
       type: 'object',

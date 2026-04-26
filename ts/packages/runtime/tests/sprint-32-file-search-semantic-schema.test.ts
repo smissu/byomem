@@ -48,7 +48,7 @@ describe('Sprint 32 file-search semantic schema and lifecycle', () => {
     writeFileSync(join(dir, 'alpha.txt'), 'alpha semantic body\n', 'utf8');
     const mock = mockEmbeddings();
     try {
-      const store = openNativeStore({ baseDir: dir, embeddingBaseUrl: 'http://localhost:11434', embeddingModel: 'nomic-embed-text', fileSearchSemanticEnabled: true });
+      const store = openNativeStore({ baseDir: dir, embeddingBaseUrl: 'http://localhost:11434', embeddingModel: 'nomic-embed-text' });
       stores.push(store);
       await store.fileSearchDb?.refreshSemanticIndex();
 
@@ -69,7 +69,7 @@ describe('Sprint 32 file-search semantic schema and lifecycle', () => {
     writeFileSync(filePath, 'alpha semantic body\n', 'utf8');
     const mock = mockEmbeddings();
     try {
-      const store = openNativeStore({ baseDir: dir, embeddingBaseUrl: 'http://localhost:11434', fileSearchSemanticEnabled: true });
+      const store = openNativeStore({ baseDir: dir, embeddingBaseUrl: 'http://localhost:11434' });
       stores.push(store);
       await store.fileSearchDb?.refreshSemanticIndex();
       await store.fileSearchDb?.refreshSemanticIndex();
@@ -87,6 +87,18 @@ describe('Sprint 32 file-search semantic schema and lifecycle', () => {
     } finally {
       mock.restore();
     }
+  });
+
+  it('defaults file-search diagnostics to semantic enabled without embedding config', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    writeFileSync(join(dir, 'alpha.txt'), 'alpha lexical body\n', 'utf8');
+
+    const store = openNativeStore({ baseDir: dir });
+    stores.push(store);
+
+    expect(store.fileSearchDb?.getScannerStatus().embeddings).toMatchObject({ enabled: true });
+    expect(store.fileSearchDb?.semanticSearchEnabled).toBe(true);
   });
 
   it('keeps FTS usable when semantic search is disabled or remote embeddings fail without remote-required mode', async () => {

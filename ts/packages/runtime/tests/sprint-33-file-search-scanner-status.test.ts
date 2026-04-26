@@ -170,7 +170,7 @@ describe('Sprint 33 file-search scanner status/progress RED contract', () => {
     expect(status.database.indexedChunks).toBeGreaterThanOrEqual(2);
     expect(status.database.changedRows).toBeGreaterThanOrEqual(1);
     expect(status.database.reconciledRows).toBeGreaterThanOrEqual(1);
-    expect(status.embeddings).toMatchObject({ enabled: false, missingChunks: expect.any(Number) });
+    expect(status.embeddings).toMatchObject({ enabled: true, missingChunks: expect.any(Number) });
   });
 
   it('updates completed manual-scan counters for unchanged, changed, deleted, ignored, and chunksWritten cases', () => {
