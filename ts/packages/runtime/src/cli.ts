@@ -8,7 +8,7 @@ import { listFileSearchProjects, markFileSearchProjectSeen, normalizeFileSearchP
 import { configureFileSearchPolling, disableFileSearchPolling, getFileSearchPollingStatus } from './file-search-active-poller.js';
 import { openQueueRuntime } from './queue-runtime.js';
 import { searchIndex } from './search-index.js';
-import { searchIndex as searchFileIndex } from './file-search-query.js';
+import { buildSearchSemanticMetadata, searchIndex as searchFileIndex } from './file-search-query.js';
 import { openGenerationClient } from './generation-client.js';
 import { observeQueue, renderQueueObserver } from './queue-observer.js';
 
@@ -21,6 +21,7 @@ type CliOptions = {
   baseDir: string;
   embeddingBaseUrl?: string;
   embeddingModel?: string;
+  embeddingDimension?: number;
   embeddingTimeoutMs?: number;
   embeddingRequireRemote?: boolean;
   fileSearchSemanticEnabled?: boolean;
@@ -34,7 +35,7 @@ type CliOptions = {
 type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
 
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'file-search', 'file-search-scan', 'file-search-status', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'file-search', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
@@ -128,6 +129,7 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     if (arg === '--base-dir') { options.baseDir = requireValue(next, '--base-dir'); flags.baseDirProvided = true; i += 1; }
     else if (arg === '--embedding-base-url') { options.embeddingBaseUrl = requireValue(next, '--embedding-base-url'); i += 1; }
     else if (arg === '--embedding-model') { options.embeddingModel = requireValue(next, '--embedding-model'); i += 1; }
+    else if (arg === '--embedding-dimension') { const raw = requireValue(next, '--embedding-dimension'); if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(Number(raw))) throw new Error('--embedding-dimension must be a positive integer'); options.embeddingDimension = Number(raw); i += 1; }
     else if (arg === '--embedding-timeout-ms') { options.embeddingTimeoutMs = Number(requireValue(next, '--embedding-timeout-ms')); i += 1; }
     else if (arg === '--generation-base-url') { options.generationBaseUrl = requireValue(next, '--generation-base-url'); i += 1; }
     else if (arg === '--generation-model') { options.generationModel = requireValue(next, '--generation-model'); i += 1; }
@@ -179,7 +181,16 @@ function parseFileSearchRequest(payload: Record<string, string>): FileSearchCliR
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
-  const { command, options, payload, flags } = parseArgs(argv);
+  let parsed: ReturnType<typeof parseArgs>;
+  try {
+    parsed = parseArgs(argv);
+  } catch (error) {
+    const command = argv.find((arg) => !arg.startsWith('--')) ?? null;
+    jsonError(error instanceof Error ? error.message : String(error), command);
+    process.exitCode = 1;
+    return;
+  }
+  const { command, options, payload, flags } = parsed;
   if (!command) {
     jsonError('Missing command', null);
     process.exitCode = 1;
@@ -192,11 +203,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   const isGenerationCommand = GENERATION_COMMANDS.has(command);
   const isObserverCommand = OBSERVER_COMMANDS.has(command);
-  const isFileSearchCommand = command === 'file-search' || command === 'file-search-scan' || command === 'file-search-status';
+  const isFileSearchCommand = command === 'file-search' || command === 'file-search-scan' || command === 'file-search-status' || command === 'file-search-semantic-refresh';
   const isFileSearchPollingCommand = command === 'file-search-polling-status' || command === 'file-search-polling-enable' || command === 'file-search-polling-disable';
   const isFileSearchRegistryCommand = command === 'file-search-project-register' || command === 'file-search-project-unregister' || command === 'file-search-project-list';
   const isFileSearchScanCommand = command === 'file-search-scan';
   const isFileSearchStatusCommand = command === 'file-search-status';
+  const isFileSearchSemanticRefreshCommand = command === 'file-search-semantic-refresh';
   let store: ReturnType<typeof openNativeStore> | undefined;
   let queueRuntime: ReturnType<typeof openQueueRuntime> | undefined;
   let fileSearchRequest: FileSearchCliRequest | undefined;
@@ -247,7 +259,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         ...options,
         embeddingRequireRemote: isFileSearchCommand ? options.embeddingRequireRemote : true,
         fileSearchSemanticEnabled: isFileSearchCommand ? options.fileSearchSemanticEnabled : undefined,
-        fileSearchScanOnOpen: isFileSearchStatusCommand || isFileSearchScanCommand ? false : undefined,
+        fileSearchScanOnOpen: isFileSearchStatusCommand || isFileSearchScanCommand || isFileSearchSemanticRefreshCommand ? false : undefined,
       });
     queueRuntime = store ? openQueueRuntime(store, { baseDir: options.baseDir }) : undefined;
     if (command === 'store') {
@@ -263,6 +275,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const query = payload.query?.trim();
       if (!query) throw new Error('Missing --query for search');
       console.log(JSON.stringify({ results: await searchIndex(store, { query, scope: payload.scope?.trim() as 'project' | 'user' | undefined }) }, null, 2));
+      return;
+    }
+
+    if (command === 'file-search-semantic-refresh') {
+      if (!flags.baseDirProvided) throw new Error('Missing --base-dir for file-search-semantic-refresh');
+      if (!store?.fileSearchDb) throw new Error('Missing file-search DB');
+      const limit = parseOptionalPositiveIntegerFlag(payload, 'limit', '--limit');
+      const diagnostics = await store.fileSearchDb.refreshSemanticIndex({ limit });
+      const refresh = { command: 'file-search-semantic-refresh', baseDir: diagnostics.baseDir, projectKey: diagnostics.projectKey, limit };
+      console.log(JSON.stringify({ refresh, diagnostics, embeddings: diagnostics }, null, 2));
       return;
     }
     if (command === 'file-search-status') {
@@ -282,8 +304,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       if (!store) throw new Error('Missing native store');
       if (!fileSearchRequest) throw new Error('Missing file-search request');
       const { query, mode, limit } = fileSearchRequest;
-      if (mode !== 'fts') await store.fileSearchDb?.refreshSemanticIndex();
-      console.log(JSON.stringify({ results: await searchFileIndex(store, { query, mode, limit }) }, null, 2));
+      const request = { query, mode, limit };
+      const results = await searchFileIndex(store, request);
+      const semantic = await buildSearchSemanticMetadata(store, request, results);
+      console.log(JSON.stringify({ results, ...(semantic ? { semantic } : {}) }, null, 2));
       return;
     }
     if (command === 'prune') {

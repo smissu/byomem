@@ -9,6 +9,7 @@ build/
 .env
 .byomem/
 .claude/
+.gemini/
 .pi/
 .playwright-cli/
 queue/

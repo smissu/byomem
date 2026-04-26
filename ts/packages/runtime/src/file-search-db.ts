@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { resolveProjectContext } from './project-context.js';
 import { FileIndexScheduler } from './file-index-scheduler.js';
-import { openEmbeddingClient, type EmbeddingClient } from './embedding-client.js';
+import { FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, openEmbeddingClient, resolveEmbeddingProviderKey, type EmbeddingClient } from './embedding-client.js';
 import { DEFAULT_EMBEDDING_DIMENSION, encodeEmbedding, truncateEmbeddingText } from './embedding-vector.js';
 import { ensureFileSearchProjectRegistrySchema, getFileSearchProject, markFileSearchProjectSeen, serializeFileSearchPollingStatus } from './file-search-project-registry.js';
 
@@ -32,10 +32,18 @@ export interface FileSearchDbOptions {
 
 export interface FileSearchEmbeddingDiagnostics {
   enabled: boolean;
+  state: 'disabled' | 'ready' | 'refresh-needed' | 'incompatible';
+  projectKey: string;
+  baseDir: string;
   model: string;
   configuredDimension: number;
+  actualDimensions: Array<{ dimension: number; chunks: number }>;
+  indexedChunks: number;
   embeddedChunks: number;
   missingChunks: number;
+  incompatibleChunks: number;
+  refreshNeededChunks: number;
+  failedChunks: number;
   failures: number;
   fallbacks: number;
   lastError?: string;
@@ -127,6 +135,7 @@ export interface FileSearchDbHandle {
   semanticSearchEnabled: boolean;
   embeddingModel: string;
   embeddingConfiguredDimension: number;
+  embeddingProviderKey: string;
   scheduleRefresh(event: FileSearchRefreshEvent): void;
   flushScheduledRefreshes(): void;
   refreshMetrics: { runs: number; failures: number; skips: number; retries: number; lastRunAt?: string; lastFailureAt?: string };
@@ -292,6 +301,12 @@ function assertFileSearchDbPath(path: string): void {
   }
 }
 
+
+function ensureColumn(db: BetterSqliteDatabase, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!columns.some((entry) => entry.name === column)) db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+}
+
 function ensureFoundationSchema(db: BetterSqliteDatabase): void {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
@@ -395,9 +410,12 @@ function ensureScannerIndexerSchema(db: BetterSqliteDatabase): void {
       configured_dimension INTEGER NOT NULL,
       embedding BLOB NOT NULL,
       dimension INTEGER NOT NULL,
+      provider_key TEXT,
+      effective_dimension INTEGER,
+      cache_version TEXT,
       updated_at TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_file_embedding_cache_lookup ON file_embedding_cache(text_hash, model, configured_dimension);
+    CREATE INDEX IF NOT EXISTS idx_file_embedding_cache_lookup ON file_embedding_cache(text_hash, model, configured_dimension, provider_key, effective_dimension, cache_version);
     CREATE TABLE IF NOT EXISTS indexed_chunk_embeddings (
       chunk_id TEXT PRIMARY KEY,
       project_key TEXT NOT NULL,
@@ -409,6 +427,9 @@ function ensureScannerIndexerSchema(db: BetterSqliteDatabase): void {
       configured_dimension INTEGER NOT NULL,
       embedding BLOB NOT NULL,
       dimension INTEGER NOT NULL,
+      provider_key TEXT,
+      effective_dimension INTEGER,
+      identity_version TEXT,
       status TEXT NOT NULL DEFAULT 'ready',
       error TEXT,
       created_at TEXT NOT NULL,
@@ -418,7 +439,15 @@ function ensureScannerIndexerSchema(db: BetterSqliteDatabase): void {
     CREATE INDEX IF NOT EXISTS idx_indexed_chunk_embeddings_project_key ON indexed_chunk_embeddings(project_key);
     CREATE INDEX IF NOT EXISTS idx_indexed_chunk_embeddings_model ON indexed_chunk_embeddings(model, configured_dimension, status);
   `);
+  ensureColumn(db, 'file_embedding_cache', 'provider_key', 'TEXT');
+  ensureColumn(db, 'file_embedding_cache', 'effective_dimension', 'INTEGER');
+  ensureColumn(db, 'file_embedding_cache', 'cache_version', 'TEXT');
+  ensureColumn(db, 'indexed_chunk_embeddings', 'provider_key', 'TEXT');
+  ensureColumn(db, 'indexed_chunk_embeddings', 'effective_dimension', 'INTEGER');
+  ensureColumn(db, 'indexed_chunk_embeddings', 'identity_version', 'TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_indexed_chunk_embeddings_identity ON indexed_chunk_embeddings(project_key, provider_key, model, configured_dimension, status, chunk_hash)');
 }
+
 
 function ensureScannerStatusSchema(db: BetterSqliteDatabase): void {
   db.exec(`
@@ -744,56 +773,137 @@ function semanticEnabled(options: FileSearchDbOptions): boolean {
   return Boolean(options.semanticSearchEnabled ?? true);
 }
 
-function cacheId(textHash: string, model: string, configuredDimension: number): string {
-  return `${model}:${configuredDimension}:${textHash}`;
+function configuredDimensionCompatibleSql(alias: string): string {
+  return `((${alias}.configured_dimension = ?) AND (? = 0 OR ${alias}.dimension = ?))`;
+}
+
+function cacheId(textHash: string, providerKey: string, model: string, configuredDimension: number, effectiveDimension: number): string {
+  return [FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, providerKey, model, configuredDimension, effectiveDimension, textHash].join(':');
+}
+
+function embeddingProviderKey(options: FileSearchDbOptions): string {
+  return resolveEmbeddingProviderKey(options.embeddingBaseUrl);
 }
 
 function embeddingDiagnostics(db: BetterSqliteDatabase, options: FileSearchDbOptions): FileSearchEmbeddingDiagnostics {
   const model = embeddingModel(options);
   const configuredDimension = embeddingConfiguredDimension(options);
-  const embedded = db.prepare('SELECT COUNT(*) AS count FROM indexed_chunk_embeddings WHERE model = ? AND configured_dimension = ? AND status = ?').get(model, configuredDimension, 'ready') as { count: number };
+  const projectKey = deriveProjectKey(resolveProjectBaseDir(options));
+  const baseDir = resolveProjectBaseDir(options);
+  const providerKey = embeddingProviderKey(options);
+  const enabled = semanticEnabled(options);
+  const indexed = db.prepare('SELECT COUNT(*) AS count FROM indexed_chunks WHERE project_key = ?').get(projectKey) as { count: number };
+  const embedded = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM indexed_chunk_embeddings e
+    JOIN indexed_chunks c ON c.id = e.chunk_id
+    WHERE e.project_key = ? AND e.provider_key = ? AND e.model = ? AND ${configuredDimensionCompatibleSql('e')}
+      AND e.status = 'ready' AND e.chunk_hash = c.chunk_hash AND e.identity_version = ?
+  `).get(projectKey, providerKey, model, configuredDimension, configuredDimension, configuredDimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION) as { count: number };
+  const failed = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM indexed_chunk_embeddings e
+    JOIN indexed_chunks c ON c.id = e.chunk_id
+    WHERE e.project_key = ? AND e.provider_key = ? AND e.model = ? AND e.configured_dimension = ?
+      AND e.status = 'failed' AND e.chunk_hash = c.chunk_hash AND e.identity_version = ?
+  `).get(projectKey, providerKey, model, configuredDimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION) as { count: number };
   const missing = db.prepare(`
     SELECT COUNT(*) AS count
     FROM indexed_chunks c
-    LEFT JOIN indexed_chunk_embeddings e ON e.chunk_id = c.id AND e.model = ? AND e.configured_dimension = ? AND e.status = 'ready' AND e.chunk_hash = c.chunk_hash
-    WHERE e.chunk_id IS NULL
-  `).get(model, configuredDimension) as { count: number };
-  const failures = db.prepare('SELECT COUNT(*) AS count FROM indexed_chunk_embeddings WHERE model = ? AND configured_dimension = ? AND status = ?').get(model, configuredDimension, 'failed') as { count: number };
-  const lastFailure = db.prepare('SELECT error FROM indexed_chunk_embeddings WHERE model = ? AND configured_dimension = ? AND status = ? AND error IS NOT NULL ORDER BY updated_at DESC LIMIT 1').get(model, configuredDimension, 'failed') as { error?: string } | undefined;
-  return { enabled: semanticEnabled(options), model, configuredDimension, embeddedChunks: embedded.count, missingChunks: missing.count, failures: failures.count, fallbacks: 0, lastError: lastFailure?.error };
+    WHERE c.project_key = ? AND NOT EXISTS (SELECT 1 FROM indexed_chunk_embeddings e WHERE e.chunk_id = c.id)
+  `).get(projectKey) as { count: number };
+  const incompatible = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM indexed_chunks c
+    WHERE c.project_key = ?
+      AND EXISTS (SELECT 1 FROM indexed_chunk_embeddings e WHERE e.chunk_id = c.id)
+      AND NOT EXISTS (
+        SELECT 1 FROM indexed_chunk_embeddings e
+        WHERE e.chunk_id = c.id AND e.project_key = ? AND e.provider_key = ? AND e.model = ? AND ${configuredDimensionCompatibleSql('e')}
+          AND e.status = 'ready' AND e.chunk_hash = c.chunk_hash AND e.identity_version = ?
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM indexed_chunk_embeddings e
+        WHERE e.chunk_id = c.id AND e.project_key = ? AND e.provider_key = ? AND e.model = ? AND e.configured_dimension = ?
+          AND e.status = 'failed' AND e.chunk_hash = c.chunk_hash AND e.identity_version = ?
+      )
+  `).get(projectKey, projectKey, providerKey, model, configuredDimension, configuredDimension, configuredDimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, projectKey, providerKey, model, configuredDimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION) as { count: number };
+  const dimensions = db.prepare(`
+    SELECT e.dimension AS dimension, COUNT(*) AS chunks
+    FROM indexed_chunk_embeddings e
+    JOIN indexed_chunks c ON c.id = e.chunk_id
+    WHERE e.project_key = ? AND e.status = 'ready' AND e.chunk_hash = c.chunk_hash
+    GROUP BY e.dimension
+    ORDER BY e.dimension ASC
+  `).all(projectKey) as Array<{ dimension: number; chunks: number }>;
+  const lastFailure = db.prepare(`
+    SELECT error FROM indexed_chunk_embeddings
+    WHERE project_key = ? AND provider_key = ? AND model = ? AND configured_dimension = ? AND status = 'failed' AND error IS NOT NULL
+    ORDER BY updated_at DESC LIMIT 1
+  `).get(projectKey, providerKey, model, configuredDimension) as { error?: string } | undefined;
+  const failedChunks = failed.count;
+  const refreshNeededChunks = missing.count + incompatible.count + failedChunks;
+  const state: FileSearchEmbeddingDiagnostics['state'] = !enabled ? 'disabled' : incompatible.count > 0 ? 'incompatible' : refreshNeededChunks > 0 ? 'refresh-needed' : 'ready';
+  const diagnostics: FileSearchEmbeddingDiagnostics = {
+    enabled,
+    state,
+    projectKey,
+    baseDir,
+    model,
+    configuredDimension,
+    actualDimensions: dimensions.map((entry) => ({ dimension: entry.dimension, chunks: entry.chunks })),
+    indexedChunks: indexed.count,
+    embeddedChunks: embedded.count,
+    missingChunks: missing.count,
+    incompatibleChunks: incompatible.count,
+    refreshNeededChunks,
+    failedChunks,
+    failures: failedChunks,
+    fallbacks: 0,
+  };
+  if (lastFailure?.error) diagnostics.lastError = lastFailure.error;
+  return diagnostics;
 }
 
 async function refreshSemanticIndex(db: BetterSqliteDatabase, options: FileSearchDbOptions, embeddingClient: EmbeddingClient, refreshOptions: { limit?: number } = {}): Promise<FileSearchEmbeddingDiagnostics> {
   if (!semanticEnabled(options)) return embeddingDiagnostics(db, options);
   const model = embeddingModel(options);
   const configuredDimension = embeddingConfiguredDimension(options);
+  const projectKey = deriveProjectKey(resolveProjectBaseDir(options));
+  const providerKey = embeddingProviderKey(options);
   const limit = Math.max(1, refreshOptions.limit ?? options.embeddingBatchSize ?? 100);
   const rows = db.prepare(`
     SELECT c.id, c.project_key, c.file_record_id, c.chunk_index, c.chunk_text, c.chunk_hash
     FROM indexed_chunks c
-    LEFT JOIN indexed_chunk_embeddings e ON e.chunk_id = c.id AND e.model = ? AND e.configured_dimension = ? AND e.status = 'ready' AND e.chunk_hash = c.chunk_hash
-    WHERE e.chunk_id IS NULL
-    ORDER BY c.project_key, c.file_record_id, c.chunk_index
+    WHERE c.project_key = ? AND NOT EXISTS (
+      SELECT 1 FROM indexed_chunk_embeddings e
+      WHERE e.chunk_id = c.id AND e.project_key = c.project_key AND e.provider_key = ? AND e.model = ? AND ${configuredDimensionCompatibleSql('e')}
+        AND e.status = 'ready' AND e.chunk_hash = c.chunk_hash AND e.identity_version = ?
+    )
+    ORDER BY c.file_record_id, c.chunk_index
     LIMIT ?
-  `).all(model, configuredDimension, limit) as Array<{ id: string; project_key: string; file_record_id: string; chunk_index: number; chunk_text: string; chunk_hash: string }>;
+  `).all(projectKey, providerKey, model, configuredDimension, configuredDimension, configuredDimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, limit) as Array<{ id: string; project_key: string; file_record_id: string; chunk_index: number; chunk_text: string; chunk_hash: string }>;
   const now = new Date().toISOString();
   for (const row of rows) {
     const embeddingText = truncateEmbeddingText(row.chunk_text);
     const textHash = embeddingClient.hashText(embeddingText);
-    const id = cacheId(textHash, model, configuredDimension);
     try {
-      const cached = db.prepare('SELECT embedding, dimension FROM file_embedding_cache WHERE id = ?').get(id) as { embedding: Buffer; dimension: number } | undefined;
+      const lookupEffectiveDimension = configuredDimension || embeddingClient.configuredDimension || DEFAULT_EMBEDDING_DIMENSION;
+      let id = cacheId(textHash, providerKey, model, configuredDimension, lookupEffectiveDimension);
+      let cached = db.prepare('SELECT embedding, dimension FROM file_embedding_cache WHERE id = ?').get(id) as { embedding: Buffer; dimension: number } | undefined;
       const vector = cached ? undefined : await embeddingClient.embed(embeddingText);
       if (!cached && !vector?.length) continue;
-      const embedding = cached?.embedding ?? encodeEmbedding(vector!);
       const dimension = cached?.dimension ?? vector!.length;
-      if (!cached) db.prepare('INSERT OR REPLACE INTO file_embedding_cache (id, text_hash, model, configured_dimension, embedding, dimension, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, textHash, model, configuredDimension, embedding, dimension, now);
-      db.prepare(`INSERT OR REPLACE INTO indexed_chunk_embeddings (chunk_id, project_key, file_record_id, chunk_index, chunk_hash, text_hash, model, configured_dimension, embedding, dimension, status, error, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', NULL, COALESCE((SELECT created_at FROM indexed_chunk_embeddings WHERE chunk_id = ?), ?), ?)`).run(row.id, row.project_key, row.file_record_id, row.chunk_index, row.chunk_hash, textHash, model, configuredDimension, embedding, dimension, row.id, now, now);
+      id = cacheId(textHash, providerKey, model, configuredDimension, dimension);
+      if (!cached) cached = db.prepare('SELECT embedding, dimension FROM file_embedding_cache WHERE id = ?').get(id) as { embedding: Buffer; dimension: number } | undefined;
+      const embedding = cached?.embedding ?? encodeEmbedding(vector!);
+      if (!cached) db.prepare('INSERT OR REPLACE INTO file_embedding_cache (id, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, cache_version, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, textHash, model, configuredDimension, embedding, dimension, providerKey, dimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, now);
+      db.prepare(`INSERT OR REPLACE INTO indexed_chunk_embeddings (chunk_id, project_key, file_record_id, chunk_index, chunk_hash, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, identity_version, status, error, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', NULL, COALESCE((SELECT created_at FROM indexed_chunk_embeddings WHERE chunk_id = ?), ?), ?)`).run(row.id, row.project_key, row.file_record_id, row.chunk_index, row.chunk_hash, textHash, model, configuredDimension, embedding, dimension, providerKey, dimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, row.id, now, now);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      db.prepare(`INSERT OR REPLACE INTO indexed_chunk_embeddings (chunk_id, project_key, file_record_id, chunk_index, chunk_hash, text_hash, model, configured_dimension, embedding, dimension, status, error, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, COALESCE((SELECT created_at FROM indexed_chunk_embeddings WHERE chunk_id = ?), ?), ?)`).run(row.id, row.project_key, row.file_record_id, row.chunk_index, row.chunk_hash, textHash, model, configuredDimension, Buffer.alloc(0), 0, message, row.id, now, now);
+      db.prepare(`INSERT OR REPLACE INTO indexed_chunk_embeddings (chunk_id, project_key, file_record_id, chunk_index, chunk_hash, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, identity_version, status, error, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, COALESCE((SELECT created_at FROM indexed_chunk_embeddings WHERE chunk_id = ?), ?), ?)`).run(row.id, row.project_key, row.file_record_id, row.chunk_index, row.chunk_hash, textHash, model, configuredDimension, Buffer.alloc(0), 0, providerKey, 0, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, message, row.id, now, now);
       if (options.embeddingRequireRemote) throw error;
     }
   }
@@ -941,6 +1051,7 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
     semanticSearchEnabled: semanticEnabled(options),
     embeddingModel: embeddingModel(options),
     embeddingConfiguredDimension: embeddingConfiguredDimension(options),
+    embeddingProviderKey: embeddingProviderKey(options),
     refreshMetrics: scheduler?.refreshMetrics ?? { runs: 0, failures: 0, skips: 0, retries: 0 },
     scanAndIndex(scanOptions?: { trigger?: FileSearchScannerTrigger }): FileSearchScannerStatus {
       const trigger = scanOptions?.trigger ?? 'manual';

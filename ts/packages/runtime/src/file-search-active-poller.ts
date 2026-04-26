@@ -9,6 +9,7 @@ export interface FileSearchActivePollerOptions {
   dbBaseDir?: string;
   embeddingBaseUrl?: string;
   embeddingModel?: string;
+  embeddingDimension?: number;
   embeddingTimeoutMs?: number;
   embeddingRequireRemote?: boolean;
   semanticSearchEnabled?: boolean;
@@ -110,6 +111,7 @@ export class FileSearchActivePoller {
       dbBaseDir: this.options.dbBaseDir,
       embeddingBaseUrl: this.options.embeddingBaseUrl,
       embeddingModel: this.options.embeddingModel,
+      embeddingDimension: this.options.embeddingDimension,
       embeddingTimeoutMs: this.options.embeddingTimeoutMs,
       embeddingRequireRemote: this.options.embeddingRequireRemote,
       semanticSearchEnabled: this.options.semanticSearchEnabled,

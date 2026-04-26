@@ -4,6 +4,7 @@ import { normalizeIdentity } from './identity.js';
 import { containsSensitiveFileSearchContent, isIgnoredFileSearchArtifact, resolveFileSearchProjectKey } from './file-search-db.js';
 import { markFileSearchProjectSeen } from './file-search-project-registry.js';
 import { cosineSimilarity, decodeEmbedding } from './embedding-vector.js';
+import { FILE_SEARCH_EMBEDDING_IDENTITY_VERSION } from './embedding-client.js';
 
 export interface FileSearchQuery {
   query: string;
@@ -67,19 +68,27 @@ function queryFts(db: NonNullable<NativeStore['fileSearchDb']>['db'], projectKey
 async function querySemantic(store: NativeStore, projectKey: string, query: string, limit: number): Promise<ScoredRow[]> {
   const fileDb = store.fileSearchDb;
   if (!fileDb?.semanticSearchEnabled) return [];
+  const diagnostics = fileDb.getEmbeddingDiagnostics();
+  if (diagnostics.embeddedChunks <= 0) return [];
   const queryVector = await fileDb.embedQuery(query);
   if (!queryVector?.length) return [];
+  const queryDimension = queryVector.length;
   const rows = fileDb.db.prepare(`
     SELECT fr.project_key, fr.path, fc.chunk_index, fc.chunk_text, fc.chunk_hash, fr.content_hash, e.embedding, e.dimension
     FROM indexed_chunk_embeddings e
     JOIN indexed_chunks fc ON fc.id = e.chunk_id
     JOIN file_records fr ON fr.id = fc.file_record_id
     WHERE e.project_key = ?
+      AND e.provider_key = ?
       AND e.model = ?
+      AND e.configured_dimension = ?
       AND e.status = 'ready'
       AND e.chunk_hash = fc.chunk_hash
+      AND e.identity_version = ?
+      AND e.dimension = ?
+      AND (? = 0 OR e.dimension = ?)
     ORDER BY e.updated_at DESC
-  `).all(projectKey, fileDb.embeddingModel) as Array<FileSearchRow & { embedding: Buffer; dimension: number }>;
+  `).all(projectKey, fileDb.embeddingProviderKey, fileDb.embeddingModel, fileDb.embeddingConfiguredDimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, queryDimension, fileDb.embeddingConfiguredDimension, fileDb.embeddingConfiguredDimension) as Array<FileSearchRow & { embedding: Buffer; dimension: number }>;
   return rows
     .map((row) => {
       const semanticScore = cosineSimilarity(queryVector, decodeEmbedding(row.embedding, row.dimension));
@@ -141,6 +150,58 @@ function blendHits(ftsRows: ScoredRow[], semanticRows: ScoredRow[], limit: numbe
     .filter((row) => (row.score ?? 0) >= 0.3)
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.path.localeCompare(b.path) || a.chunk_index - b.chunk_index)
     .slice(0, limit);
+}
+
+
+export interface FileSearchSemanticMetadata {
+  requested: boolean;
+  enabled: boolean;
+  used: boolean;
+  state: string;
+  refreshNeeded: boolean;
+  incompatible: boolean;
+  projectKey: string;
+  model: string;
+  configuredDimension: number;
+  actualDimensions: Array<{ dimension: number; chunks: number }>;
+  queryDimension?: number;
+  queryDimensionCompatible?: boolean;
+  embeddedChunks: number;
+  missingChunks: number;
+  incompatibleChunks: number;
+  refreshNeededChunks: number;
+  failedChunks: number;
+  failures: number;
+  refreshCommand: 'file-search-semantic-refresh';
+  refreshTool: 'byomem_file_search_semantic_refresh';
+}
+
+export async function buildSearchSemanticMetadata(store: NativeStore, query: FileSearchQuery, hits?: FileSearchHit[]): Promise<FileSearchSemanticMetadata | undefined> {
+  const fileDb = store.fileSearchDb;
+  const mode = query.mode ?? 'hybrid';
+  if (!fileDb || mode === 'fts') return undefined;
+  const diagnostics = fileDb.getEmbeddingDiagnostics();
+  const used = Boolean(hits?.some((hit) => hit.file?.semanticScore !== undefined));
+  return {
+    requested: true,
+    enabled: diagnostics.enabled,
+    used,
+    state: diagnostics.state,
+    refreshNeeded: diagnostics.refreshNeededChunks > 0,
+    incompatible: diagnostics.incompatibleChunks > 0,
+    projectKey: diagnostics.projectKey,
+    model: diagnostics.model,
+    configuredDimension: diagnostics.configuredDimension,
+    actualDimensions: diagnostics.actualDimensions,
+    embeddedChunks: diagnostics.embeddedChunks,
+    missingChunks: diagnostics.missingChunks,
+    incompatibleChunks: diagnostics.incompatibleChunks,
+    refreshNeededChunks: diagnostics.refreshNeededChunks,
+    failedChunks: diagnostics.failedChunks,
+    failures: diagnostics.failures,
+    refreshCommand: 'file-search-semantic-refresh',
+    refreshTool: 'byomem_file_search_semantic_refresh',
+  };
 }
 
 export async function searchIndex(store: NativeStore, query: FileSearchQuery): Promise<FileSearchHit[]> {

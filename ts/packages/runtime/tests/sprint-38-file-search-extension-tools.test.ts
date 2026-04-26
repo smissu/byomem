@@ -69,6 +69,7 @@ describe('Sprint 38 file-search extension direct tool contract RED tests', () =>
       'byomem_store',
       'byomem_prune',
       'byomem_file_search',
+      'byomem_file_search_semantic_refresh',
       'byomem_file_search_status',
       'byomem_file_search_scan',
       'byomem_file_search_polling_status',

@@ -11,6 +11,15 @@ export interface EmbeddingClientOptions {
 export interface EmbeddingClient {
   embed(text: string): Promise<number[] | undefined>;
   hashText(text: string): string;
+  providerKey: string;
+  configuredDimension: number;
+}
+
+export const FILE_SEARCH_EMBEDDING_IDENTITY_VERSION = 'file-search-embedding-v1';
+export const FALLBACK_EMBEDDING_PROVIDER_KEY = 'fallback:deterministic-v1';
+
+export function resolveEmbeddingProviderKey(baseUrl?: string): string {
+  return baseUrl ? `remote:${new URL('/api/embeddings', baseUrl).toString()}` : FALLBACK_EMBEDDING_PROVIDER_KEY;
 }
 
 type EmbeddingPayload = {
@@ -59,6 +68,8 @@ async function remoteEmbedding(url: string, model: string, text: string, timeout
 
 export function openEmbeddingClient(options: EmbeddingClientOptions = {}): EmbeddingClient {
   return {
+    providerKey: resolveEmbeddingProviderKey(options.baseUrl),
+    configuredDimension: options.dimension ?? 0,
     hashText(text: string): string {
       return createHash('sha256').update(text).digest('hex');
     },

@@ -11,7 +11,7 @@ import { openQueueRuntime } from './queue-runtime.js';
 import { openReadPath } from './read.js';
 import { resolveRuntimeMode } from './runtime-mode.js';
 import { searchIndex } from './search-index.js';
-import { redactSensitiveFileSearchText, searchIndex as searchFileIndexForTool } from './file-search-query.js';
+import { buildSearchSemanticMetadata, redactSensitiveFileSearchText, searchIndex as searchFileIndexForTool } from './file-search-query.js';
 import { captureSessionCheckpoint, type SessionCaptureInput } from './session-capture.js';
 import { openNativeStore } from './store.js';
 import { resolveActiveProjectContext } from './identity.js';
@@ -31,6 +31,7 @@ const nativeStore = openNativeStore({
   baseDir: runtimeBaseDir,
   embeddingBaseUrl: embeddingConfig.embeddingBaseUrl,
   embeddingModel: embeddingConfig.embeddingModel,
+  embeddingDimension: embeddingConfig.embeddingDimension,
   embeddingTimeoutMs: embeddingConfig.embeddingTimeoutMs,
   embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
   fileSearchScanOnOpen: false,
@@ -79,6 +80,7 @@ export interface ByomemEmbeddingConfig {
   configPath?: string;
   embeddingBaseUrl?: string;
   embeddingModel?: string;
+  embeddingDimension?: number;
   embeddingTimeoutMs?: number;
 }
 
@@ -222,7 +224,18 @@ function resolveActivePollingTargetBaseDir(baseDir?: unknown): string {
 }
 
 function openDirectFileSearchDb(targetBaseDir: string) {
-  return openFileSearchDb({ baseDir: targetBaseDir, projectBaseDir: targetBaseDir, scanOnOpen: false, schedulerEnabled: false });
+  return openFileSearchDb({
+    baseDir: targetBaseDir,
+    projectBaseDir: targetBaseDir,
+    dbBaseDir: process.env.BYOMEM_RUNTIME_BASE_DIR ?? runtimeBaseDir,
+    embeddingBaseUrl: embeddingConfig.embeddingBaseUrl,
+    embeddingModel: embeddingConfig.embeddingModel,
+    embeddingDimension: embeddingConfig.embeddingDimension,
+    embeddingTimeoutMs: embeddingConfig.embeddingTimeoutMs,
+    embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
+    scanOnOpen: false,
+    schedulerEnabled: false,
+  });
 }
 
 function openDirectFileSearchRegistryDb() {
@@ -255,7 +268,9 @@ async function searchFileIndexDirect(targetBaseDir: string, query: { query: stri
       fileSearchProjectBaseDir: targetBaseDir,
     } as never;
     const hits = await searchFileIndexForTool(store, query as never);
-    return hits.map(serializeFileSearchResult);
+    const results = hits.map(serializeFileSearchResult);
+    const semantic = await buildSearchSemanticMetadata(store, query as never, hits);
+    return { results, semantic };
   } finally {
     fileDb.close();
   }
@@ -297,7 +312,7 @@ function extractYamlBlock(content: string, key: string): string | undefined {
   return match?.[1] ?? undefined;
 }
 
-function parseConfigYaml(content: string): { embeddings?: { base_url?: string; model?: string; request_timeout?: number }; summarizer?: { base_url?: string; model?: string; fallback_model?: string; max_tokens?: number; ollama_num_ctx?: number }; session_capture?: { enabled?: boolean; threshold_turns?: number; large_turn_chars?: number; idle_flush_seconds?: number; min_turns?: number } } {
+function parseConfigYaml(content: string): { embeddings?: { base_url?: string; model?: string; dimension?: string; request_timeout?: number }; summarizer?: { base_url?: string; model?: string; fallback_model?: string; max_tokens?: number; ollama_num_ctx?: number }; session_capture?: { enabled?: boolean; threshold_turns?: number; large_turn_chars?: number; idle_flush_seconds?: number; min_turns?: number } } {
   const embeddingsBlock = extractYamlBlock(content, 'embeddings') ?? '';
   const summarizerBlock = extractYamlBlock(content, 'summarizer') ?? '';
   const sessionCaptureBlock = extractYamlBlock(content, 'session_capture') ?? '';
@@ -306,6 +321,7 @@ function parseConfigYaml(content: string): { embeddings?: { base_url?: string; m
     embeddings: {
       base_url: embeddingsBlock.match(/base_url:\s*(.+)/)?.[1]?.trim(),
       model: embeddingsBlock.match(/model:\s*(.+)/)?.[1]?.trim(),
+      dimension: embeddingsBlock.match(/dimension:\s*(.+)/)?.[1]?.trim(),
       request_timeout: (() => { const value = embeddingsBlock.match(/request_timeout:\s*(\d+)/)?.[1]; return value ? Number(value) : undefined; })(),
     },
     summarizer: {
@@ -378,31 +394,33 @@ function resolveSessionCaptureConfig(): ByomemSessionCaptureConfig {
   return { source: 'default', enabled: true };
 }
 
+function parsePositiveSafeIntegerConfig(value: string | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  const raw = value.trim();
+  if (!/^[1-9]\d*$/.test(raw)) throw new Error(`${name} must be a positive integer`);
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`${name} must be a positive integer`);
+  return parsed;
+}
+
 function resolveEmbeddingConfig(): ByomemEmbeddingConfig {
+  const configPath = resolveConfigPath();
+  const parsed = existsSync(configPath) ? parseConfigYaml(readFileSync(configPath, 'utf8')) : undefined;
   const envBaseUrl = process.env.BYOMEM_EMBEDDING_BASE_URL;
   const envModel = process.env.BYOMEM_EMBEDDING_MODEL;
   const envTimeout = process.env.BYOMEM_EMBEDDING_TIMEOUT_MS;
-  if (envBaseUrl || envModel || envTimeout) {
+  const envDimension = process.env.BYOMEM_EMBEDDING_DIMENSION;
+  const hasEnv = Boolean(envBaseUrl || envModel || envTimeout || envDimension);
+  if (hasEnv || parsed) {
     return {
-      source: 'env',
-      embeddingBaseUrl: envBaseUrl,
-      embeddingModel: envModel,
-      embeddingTimeoutMs: envTimeout ? Number(envTimeout) : undefined,
+      source: hasEnv ? 'env' : 'config',
+      configPath: parsed ? configPath : undefined,
+      embeddingBaseUrl: envBaseUrl ?? parsed?.embeddings?.base_url,
+      embeddingModel: envModel ?? parsed?.embeddings?.model,
+      embeddingDimension: parsePositiveSafeIntegerConfig(envDimension ?? parsed?.embeddings?.dimension, 'embedding dimension'),
+      embeddingTimeoutMs: envTimeout ? Number(envTimeout) : parsed?.embeddings?.request_timeout,
     };
   }
-
-  const configPath = resolveConfigPath();
-  if (existsSync(configPath)) {
-    const parsed = parseConfigYaml(readFileSync(configPath, 'utf8'));
-    return {
-      source: 'config',
-      configPath,
-      embeddingBaseUrl: parsed.embeddings?.base_url,
-      embeddingModel: parsed.embeddings?.model,
-      embeddingTimeoutMs: parsed.embeddings?.request_timeout,
-    };
-  }
-
   return { source: 'default' };
 }
 
@@ -605,6 +623,7 @@ export function byomem_runtime_status() {
     embeddingConfigPath: embeddingConfig.configPath,
     embeddingBaseUrl: embeddingConfig.embeddingBaseUrl,
     embeddingModel: embeddingConfig.embeddingModel,
+    embeddingDimension: embeddingConfig.embeddingDimension,
     embeddingTimeoutMs: embeddingConfig.embeddingTimeoutMs,
     embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
     summarizerConfigSource: summarizerConfig.source,
@@ -801,8 +820,37 @@ export default function (pi: ExtensionAPI) {
       const limit = intent?.limit === undefined ? 10 : intent.limit;
       if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1) throw new Error('Invalid byomem_file_search intent: limit must be a positive integer');
       const targetBaseDir = resolveFileSearchTargetBaseDir(intent?.baseDir);
-      const results = await searchFileIndexDirect(targetBaseDir, { query, mode, limit });
-      return { content: [{ type: 'text', text: safeJson({ results }) }], details: { results }, results };
+      const payload = await searchFileIndexDirect(targetBaseDir, { query, mode, limit });
+      return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
+    },
+  });
+
+
+  pi.registerTool?.({
+    name: 'byomem_file_search_semantic_refresh',
+    label: 'BYOMem File Search Semantic Refresh',
+    description: 'Refresh semantic embeddings for one project without scanning or searching.',
+    parameters: {
+      type: 'object',
+      properties: {
+        baseDir: { type: 'string' },
+        limit: { type: 'integer', minimum: 1 },
+      },
+      additionalProperties: false,
+    },
+    async execute(_toolCallId: string, params: unknown) {
+      const intent = params as { baseDir?: unknown; limit?: unknown };
+      const targetBaseDir = resolveFileSearchTargetBaseDir(intent?.baseDir);
+      const limit = intent?.limit === undefined ? undefined : normalizePositiveInteger(intent.limit, 'limit');
+      const fileDb = openDirectFileSearchDb(targetBaseDir);
+      try {
+        const diagnostics = await fileDb.refreshSemanticIndex({ limit });
+        const refresh = { tool: 'byomem_file_search_semantic_refresh', baseDir: diagnostics.baseDir, projectKey: diagnostics.projectKey, limit };
+        const payload = { details: { refresh, diagnostics, embeddings: diagnostics }, refresh, diagnostics, embeddings: diagnostics };
+        return { content: [{ type: 'text', text: safeJson(payload) }], ...payload };
+      } finally {
+        fileDb.close();
+      }
     },
   });
 
@@ -882,6 +930,7 @@ export default function (pi: ExtensionAPI) {
         dbBaseDir: process.env.BYOMEM_RUNTIME_BASE_DIR ?? runtimeBaseDir,
         embeddingBaseUrl: embeddingConfig.embeddingBaseUrl,
         embeddingModel: embeddingConfig.embeddingModel,
+        embeddingDimension: embeddingConfig.embeddingDimension,
         embeddingTimeoutMs: embeddingConfig.embeddingTimeoutMs,
         embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
         semanticSearchEnabled: false,

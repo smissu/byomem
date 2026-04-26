@@ -203,7 +203,7 @@ describe('runtime cli', () => {
     });
   });
 
-  it('runs semantic file-search without --semantic-file-search or embedding base URL', async () => {
+  it('reports refresh-needed metadata for semantic file-search without compatible embeddings', async () => {
     const dir = tempDir();
     dirs.push(dir);
     writeFileSync(join(dir, 'alpha.txt'), 'alpha target body\n', 'utf8');
@@ -212,7 +212,8 @@ describe('runtime cli', () => {
     await main(['file-search', '--base-dir', dir, '--mode', 'semantic', '--query', 'alpha target body']);
 
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
-      results: [expect.objectContaining({ file: expect.objectContaining({ path: expect.stringContaining('alpha.txt') }) })],
+      results: [],
+      semantic: expect.objectContaining({ requested: true, used: false, state: 'refresh-needed', refreshNeeded: true }),
     });
   });
 
@@ -260,7 +261,9 @@ describe('runtime cli', () => {
     }) as typeof fetch;
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await main(['file-search', '--base-dir', dir, '--mode', 'semantic', '--query', 'meaning query']);
+    await main(['file-search-scan', '--base-dir', dir]);
+    await main(['file-search-semantic-refresh', '--base-dir', dir, '--embedding-base-url', 'http://localhost:11434', '--embedding-dimension', '3']);
+    await main(['file-search', '--base-dir', dir, '--mode', 'semantic', '--query', 'meaning query', '--embedding-base-url', 'http://localhost:11434', '--embedding-dimension', '3']);
 
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
       results: [expect.objectContaining({ file: expect.objectContaining({ path: expect.stringContaining('alpha.txt') }) })],
