@@ -3,6 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main } from '../src/cli.js';
+import { openFileSearchDb } from '../src/file-search-db.js';
+import { listFileSearchProjects } from '../src/file-search-project-registry.js';
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'byomem-cli-'));
@@ -121,6 +123,24 @@ describe('runtime cli', () => {
         database: expect.objectContaining({ indexedFiles: 0, indexedChunks: 0 }),
       },
     });
+  });
+
+  it('does not add registry entries for status-only file-search calls', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    writeFileSync(join(dir, 'status-only.txt'), 'status only body\n', 'utf8');
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await main(['file-search-status', '--base-dir', dir, '--json']);
+
+    const payload = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'));
+    expect(payload.status.database).not.toHaveProperty('projects');
+    const store = openFileSearchDb({ baseDir: dir, scanOnOpen: false });
+    try {
+      expect(listFileSearchProjects(store.db)).toEqual([]);
+    } finally {
+      store.close();
+    }
   });
 
   it('runs an explicit file-search scan without requiring a query or embedding server', async () => {

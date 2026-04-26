@@ -94,7 +94,6 @@ function expectCompletedStatusShape(status: ScannerStatus, dir: string): void {
       indexedChunks: expect.any(Number),
       changedRows: expect.any(Number),
       reconciledRows: expect.any(Number),
-      projects: expect.arrayContaining([expect.objectContaining({ projectKey: expect.stringMatching(/^project:/), files: expect.any(Number) })]),
     },
     embeddings: expect.objectContaining({
       enabled: expect.any(Boolean),

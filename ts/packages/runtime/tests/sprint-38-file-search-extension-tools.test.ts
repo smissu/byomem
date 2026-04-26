@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { openFileSearchDb } from '../src/file-search-db.js';
 
 function tempDir(prefix = 'byomem-s38-'): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -188,10 +189,34 @@ describe('Sprint 38 file-search extension direct tool contract RED tests', () =>
 
     const status = await statusTool.execute('1', { baseDir: projectDir }) as { scanner?: Record<string, unknown>; status?: Record<string, unknown> };
     expect(status).toMatchObject({ scanner: expect.any(Object), status: expect.any(Object) });
+    expect(status.status).not.toHaveProperty('database.projects');
+    expect(status.scanner).not.toHaveProperty('database.projects');
     expect(existsSync(join(projectDir, 'native-store.json'))).toBe(false);
 
     const scan = await scanTool.execute('2', { baseDir: projectDir }) as { scanner?: Record<string, unknown>; status?: Record<string, unknown> };
     expect(scan).toMatchObject({ scanner: expect.any(Object), status: expect.any(Object) });
+    expect(scan.status).not.toHaveProperty('database.projects');
+    expect(scan.scanner).not.toHaveProperty('database.projects');
+  });
+
+  it('does not create a registry row when file-search status is invoked for a previously unseen temp baseDir', async () => {
+    const projectDir = tempDir('byomem-s38-unseen-status-');
+    dirs.push(projectDir);
+    writeFileSync(join(projectDir, 'unseen.txt'), 'unseen status body\n', 'utf8');
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', tempDir('byomem-s38-unseen-runtime-'));
+
+    const mod = await loadExtension();
+    const mock = makeMockPi();
+    mod.default(mock.api as never);
+
+    const statusTool = mock.tools.find((tool) => tool.name === 'byomem_file_search_status')!;
+    await statusTool.execute('1', { baseDir: projectDir });
+
+    const listTool = mock.tools.find((tool) => tool.name === 'byomem_file_search_project_list')!;
+    const listResult = await listTool.execute('2', {}) as { content: { text: string }[]; details?: { projects?: Array<{ base_dir?: string }> } };
+    const projects = listResult.details?.projects ?? JSON.parse(listResult.content[0].text).projects ?? [];
+    expect(projects).toEqual([]);
+    expect(projects).not.toEqual(expect.arrayContaining([expect.objectContaining({ base_dir: projectDir })]));
   });
 
   it('register/list/unregister tools require explicit baseDir on register/unregister and do not enable registry from memory tools', async () => {
@@ -228,4 +253,36 @@ describe('Sprint 38 file-search extension direct tool contract RED tests', () =>
     expect(list.projects ?? []).toEqual([]);
     expect(existsSync(join(projectDir, 'byomem-file-search.sqlite'))).toBe(false);
   });
+
+  it('does not return raw sensitive file-search markers from direct tool output when stale index rows exist', async () => {
+    const projectDir = tempDir('byomem-s38-sensitive-project-');
+    const runtimeDir = tempDir('byomem-s38-sensitive-runtime-');
+    dirs.push(projectDir, runtimeDir);
+    writeFileSync(join(projectDir, 'stale.txt'), 'ordinary stale searchable content\n', 'utf8');
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', runtimeDir);
+
+    const fileDb = openFileSearchDb({ baseDir: projectDir, dbBaseDir: runtimeDir, scanOnOpen: false, schedulerEnabled: false, semanticSearchEnabled: false });
+    try {
+      fileDb.scanAndIndex({ trigger: 'manual' });
+      const row = fileDb.db.prepare('SELECT id FROM indexed_chunks LIMIT 1').get() as { id: string };
+      fileDb.db.prepare('UPDATE indexed_chunks SET chunk_text = ?, chunk_hash = ? WHERE id = ?')
+        .run('thinkingSignature textSignature encrypted_content stale searchable', 'stale-sensitive-hash', row.id);
+    } finally {
+      fileDb.close();
+    }
+
+    const mod = await loadExtension();
+    const mock = makeMockPi();
+    mod.default(mock.api as never);
+
+    const searchTool = mock.tools.find((tool) => tool.name === 'byomem_file_search')!;
+    const result = await searchTool.execute('sensitive', { query: 'thinkingSignature encrypted_content', baseDir: projectDir, mode: 'fts', limit: 5 }) as { content: { text: string }[]; results?: unknown[] };
+    const output = JSON.stringify(result);
+
+    expect(result.results).toEqual([]);
+    expect(output).not.toContain('thinkingSignature');
+    expect(output).not.toContain('textSignature');
+    expect(output).not.toContain('encrypted_content');
+  });
+
 });

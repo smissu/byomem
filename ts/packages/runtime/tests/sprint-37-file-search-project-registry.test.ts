@@ -150,7 +150,7 @@ describe('Sprint 37 file-search project registry', () => {
     expect(cliJson(logSpy)).toMatchObject({ projects: [] });
   });
 
-  it('records seen projects from file-search scan, search, and status without enabling them', async () => {
+  it('records seen projects from file-search scan and search without enabling them', async () => {
     const projectDir = trackedTemp('byomem-s37-seen-cli-project-');
     setRuntime();
     writeFileSync(join(projectDir, 'needle.txt'), 'needle seen body\n', 'utf8');
@@ -158,7 +158,14 @@ describe('Sprint 37 file-search project registry', () => {
 
     await main(['file-search-status', '--base-dir', projectDir, '--json']);
     await main(['file-search-project-list', '--base-dir', projectDir, '--json']);
-    expect(cliJson(logSpy).projects).toEqual([expect.objectContaining({ base_dir: resolve(projectDir), state: 'seen', source: 'manual-status' })]);
+    expect(cliJson(logSpy).projects).toEqual([]);
+
+    const statusStore = openFileSearchDb({ baseDir: projectDir, scanOnOpen: false });
+    try {
+      expect(listFileSearchProjects(statusStore.db)).toEqual([]);
+    } finally {
+      statusStore.close();
+    }
 
     await main(['file-search-scan', '--base-dir', projectDir, '--json']);
     await main(['file-search-project-list', '--base-dir', projectDir, '--json']);

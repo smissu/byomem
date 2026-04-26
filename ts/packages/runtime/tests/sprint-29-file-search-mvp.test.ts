@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openNativeStore } from '../src/store.js';
+import { resolveFileSearchProjectKey } from '../src/file-search-db.js';
 import { searchIndex } from '../src/file-search-query.js';
 
 type FileSearchDbHandle = {
@@ -83,6 +84,26 @@ describe('Sprint 29 file search MVP', () => {
         }),
       ]),
     );
+  });
+
+  it('filters stale indexed chunks that contain raw session support fields', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const store = openNativeStore({ baseDir: dir, fileSearchScanOnOpen: false });
+    const fileDb = (store as unknown as { fileSearchDb?: FileSearchDbHandle }).fileSearchDb;
+    const projectKey = resolveFileSearchProjectKey(dir);
+    const now = new Date().toISOString();
+    const filePath = join(dir, 'queue.json');
+    const fileRecordId = `file-record:${projectKey}:queue.json`;
+
+    fileDb?.db?.prepare('INSERT OR REPLACE INTO file_records (id, project_key, path, content_hash, mtime_ms, size_bytes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(fileRecordId, projectKey, filePath, 'stale-hash', 1, 1, now, now);
+    fileDb?.db?.prepare('INSERT OR REPLACE INTO indexed_files (id, project_key, path, file_record_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(`indexed-file:${projectKey}:queue.json`, projectKey, filePath, fileRecordId, now, now);
+    fileDb?.db?.prepare('INSERT OR REPLACE INTO indexed_chunks (id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(`indexed-chunk:${projectKey}:queue.json:0`, projectKey, fileRecordId, 0, '{"thinkingSignature":"hidden-signature","encrypted_content":"opaque","body":"stale searchable"}', 'stale-chunk-hash', now, now);
+
+    await expect(searchIndex(store, { query: 'stale searchable hidden', mode: 'fts' })).resolves.toEqual([]);
   });
 
   it('keeps file-search search isolated from the memories DB sidecar', async () => {

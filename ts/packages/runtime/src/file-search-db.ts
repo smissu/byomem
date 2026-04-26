@@ -68,7 +68,6 @@ export interface FileSearchScannerDatabaseCounts {
   indexedChunks: number;
   changedRows: number;
   reconciledRows: number;
-  projects: Array<{ projectKey: string; files: number }>;
 }
 
 export interface FileSearchScannerStatus {
@@ -135,7 +134,9 @@ export interface FileSearchDbHandle {
 
 const DEFAULT_FILE_SEARCH_DB_FILE = 'byomem-file-search.sqlite';
 const IGNORED_DIRS = new Set(['node_modules', '.git']);
-const IGNORED_BASENAMES = new Set(['byomem-index.sqlite', 'byomem-file-search.sqlite', 'native-store.json']);
+const ROOT_RUNTIME_IGNORED_DIRS = new Set(['queue', '.byomem']);
+const IGNORED_BASENAMES = new Set(['byomem-index.sqlite', 'byomem-file-search.sqlite', 'native-store.json', 'queue.json', 'worker.json', 'session-capture-state.json', 'byomem-turn-end.jsonl']);
+const SENSITIVE_CONTENT_MARKERS = ['thinkingSignature', 'textSignature', 'encrypted_content', 'encryptedContent'];
 const MAX_ACTIVE_PROJECTS = 3;
 const DEBOUNCE_WINDOW_MS = 250;
 const BACKSTOP_WINDOW_MS = 60_000;
@@ -146,9 +147,20 @@ function isSQLiteCompanion(filePath: string): boolean {
   return /-(wal|shm)$/.test(filePath);
 }
 
-function isIgnoredInternalFile(filePath: string): boolean {
+export function isIgnoredFileSearchArtifact(filePath: string, baseDir?: string): boolean {
   const name = basename(filePath);
-  return IGNORED_BASENAMES.has(name) || isSQLiteCompanion(name);
+  if (IGNORED_BASENAMES.has(name) || isSQLiteCompanion(name)) return true;
+  const normalized = baseDir ? normalizePathForGitignore(relative(baseDir, filePath)) : normalizePathForGitignore(filePath);
+  const rootSegment = normalized.split('/')[0];
+  return ROOT_RUNTIME_IGNORED_DIRS.has(rootSegment);
+}
+
+export function containsSensitiveFileSearchContent(content: string): boolean {
+  return SENSITIVE_CONTENT_MARKERS.some((marker) => content.includes(marker));
+}
+
+function isIgnoredInternalFile(filePath: string, baseDir?: string): boolean {
+  return isIgnoredFileSearchArtifact(filePath, baseDir);
 }
 
 interface GitignoreRule {
@@ -452,12 +464,12 @@ function walkFiles(rootDir: string): WalkFilesResult {
       const fullPath = join(current.dir, entry.name);
       const relativePath = relative(rootDir, fullPath);
       if (entry.isDirectory()) {
-        if (!IGNORED_DIRS.has(entry.name) && !isGitignored(gitignoreRules, relativePath, true)) queue.push({ dir: fullPath, rules: gitignoreRules });
+        if (!IGNORED_DIRS.has(entry.name) && !isIgnoredInternalFile(fullPath, rootDir) && !isGitignored(gitignoreRules, relativePath, true)) queue.push({ dir: fullPath, rules: gitignoreRules });
         else ignoredFiles += 1;
         continue;
       }
       if (!entry.isFile()) continue;
-      if (isIgnoredInternalFile(fullPath) || isGitignored(gitignoreRules, relativePath, false)) {
+      if (isIgnoredInternalFile(fullPath, rootDir) || isGitignored(gitignoreRules, relativePath, false)) {
         ignoredFiles += 1;
         continue;
       }
@@ -503,8 +515,7 @@ function scannerDatabaseCounts(db: BetterSqliteDatabase, projectKey: string): Fi
   const indexedChunks = db.prepare('SELECT COUNT(*) AS count FROM indexed_chunks WHERE project_key = ?').get(projectKey) as { count: number };
   const changedRows = db.prepare('SELECT COUNT(*) AS count FROM changed_files WHERE project_key = ?').get(projectKey) as { count: number };
   const reconciledRows = db.prepare('SELECT COUNT(*) AS count FROM reconciled_files WHERE project_key = ?').get(projectKey) as { count: number };
-  const projects = db.prepare('SELECT project_key AS projectKey, COUNT(*) AS files FROM indexed_files GROUP BY project_key ORDER BY project_key').all() as Array<{ projectKey: string; files: number }>;
-  return { indexedFiles: indexedFiles.count, indexedChunks: indexedChunks.count, changedRows: changedRows.count, reconciledRows: reconciledRows.count, projects };
+  return { indexedFiles: indexedFiles.count, indexedChunks: indexedChunks.count, changedRows: changedRows.count, reconciledRows: reconciledRows.count };
 }
 
 function normalizeProgress(value: string | null | undefined): FileSearchScannerProgress {
@@ -639,7 +650,7 @@ function scanAndIndexFiles(db: BetterSqliteDatabase, baseDir: string, progress: 
   const projectKey = deriveProjectKey(baseDir);
   const now = new Date().toISOString();
   const walked = walkFiles(baseDir);
-  const files = walked.files.filter((filePath) => !isIgnoredInternalFile(filePath));
+  const files = walked.files.filter((filePath) => !isIgnoredInternalFile(filePath, baseDir));
   const seen = new Set<string>();
   let lastPath: string | undefined;
   progress.discoveredFiles = files.length;
@@ -652,11 +663,17 @@ function scanAndIndexFiles(db: BetterSqliteDatabase, baseDir: string, progress: 
     try {
       lastPath = rel;
       onProgress?.(rel, lastPath);
-      seen.add(rel);
       const stats = statSync(filePath);
       const prefilterId = `prefilter:${projectKey}:${rel}`;
       const content = readFileSync(filePath, 'utf8');
       progress.bytesRead = (progress.bytesRead ?? 0) + Buffer.byteLength(content, 'utf8');
+      if (containsSensitiveFileSearchContent(content)) {
+        progress.ignoredFiles += 1;
+        progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
+        onProgress?.(rel, lastPath);
+        continue;
+      }
+      seen.add(rel);
       const contentHash = hashContent(content);
       const current = db.prepare('SELECT * FROM file_records WHERE id = ?').get(`file-record:${projectKey}:${rel}`) as { mtime_ms?: number | null; size_bytes?: number | null } | undefined;
       const prefilterMatches = Boolean(current && current.mtime_ms === stats.mtimeMs && current.size_bytes === stats.size);

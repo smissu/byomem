@@ -22,7 +22,7 @@ function tempDir(): string {
 }
 
 function openFileDb(dir: string): FileSearchDbHandle | undefined {
-  return (openNativeStore({ baseDir: dir }) as unknown as { fileSearchDb?: FileSearchDbHandle }).fileSearchDb;
+  return (openNativeStore({ baseDir: dir, fileSearchDbBaseDir: dir }) as unknown as { fileSearchDb?: FileSearchDbHandle }).fileSearchDb;
 }
 
 function indexedPaths(fileDb: FileSearchDbHandle | undefined): string[] {
@@ -90,6 +90,63 @@ describe('file scanner honors .gitignore', () => {
 
     expect(paths).toEqual(expect.arrayContaining([expect.stringContaining('root.tmp'), expect.stringContaining('keep.txt')]));
     expect(paths).toEqual(expect.not.arrayContaining([expect.stringContaining('generated.tmp')]));
+  });
+
+  it('excludes BYOMem runtime artifacts and raw session support fields from indexing', () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    mkdirSync(join(dir, 'queue', 'debug'), { recursive: true });
+    mkdirSync(join(dir, '.byomem'), { recursive: true });
+    mkdirSync(join(dir, 'src', 'queue'), { recursive: true });
+    writeFileSync(join(dir, 'keep.md'), 'safe searchable body\n', 'utf8');
+    writeFileSync(join(dir, 'src', 'queue', 'implementation.txt'), 'legitimate nested queue source\n', 'utf8');
+    writeFileSync(join(dir, 'queue.json'), '{"thinkingSignature":"hidden-signature","encrypted_content":"opaque"}\n', 'utf8');
+    writeFileSync(join(dir, 'worker.json'), '{"workerId":"worker-alpha"}\n', 'utf8');
+    writeFileSync(join(dir, 'queue', 'safe-looking.txt'), 'root queue runtime body should stay private\n', 'utf8');
+    writeFileSync(join(dir, 'queue', 'session-capture-state.json'), '{"textSignature":"hidden-text-signature"}\n', 'utf8');
+    writeFileSync(join(dir, 'queue', 'debug', 'turn.jsonl'), '{"encrypted_content":"debug-opaque"}\n', 'utf8');
+    writeFileSync(join(dir, '.byomem', 'runtime.json'), 'byomem runtime body should stay private\n', 'utf8');
+    writeFileSync(join(dir, 'transcript.jsonl'), '{"thinkingSignature":"hidden-support-field"}\n', 'utf8');
+
+    const fileDb = openFileDb(dir);
+    const paths = indexedPaths(fileDb);
+    const chunks = indexedChunks(fileDb).join('\n');
+
+    expect(paths).toEqual(expect.arrayContaining([expect.stringContaining('keep.md'), expect.stringContaining(join('src', 'queue', 'implementation.txt'))]));
+    expect(paths).toEqual(expect.not.arrayContaining([
+      expect.stringContaining('queue.json'),
+      expect.stringContaining('worker.json'),
+      expect.stringContaining(join('queue', 'safe-looking.txt')),
+      expect.stringContaining('session-capture-state.json'),
+      expect.stringContaining('turn.jsonl'),
+      expect.stringContaining('.byomem'),
+      expect.stringContaining('transcript.jsonl'),
+    ]));
+    expect(chunks).toContain('safe searchable body');
+    expect(chunks).toContain('legitimate nested queue source');
+    expect(chunks).not.toContain('root queue runtime body');
+    expect(chunks).not.toContain('byomem runtime body');
+    expect(chunks).not.toContain('thinkingSignature');
+    expect(chunks).not.toContain('textSignature');
+    expect(chunks).not.toContain('encrypted_content');
+  });
+
+  it('reconciles files out of the index when their content becomes sensitive', () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    writeFileSync(join(dir, 'public.txt'), 'public body\n', 'utf8');
+
+    const fileDb = openFileDb(dir);
+    expect(indexedPaths(fileDb)).toEqual(expect.arrayContaining([expect.stringContaining('public.txt')]));
+
+    writeFileSync(join(dir, 'public.txt'), '{"thinkingSignature":"hidden-support-field"}\n', 'utf8');
+    fileDb?.scanAndIndex?.();
+
+    expect(indexedPaths(fileDb)).toEqual(expect.not.arrayContaining([expect.stringContaining('public.txt')]));
+    expect(indexedChunks(fileDb).join('\n')).not.toContain('thinkingSignature');
+    expect(fileDb?.db?.prepare('SELECT * FROM reconciled_files WHERE file_path LIKE ?').all('%public.txt%')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ reconciliation_state: 'deleted' })]),
+    );
   });
 
   it('reconciles newly ignored previously indexed files out of the index on rescan', () => {

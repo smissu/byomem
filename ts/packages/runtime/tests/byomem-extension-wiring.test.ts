@@ -706,6 +706,18 @@ describe('byomem extension wiring', () => {
       provenance: { source: 'prompt-mode' },
     })).resolves.toMatchObject({ content: [{ type: 'text' }] });
 
+    const sensitiveResult = await storeTool!.execute('2', {
+      scope: 'project',
+      identity: { namespace: 'x', leafName: 'z', parentContext: 'root' },
+      content: { text: '{"thinkingSignature":"hidden-signature"}', structured: { encrypted_content: 'opaque-payload', keep: 'safe' } },
+      provenance: { source: 'prompt-mode' },
+    }) as { content: { text: string }[] };
+    expect(sensitiveResult.content[0].text).not.toContain('thinkingSignature');
+    expect(sensitiveResult.content[0].text).not.toContain('hidden-signature');
+    expect(sensitiveResult.content[0].text).not.toContain('encrypted_content');
+    expect(sensitiveResult.content[0].text).not.toContain('opaque-payload');
+    expect(sensitiveResult.content[0].text).toContain('safe');
+
     await expect(pruneTool!.execute('1', {
       id: 'project:x:root:y',
       scope: 'project',

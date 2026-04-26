@@ -11,7 +11,7 @@ import { openQueueRuntime } from './queue-runtime.js';
 import { openReadPath } from './read.js';
 import { resolveRuntimeMode } from './runtime-mode.js';
 import { searchIndex } from './search-index.js';
-import { searchIndex as searchFileIndexForTool } from './file-search-query.js';
+import { redactSensitiveFileSearchText, searchIndex as searchFileIndexForTool } from './file-search-query.js';
 import { captureSessionCheckpoint, type SessionCaptureInput } from './session-capture.js';
 import { openNativeStore } from './store.js';
 import { resolveActiveProjectContext } from './identity.js';
@@ -82,8 +82,25 @@ export interface ByomemEmbeddingConfig {
   embeddingTimeoutMs?: number;
 }
 
+const SENSITIVE_OUTPUT_KEYS = new Set(['thinkingSignature', 'textSignature', 'encrypted_content', 'encryptedContent']);
+const SENSITIVE_OUTPUT_TEXT_PATTERN = /["'](?:thinkingSignature|textSignature|encrypted_content|encryptedContent)["']\s*:/;
+
+function redactSensitiveOutput(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return SENSITIVE_OUTPUT_TEXT_PATTERN.test(value) ? '[REDACTED]' : value;
+  }
+  if (Array.isArray(value)) return value.map((item) => redactSensitiveOutput(item));
+  if (!value || typeof value !== 'object') return value;
+  const redacted: Record<string, unknown> = {};
+  for (const [key, nestedValue] of Object.entries(value as Record<string, unknown>)) {
+    if (SENSITIVE_OUTPUT_KEYS.has(key)) continue;
+    redacted[key] = redactSensitiveOutput(nestedValue);
+  }
+  return redacted;
+}
+
 function safeJson(value: unknown): string {
-  return JSON.stringify(value, null, 2);
+  return JSON.stringify(redactSensitiveOutput(value), null, 2);
 }
 
 function normalizeText(value: unknown): string | undefined {
@@ -221,7 +238,7 @@ function serializeFileSearchResult(result: { id?: unknown; score?: unknown; file
       project_key: typeof file.projectKey === 'string' ? file.projectKey : undefined,
       path: typeof file.path === 'string' ? file.path : undefined,
       chunk_index: typeof file.chunkIndex === 'number' ? file.chunkIndex : undefined,
-      chunk_text: typeof file.chunkText === 'string' ? file.chunkText : undefined,
+      chunk_text: typeof file.chunkText === 'string' ? redactSensitiveFileSearchText(file.chunkText) : undefined,
       chunk_hash: typeof file.chunkHash === 'string' ? file.chunkHash : undefined,
       lexical_score: typeof file.lexicalScore === 'number' ? file.lexicalScore : undefined,
       semantic_score: typeof file.semanticScore === 'number' ? file.semanticScore : undefined,
@@ -799,7 +816,6 @@ export default function (pi: ExtensionAPI) {
       const fileDb = openDirectFileSearchDb(targetBaseDir);
       try {
         const scanner = fileDb.getScannerStatus();
-        markFileSearchProjectSeen(fileDb.db, targetBaseDir, 'manual-status');
         const payload = serializeScannerStatus(scanner);
         return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
       } finally {

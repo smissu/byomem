@@ -1,7 +1,7 @@
 import type { MemoryRecord } from './contracts.js';
 import type { NativeStore } from './store.js';
 import { normalizeIdentity } from './identity.js';
-import { resolveFileSearchProjectKey } from './file-search-db.js';
+import { containsSensitiveFileSearchContent, isIgnoredFileSearchArtifact, resolveFileSearchProjectKey } from './file-search-db.js';
 import { markFileSearchProjectSeen } from './file-search-project-registry.js';
 import { cosineSimilarity, decodeEmbedding } from './embedding-vector.js';
 
@@ -93,20 +93,28 @@ function hitId(row: { project_key: string; path: string; chunk_index: number }):
   return `${row.project_key}:${row.path}:${row.chunk_index}`;
 }
 
+function isSafeFileSearchRow(row: Pick<ScoredRow, 'path' | 'chunk_text'>): boolean {
+  return !isIgnoredFileSearchArtifact(row.path) && !containsSensitiveFileSearchContent(row.chunk_text);
+}
+
+export function redactSensitiveFileSearchText(text: string): string {
+  return containsSensitiveFileSearchContent(text) ? '[redacted sensitive file-search chunk]' : text;
+}
+
 function buildHit(row: ScoredRow): FileSearchHit {
   return {
     id: hitId(row),
     scope: 'project',
     identity: normalizeIdentity('project', { namespace: row.project_key, leafName: row.path, parentContext: `chunk-${row.chunk_index}` }),
     provenance: { source: 'file-search', origin: row.semanticScore && !row.lexicalScore ? 'semantic-indexed-chunk' : 'indexed-chunk' },
-    content: { text: row.chunk_text },
+    content: { text: redactSensitiveFileSearchText(row.chunk_text) },
     metadata: { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
     score: row.score,
     file: {
       projectKey: row.project_key,
       path: row.path,
       chunkIndex: row.chunk_index,
-      chunkText: row.chunk_text,
+      chunkText: redactSensitiveFileSearchText(row.chunk_text),
       chunkHash: row.chunk_hash,
       lexicalScore: row.lexicalScore,
       semanticScore: row.semanticScore,
@@ -145,11 +153,13 @@ export async function searchIndex(store: NativeStore, query: FileSearchQuery): P
   const projectKey = canonicalProjectKey(projectBaseDir);
   const mode = query.mode ?? 'hybrid';
   const ftsRows = queryFts(fileDb.db, projectKey, query.query, mode === 'hybrid' ? limit * 2 : limit);
-  if (mode === 'fts') return ftsRows.slice(0, limit).map(buildHit);
+  const safeFtsRows = ftsRows.filter(isSafeFileSearchRow);
+  if (mode === 'fts') return safeFtsRows.slice(0, limit).map(buildHit);
 
   const semanticRows = await querySemantic(store, projectKey, query.query, mode === 'hybrid' ? limit * 2 : limit);
-  if (mode === 'semantic') return semanticRows.slice(0, limit).map(buildHit);
-  if (!semanticRows.length) return ftsRows.slice(0, limit).map(buildHit);
-  const blended = blendHits(ftsRows, semanticRows, limit);
-  return (blended.length ? blended : semanticRows.slice(0, limit)).map(buildHit);
+  const safeSemanticRows = semanticRows.filter(isSafeFileSearchRow);
+  if (mode === 'semantic') return safeSemanticRows.slice(0, limit).map(buildHit);
+  if (!safeSemanticRows.length) return safeFtsRows.slice(0, limit).map(buildHit);
+  const blended = blendHits(safeFtsRows, safeSemanticRows, limit);
+  return (blended.length ? blended : safeSemanticRows.slice(0, limit)).map(buildHit);
 }

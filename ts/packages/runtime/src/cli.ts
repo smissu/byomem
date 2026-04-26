@@ -267,7 +267,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
     if (command === 'file-search-status') {
       if (!store) throw new Error('Missing native store');
-      if (store.fileSearchDb) markFileSearchProjectSeen(store.fileSearchDb.db, store.fileSearchProjectBaseDir ?? store.baseDir, 'manual-status');
       const scanner = store.fileSearchDb?.getScannerStatus();
       console.log(JSON.stringify({ scanner, status: scanner }, null, 2));
       return;
