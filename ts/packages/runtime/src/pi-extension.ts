@@ -254,7 +254,7 @@ function openDirectFileSearchRegistryDb() {
   return openFileSearchRegistryDb({ dbBaseDir: process.env.BYOMEM_RUNTIME_BASE_DIR ?? runtimeBaseDir });
 }
 
-function serializeFileSearchResult(result: { id?: unknown; score?: unknown; file?: { projectKey?: unknown; path?: unknown; chunkIndex?: unknown; chunkText?: unknown; chunkHash?: unknown; lexicalScore?: unknown; semanticScore?: unknown } }) {
+function serializeFileSearchResult(result: { id?: unknown; score?: unknown; file?: { projectKey?: unknown; path?: unknown; chunkIndex?: unknown; chunkText?: unknown; chunkHash?: unknown; startLine?: unknown; endLine?: unknown; lexicalScore?: unknown; semanticScore?: unknown } }) {
   const file = result.file;
   return {
     id: typeof result.id === 'string' ? result.id : undefined,
@@ -265,6 +265,8 @@ function serializeFileSearchResult(result: { id?: unknown; score?: unknown; file
       chunk_index: typeof file.chunkIndex === 'number' ? file.chunkIndex : undefined,
       chunk_text: typeof file.chunkText === 'string' ? redactSensitiveFileSearchText(file.chunkText) : undefined,
       chunk_hash: typeof file.chunkHash === 'string' ? file.chunkHash : undefined,
+      start_line: typeof file.startLine === 'number' ? file.startLine : undefined,
+      end_line: typeof file.endLine === 'number' ? file.endLine : undefined,
       lexical_score: typeof file.lexicalScore === 'number' ? file.lexicalScore : undefined,
       semantic_score: typeof file.semanticScore === 'number' ? file.semanticScore : undefined,
     } : undefined,

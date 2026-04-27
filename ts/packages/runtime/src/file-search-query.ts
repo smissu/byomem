@@ -21,6 +21,8 @@ export interface FileSearchHit extends MemoryRecord {
     chunkIndex?: number;
     chunkText?: string;
     chunkHash?: string;
+    startLine?: number;
+    endLine?: number;
     lexicalScore?: number;
     semanticScore?: number;
   };
@@ -32,6 +34,8 @@ type FileSearchRow = {
   chunk_index: number;
   chunk_text: string;
   chunk_hash: string;
+  start_line?: number | null;
+  end_line?: number | null;
   content_hash: string | null;
 };
 
@@ -50,7 +54,7 @@ function queryFts(db: NonNullable<NativeStore['fileSearchDb']>['db'], projectKey
   if (!tokens.length) return [];
   const ftsQuery = tokens.map((token) => `"${token.replace(/"/g, '""')}"`).join(' ');
   const rows = db.prepare(`
-    SELECT fr.project_key, fr.path, fc.chunk_index, fc.chunk_text, fc.chunk_hash, fr.content_hash, bm25(indexed_chunks_fts) AS rank
+    SELECT fr.project_key, fr.path, fc.chunk_index, fc.chunk_text, fc.chunk_hash, fc.start_line, fc.end_line, fr.content_hash, bm25(indexed_chunks_fts) AS rank
     FROM indexed_chunks fc
     JOIN file_records fr ON fr.id = fc.file_record_id
     JOIN indexed_chunks_fts ON indexed_chunks_fts.rowid = fc.rowid
@@ -74,7 +78,7 @@ async function querySemantic(store: NativeStore, projectKey: string, query: stri
   if (!queryVector?.length) return [];
   const queryDimension = queryVector.length;
   const rows = fileDb.db.prepare(`
-    SELECT fr.project_key, fr.path, fc.chunk_index, fc.chunk_text, fc.chunk_hash, fr.content_hash, e.embedding, e.dimension
+    SELECT fr.project_key, fr.path, fc.chunk_index, fc.chunk_text, fc.chunk_hash, fc.start_line, fc.end_line, fr.content_hash, e.embedding, e.dimension
     FROM indexed_chunk_embeddings e
     JOIN indexed_chunks fc ON fc.id = e.chunk_id
     JOIN file_records fr ON fr.id = fc.file_record_id
@@ -125,6 +129,8 @@ function buildHit(row: ScoredRow): FileSearchHit {
       chunkIndex: row.chunk_index,
       chunkText: redactSensitiveFileSearchText(row.chunk_text),
       chunkHash: row.chunk_hash,
+      ...(typeof row.start_line === 'number' ? { startLine: row.start_line } : {}),
+      ...(typeof row.end_line === 'number' ? { endLine: row.end_line } : {}),
       lexicalScore: row.lexicalScore,
       semanticScore: row.semanticScore,
     },

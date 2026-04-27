@@ -71,6 +71,7 @@ Memories move through a simple state model:
 - [Sprint 37] sprint-37-file-search-project-registry-and-registration-skill.md — explicit file-search project registry and agent registration skill
 - [Sprint 38] sprint-38-pi-extension-file-search-tools.md — direct Pi extension tools for file search, scanner status, explicit scan trigger, and registry management
 - [Sprint 39] sprint-39-active-project-file-search-auto-polling.md — opt-in active-project scanner polling with configurable idle shutoff and poll observability
+- [Sprint 42] sprint-42-file-search-line-ranges.md — scanner-derived file-search source line ranges exposed through FTS, semantic/hybrid, CLI, and Pi tool results
 
 
 ## Cross-sprint dependencies

@@ -420,6 +420,8 @@ function ensureScannerIndexerSchema(db: BetterSqliteDatabase): void {
       chunk_index INTEGER NOT NULL,
       chunk_text TEXT NOT NULL,
       chunk_hash TEXT NOT NULL,
+      start_line INTEGER,
+      end_line INTEGER,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY(file_record_id) REFERENCES file_records(id) ON DELETE CASCADE
@@ -489,6 +491,8 @@ function ensureScannerIndexerSchema(db: BetterSqliteDatabase): void {
     CREATE INDEX IF NOT EXISTS idx_indexed_chunk_embeddings_project_key ON indexed_chunk_embeddings(project_key);
     CREATE INDEX IF NOT EXISTS idx_indexed_chunk_embeddings_model ON indexed_chunk_embeddings(model, configured_dimension, status);
   `);
+  ensureColumn(db, 'indexed_chunks', 'start_line', 'INTEGER');
+  ensureColumn(db, 'indexed_chunks', 'end_line', 'INTEGER');
   ensureColumn(db, 'file_embedding_cache', 'provider_key', 'TEXT');
   ensureColumn(db, 'file_embedding_cache', 'effective_dimension', 'INTEGER');
   ensureColumn(db, 'file_embedding_cache', 'cache_version', 'TEXT');
@@ -523,8 +527,33 @@ function hashContent(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
-function chunkContent(content: string): string[] {
-  return content.split(/\r?\n/).filter((line) => line.trim().length > 0);
+interface IndexedContentChunk {
+  text: string;
+  startLine: number;
+  endLine: number;
+}
+
+function chunkContent(content: string): IndexedContentChunk[] {
+  return content.split(/\r?\n/)
+    .map((line, index) => ({ text: line, startLine: index + 1, endLine: index + 1 }))
+    .filter((chunk) => chunk.text.trim().length > 0);
+}
+
+type IndexedChunkSnapshotRow = {
+  id: string;
+  chunk_index: number;
+  chunk_text: string;
+  chunk_hash: string;
+};
+
+function canBackfillIndexedChunkLineMetadata(existingChunks: IndexedChunkSnapshotRow[], chunks: IndexedContentChunk[]): boolean {
+  return existingChunks.length === chunks.length && existingChunks.every((row, index) => {
+    const chunk = chunks[index];
+    return chunk !== undefined
+      && row.chunk_index === index
+      && row.chunk_text === chunk.text
+      && row.chunk_hash === hashContent(chunk.text);
+  });
 }
 
 interface WalkFilesResult {
@@ -673,8 +702,53 @@ function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel
   const isNew = !current;
   const metadataChanged = Boolean(current && (current.mtime_ms !== stats.mtimeMs || current.size_bytes !== stats.size));
   const hashConfirmed = !current || current.content_hash !== contentHash || metadataChanged;
+  const contentAndMetadataMatch = Boolean(current && current.content_hash === contentHash && current.mtime_ms === stats.mtimeMs && current.size_bytes === stats.size);
+  const missingLineMetadata = contentAndMetadataMatch
+    ? ((db.prepare('SELECT COUNT(*) AS count FROM indexed_chunks WHERE file_record_id = ? AND (start_line IS NULL OR end_line IS NULL)').get(recordId) as { count: number }).count > 0)
+    : false;
 
-  if (current && current.content_hash === contentHash && current.mtime_ms === stats.mtimeMs && current.size_bytes === stats.size) return { changed: false, chunksWritten: 0 };
+  if (contentAndMetadataMatch && !missingLineMetadata) return { changed: false, chunksWritten: 0 };
+
+  const chunks = chunkContent(content);
+  if (contentAndMetadataMatch && missingLineMetadata) {
+    const existingChunks = db.prepare('SELECT id, chunk_index, chunk_text, chunk_hash FROM indexed_chunks WHERE file_record_id = ? ORDER BY chunk_index').all(recordId) as IndexedChunkSnapshotRow[];
+    if (canBackfillIndexedChunkLineMetadata(existingChunks, chunks)) {
+      db.prepare('UPDATE file_records SET path = ?, content_hash = ?, mtime_ms = ?, size_bytes = ?, updated_at = ? WHERE id = ?').run(
+        filePath,
+        contentHash,
+        stats.mtimeMs,
+        stats.size,
+        now,
+        recordId,
+      );
+      db.prepare('UPDATE indexed_files SET path = ?, file_record_id = ?, updated_at = ? WHERE id = ?').run(
+        filePath,
+        recordId,
+        now,
+        `indexed-file:${projectKey}:${rel}`,
+      );
+      upsertRow(db, 'INSERT OR REPLACE INTO changed_files (id, project_key, file_path, change_state, created_at) VALUES (?, ?, ?, ?, ?)', [
+        `changed:${projectKey}:${rel}`,
+        projectKey,
+        filePath,
+        hashConfirmed ? 'confirmed-by-hash' : 'new',
+        now,
+      ]);
+      upsertRow(db, 'INSERT OR REPLACE INTO reconciled_files (id, project_key, file_path, reconciliation_state, created_at) VALUES (?, ?, ?, ?, ?)', [
+        `reconciled:${projectKey}:${rel}`,
+        projectKey,
+        filePath,
+        isNew ? 'new' : 'changed',
+        now,
+      ]);
+      const updateChunkLineMetadata = db.prepare('UPDATE indexed_chunks SET start_line = ?, end_line = ?, updated_at = ? WHERE id = ?');
+      existingChunks.forEach((row, chunkIndex) => {
+        const chunk = chunks[chunkIndex]!;
+        updateChunkLineMetadata.run(chunk.startLine, chunk.endLine, now, row.id);
+      });
+      return { changed: true, chunksWritten: chunks.length };
+    }
+  }
 
   upsertRow(db, 'INSERT OR REPLACE INTO file_records (id, project_key, path, content_hash, mtime_ms, size_bytes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [
     recordId,
@@ -709,15 +783,16 @@ function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel
     now,
   ]);
   db.prepare('DELETE FROM indexed_chunks WHERE file_record_id = ?').run(recordId);
-  const chunks = chunkContent(content);
-  chunks.forEach((chunkText, chunkIndex) => {
-    upsertRow(db, 'INSERT OR REPLACE INTO indexed_chunks (id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [
+  chunks.forEach((chunk, chunkIndex) => {
+    upsertRow(db, 'INSERT OR REPLACE INTO indexed_chunks (id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash, start_line, end_line, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
       `indexed-chunk:${projectKey}:${rel}:${chunkIndex}`,
       projectKey,
       recordId,
       chunkIndex,
-      chunkText,
-      hashContent(chunkText),
+      chunk.text,
+      hashContent(chunk.text),
+      chunk.startLine,
+      chunk.endLine,
       now,
       now,
     ]);

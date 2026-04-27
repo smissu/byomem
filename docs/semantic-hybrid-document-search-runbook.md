@@ -1,7 +1,7 @@
 # Semantic / Hybrid Document Search Runbook
 
 ## Status
-Sprint 32 adds semantic and hybrid search over the BYOMem file-search DB. Sprint 36 makes file-search DB storage global by default while preserving per-project `project_key` partitioning. Sprint 37 adds an explicit file-search project registry with `seen`, `enabled`, and `disabled` states for future scanner automation. Sprint 38 adds direct Pi extension file-search tools for search, status, manual scan, and registry management. Sprint 39 adds explicit active-project file-search polling controls that remain default/global off. The file-search stack remains physically separate from the memories DB and keeps SQLite FTS as the lexical baseline. Semantic and hybrid file-search are enabled by default, and when no remote embedding endpoint is configured the runtime uses deterministic fallback embeddings so semantic/hybrid search still works.
+Sprint 32 adds semantic and hybrid search over the BYOMem file-search DB. Sprint 36 makes file-search DB storage global by default while preserving per-project `project_key` partitioning. Sprint 37 adds an explicit file-search project registry with `seen`, `enabled`, and `disabled` states for future scanner automation. Sprint 38 adds direct Pi extension file-search tools for search, status, manual scan, and registry management. Sprint 39 adds explicit active-project file-search polling controls that remain default/global off. Sprint 42 adds source line-range metadata to indexed chunks and search results. The file-search stack remains physically separate from the memories DB and keeps SQLite FTS as the lexical baseline. Semantic and hybrid file-search are enabled by default, and when no remote embedding endpoint is configured the runtime uses deterministic fallback embeddings so semantic/hybrid search still works.
 
 ## Prerequisites
 For real Ollama-backed semantic search, install/pull the embedding model:
@@ -89,6 +89,12 @@ node ts/packages/runtime/dist/cli.js file-search-scan --base-dir /path/to/projec
 
 The file-search stack remains physically separate from the memories DB and keeps SQLite FTS as the lexical baseline.
 
+
+## Result location metadata
+
+Sprint 42 file-search results include scanner-derived source line ranges when the indexed chunk row has them. Runtime/CLI `FileSearchHit.file` objects use camelCase `startLine` and `endLine`; direct Pi tool DTOs use snake_case `start_line` and `end_line`. These fields are 1-based physical source line numbers captured at index time. Current chunks remain one non-empty source line each, but blank lines still count when deriving the physical line number.
+
+`chunk_index` remains a chunk ordinal and must not be interpreted as a source line number. Existing/legacy DB rows that have not been rescanned may omit line range fields. Because line ranges are index-time metadata, verify the file contents or rescan before editing if the working tree may have changed since the last scan.
 
 ## Active-project file-search polling
 Sprint 39 adds opt-in polling for one active project in the current process/session. Polling is **default/global off**: opening BYOMem, using memory tools, using registry tools, and using existing file-search search/status/scan tools does not start a timer.

@@ -27,6 +27,7 @@
 - [Sprint 37 — File Search Project Registry and Registration Skill](./sprint-37-file-search-project-registry-and-registration-skill.md)
 - [Sprint 38 — Pi Extension File-Search Tools](./sprint-38-pi-extension-file-search-tools.md)
 - [Sprint 39 — Active-Project File-Search Auto Polling](./sprint-39-active-project-file-search-auto-polling.md)
+- [Sprint 42 — File-Search Source Line Ranges](./sprint-42-file-search-line-ranges.md)
 - [Semantic / Hybrid Document Search Runbook](./semantic-hybrid-document-search-runbook.md)
 - [Pi memory implementation backlog](./pi-memory-implementation-backlog.md)
 
