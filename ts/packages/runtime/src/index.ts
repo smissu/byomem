@@ -30,6 +30,8 @@ export { searchIndex as searchFileIndex } from './file-search-query.js';
 export type { FileSearchHit, FileSearchQuery } from './file-search-query.js';
 export { openFileSearchDb, openFileSearchRegistryDb, resolveDefaultFileSearchDbPath, resolveFileSearchProjectKey } from './file-search-db.js';
 export type { FileSearchDbHandle, FileSearchDbOptions, FileSearchEmbeddingDiagnostics, FileSearchRefreshEvent, FileSearchRegistryDbHandle, FileSearchScannerDatabaseCounts, FileSearchScannerProgress, FileSearchScannerState, FileSearchScannerStatus, FileSearchScannerTrigger } from './file-search-db.js';
+export { FileSearchScanManager } from './file-search-scan-manager.js';
+export type { FileSearchAsyncScanJob, FileSearchAsyncScanJobState, FileSearchAsyncScanJobStatus, FileSearchAsyncScanRequest, FileSearchScanManagerOptions } from './file-search-scan-manager.js';
 export { ensureFileSearchProjectRegistrySchema, getFileSearchProject, listFileSearchProjects, markFileSearchProjectSeen, registerFileSearchProject, resolveFileSearchProjectRegistryIdentity, unregisterFileSearchProject } from './file-search-project-registry.js';
 export type { FileSearchProjectEntry, FileSearchProjectSource, FileSearchProjectState } from './file-search-project-registry.js';
 export { openSharedCorpusStore, resolveCorpusPath } from './shared-corpus.js';

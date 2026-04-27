@@ -93,12 +93,12 @@ describe('Sprint 38 file-search extension direct tool contract RED tests', () =>
     });
     expect(mock.tools.find((tool) => tool.name === 'byomem_file_search_status')?.parameters).toEqual({
       type: 'object',
-      properties: { baseDir: { type: 'string' } },
+      properties: { baseDir: { type: 'string' }, jobId: { type: 'string' } },
       additionalProperties: false,
     });
     expect(mock.tools.find((tool) => tool.name === 'byomem_file_search_scan')?.parameters).toEqual({
       type: 'object',
-      properties: { baseDir: { type: 'string' } },
+      properties: { baseDir: { type: 'string' }, async: { type: 'boolean' }, wait: { type: 'boolean' } },
       additionalProperties: false,
     });
     expect(mock.tools.find((tool) => tool.name === 'byomem_file_search_project_register')?.parameters).toEqual({
@@ -198,6 +198,38 @@ describe('Sprint 38 file-search extension direct tool contract RED tests', () =>
     expect(scan).toMatchObject({ scanner: expect.any(Object), status: expect.any(Object) });
     expect(scan.status).not.toHaveProperty('database.projects');
     expect(scan.scanner).not.toHaveProperty('database.projects');
+  });
+
+  it('supports explicit runtime-local async scan enqueue and status lookup without changing default scan behavior', async () => {
+    const projectDir = tempDir('byomem-s38-s43-async-');
+    const runtimeDir = tempDir('byomem-s38-s43-runtime-');
+    dirs.push(projectDir, runtimeDir);
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', runtimeDir);
+    writeFileSync(join(projectDir, 'async.txt'), 'async body\n', 'utf8');
+
+    const mod = await loadExtension();
+    const mock = makeMockPi();
+    mod.default(mock.api as never);
+
+    const scanTool = mock.tools.find((tool) => tool.name === 'byomem_file_search_scan')!;
+    const statusTool = mock.tools.find((tool) => tool.name === 'byomem_file_search_status')!;
+
+    const enqueue = await scanTool.execute('1', { baseDir: projectDir, async: true }) as { job?: { job_id?: string; state?: string; durable?: boolean }; scanner?: { state?: string } | null; runtime_local?: boolean; durable?: boolean };
+    expect(enqueue).toMatchObject({
+      runtime_local: true,
+      durable: false,
+      job: { job_id: expect.stringMatching(/^runtime-scan-/), state: 'queued', durable: false },
+    });
+
+    const byJob = await statusTool.execute('2', { jobId: enqueue.job?.job_id }) as { job_status?: { found?: boolean }; job?: { job_id?: string } };
+    expect(byJob).toMatchObject({ job_status: { found: true }, job: { job_id: enqueue.job?.job_id } });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const completed = await statusTool.execute('3', { jobId: enqueue.job?.job_id }) as { job?: { state?: string; scanner?: { state?: string; database?: { indexedFiles?: number } } } };
+    expect(['running', 'completed']).toContain(completed.job?.state);
+    if (completed.job?.state === 'completed') {
+      expect(completed.job.scanner).toMatchObject({ state: 'completed', database: expect.objectContaining({ indexedFiles: 1 }) });
+    }
   });
 
   it('skips default database extensions and binary content through the direct Pi scan tool', async () => {

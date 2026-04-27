@@ -172,6 +172,22 @@ describe('runtime cli', () => {
     });
   });
 
+  it('rejects file-search-scan --async deterministically without opening a hidden worker', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    writeFileSync(join(dir, 'async-cli.txt'), 'async cli body\n', 'utf8');
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await main(['file-search-scan', '--base-dir', dir, '--async', '--json']);
+
+    expect(process.exitCode).toBe(1);
+    expect(JSON.parse(String(errSpy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      error: expect.stringContaining('async-scan-runtime-local-only'),
+      command: 'file-search-scan',
+    });
+    expect(existsSync(join(dir, 'byomem-file-search.sqlite'))).toBe(false);
+  });
+
   it('honors file-search scanner flags for explicit replacement semantics and binary opt-out', async () => {
     const dir = tempDir();
     dirs.push(dir);

@@ -1,7 +1,7 @@
 # Semantic / Hybrid Document Search Runbook
 
 ## Status
-Sprint 32 adds semantic and hybrid search over the BYOMem file-search DB. Sprint 36 makes file-search DB storage global by default while preserving per-project `project_key` partitioning. Sprint 37 adds an explicit file-search project registry with `seen`, `enabled`, and `disabled` states for future scanner automation. Sprint 38 adds direct Pi extension file-search tools for search, status, manual scan, and registry management. Sprint 39 adds explicit active-project file-search polling controls that remain default/global off. Sprint 42 adds source line-range metadata to indexed chunks and search results. The file-search stack remains physically separate from the memories DB and keeps SQLite FTS as the lexical baseline. Semantic and hybrid file-search are enabled by default, and when no remote embedding endpoint is configured the runtime uses deterministic fallback embeddings so semantic/hybrid search still works.
+Sprint 32 adds semantic and hybrid search over the BYOMem file-search DB. Sprint 36 makes file-search DB storage global by default while preserving per-project `project_key` partitioning. Sprint 37 adds an explicit file-search project registry with `seen`, `enabled`, and `disabled` states for future scanner automation. Sprint 38 adds direct Pi extension file-search tools for search, status, manual scan, and registry management. Sprint 39 adds explicit active-project file-search polling controls that remain default/global off. Sprint 42 adds source line-range metadata to indexed chunks and search results. Sprint 43 adds runtime-local async scan jobs for Pi-hosted direct scan calls while preserving synchronous CLI/default scan behavior. The file-search stack remains physically separate from the memories DB and keeps SQLite FTS as the lexical baseline. Semantic and hybrid file-search are enabled by default, and when no remote embedding endpoint is configured the runtime uses deterministic fallback embeddings so semantic/hybrid search still works.
 
 ## Prerequisites
 For real Ollama-backed semantic search, install/pull the embedding model:
@@ -62,8 +62,9 @@ These tools are the preferred agent interface when available. They use the targe
 
 ### Direct tool behavior
 - `byomem_file_search` searches the current index only. It does not scan project files and does not refresh semantic embeddings implicitly.
-- `byomem_file_search_status` reports scanner state without scanning.
-- `byomem_file_search_scan` performs one explicit synchronous manual scan so the index can catch up after known file edits.
+- `byomem_file_search_status` reports scanner state without scanning. It also accepts `jobId` to inspect runtime-local async scan jobs created in the same Pi extension process.
+- `byomem_file_search_scan` performs one explicit synchronous manual scan by default so the index can catch up after known file edits.
+- `byomem_file_search_scan` supports explicit runtime-local async mode with `{ "async": true }` or `{ "wait": false }`. The response includes a `job.job_id`, `state`, timestamps, `durable: false`, and the latest in-process scanner snapshot when available.
 - Registry tools are explicit opt-in/soft-disable operations and do not scan or start background workers.
 - The direct tools do not rely on hidden polling, file watchers, or daemons.
 - Existing direct search/status/scan and registry tools remain non-polling by default. Polling only starts through the polling-specific enable surface.
@@ -89,6 +90,18 @@ node ts/packages/runtime/dist/cli.js file-search-scan --base-dir /path/to/projec
 
 The file-search stack remains physically separate from the memories DB and keeps SQLite FTS as the lexical baseline.
 
+## Runtime-local async scans
+Sprint 43 async scan jobs are an in-process Pi/runtime convenience, not a durable background service:
+
+- Jobs are kept only in memory inside the current runtime process and disappear on process restart.
+- Responses include `durable: false`; callers must not treat `job_id` values as persistent cross-process handles.
+- Same-project duplicate async scan requests in one process return the active `job_id` rather than starting a duplicate scan.
+- Different-project async scans are serialized by the default runtime-local concurrency limit of `1`.
+- Terminal `completed`/`failed` jobs remain available only in bounded recent in-memory history and do not block later enqueue attempts.
+- `byomem_file_search_status({ jobId })` is read-only and returns a deterministic runtime-local not-found response for unknown/expired job ids.
+- Sprint 43 does **not** add file-search scan-job DB tables, DB leases, heartbeat stale recovery, detached workers, cross-process queue ownership, filesystem watchers, or changes to the existing BYOMem queue system.
+
+CLI `file-search-scan` remains synchronous by default. `file-search-scan --async` fails deterministically with `async-scan-runtime-local-only` because there is no active runtime-worker bridge in Sprint 43; it does not spawn hidden background work or enqueue durable scan jobs.
 
 ## Result location metadata
 

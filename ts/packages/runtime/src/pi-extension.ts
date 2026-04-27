@@ -16,8 +16,9 @@ import { captureSessionCheckpoint, type SessionCaptureInput } from './session-ca
 import { openNativeStore } from './store.js';
 import { resolveActiveProjectContext } from './identity.js';
 import { listFileSearchProjects, markFileSearchProjectSeen, normalizeFileSearchPollingDisabledReason, registerFileSearchProject, unregisterFileSearchProject, type FileSearchPollingDisabledReason } from './file-search-project-registry.js';
-import { openFileSearchDb, openFileSearchRegistryDb, type FileSearchDbHandle } from './file-search-db.js';
+import { openFileSearchDb, openFileSearchRegistryDb, resolveFileSearchProjectKey } from './file-search-db.js';
 import { FileSearchActivePoller, disableFileSearchPolling, getFileSearchPollingStatus } from './file-search-active-poller.js';
+import { FileSearchScanManager } from './file-search-scan-manager.js';
 
 function resolveDefaultRuntimeBaseDir(): string {
   return resolve(homedir(), '.byomem', 'runtime');
@@ -252,6 +253,31 @@ function openDirectFileSearchDb(targetBaseDir: string) {
 
 function openDirectFileSearchRegistryDb() {
   return openFileSearchRegistryDb({ dbBaseDir: process.env.BYOMEM_RUNTIME_BASE_DIR ?? runtimeBaseDir });
+}
+
+let runtimeFileSearchScanManager: FileSearchScanManager | undefined;
+
+function getRuntimeFileSearchScanManager(): FileSearchScanManager {
+  runtimeFileSearchScanManager ??= new FileSearchScanManager({
+    concurrency: 1,
+    scanRunner: (request) => {
+      const fileDb = openDirectFileSearchDb(request.baseDir);
+      try {
+        return fileDb.scanAndIndex({ trigger: request.trigger });
+      } finally {
+        fileDb.close();
+      }
+    },
+    statusReader: (request) => {
+      const fileDb = openDirectFileSearchDb(request.baseDir);
+      try {
+        return fileDb.getScannerStatus();
+      } finally {
+        fileDb.close();
+      }
+    },
+  });
+  return runtimeFileSearchScanManager;
 }
 
 function serializeFileSearchResult(result: { id?: unknown; score?: unknown; file?: { projectKey?: unknown; path?: unknown; chunkIndex?: unknown; chunkText?: unknown; chunkHash?: unknown; startLine?: unknown; endLine?: unknown; lexicalScore?: unknown; semanticScore?: unknown } }) {
@@ -953,14 +979,24 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool?.({
     name: 'byomem_file_search_status',
     label: 'BYOMem File Search Status',
-    description: 'Inspect scanner status for a project without scanning.',
-    parameters: { type: 'object', properties: { baseDir: { type: 'string' } }, additionalProperties: false },
+    description: 'Inspect scanner status and runtime-local async scan jobs for a project without scanning.',
+    parameters: { type: 'object', properties: { baseDir: { type: 'string' }, jobId: { type: 'string' } }, additionalProperties: false },
     async execute(_toolCallId: string, params: unknown) {
-      const targetBaseDir = resolveFileSearchTargetBaseDir((params as { baseDir?: unknown })?.baseDir);
+      const intent = params as { baseDir?: unknown; jobId?: unknown };
+      const jobId = normalizeText(intent?.jobId);
+      const manager = getRuntimeFileSearchScanManager();
+      if (jobId) {
+        const jobStatus = manager.getJobStatus(jobId);
+        const payload = { job_status: jobStatus, job: jobStatus.job, scanner: jobStatus.job?.scanner ?? null, status: jobStatus.job?.scanner ?? null };
+        return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
+      }
+      const targetBaseDir = resolveFileSearchTargetBaseDir(intent?.baseDir);
       const fileDb = openDirectFileSearchDb(targetBaseDir);
       try {
         const scanner = fileDb.getScannerStatus();
-        const payload = serializeScannerStatus(scanner);
+        const activeJob = manager.getProjectActiveJob(scanner.projectKey) ?? null;
+        const latestJob = manager.getProjectLatestJob(scanner.projectKey) ?? null;
+        const payload = { ...serializeScannerStatus(scanner), job: latestJob, runtime_local_jobs: { active: activeJob, latest: latestJob, durable: false } };
         return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
       } finally {
         fileDb.close();
@@ -971,10 +1007,20 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool?.({
     name: 'byomem_file_search_scan',
     label: 'BYOMem File Search Scan',
-    description: 'Trigger one manual file-search scan for a project.',
-    parameters: { type: 'object', properties: { baseDir: { type: 'string' } }, additionalProperties: false },
+    description: 'Trigger one manual file-search scan for a project. Explicit async mode is runtime-local and not durable.',
+    parameters: { type: 'object', properties: { baseDir: { type: 'string' }, async: { type: 'boolean' }, wait: { type: 'boolean' } }, additionalProperties: false },
     async execute(_toolCallId: string, params: unknown) {
-      const targetBaseDir = resolveFileSearchTargetBaseDir((params as { baseDir?: unknown })?.baseDir);
+      const intent = params as { baseDir?: unknown; async?: unknown; wait?: unknown };
+      if (intent?.async !== undefined && typeof intent.async !== 'boolean') throw new Error('Invalid async: must be a boolean');
+      if (intent?.wait !== undefined && typeof intent.wait !== 'boolean') throw new Error('Invalid wait: must be a boolean');
+      const targetBaseDir = resolveFileSearchTargetBaseDir(intent?.baseDir);
+      const wantsAsync = intent?.async === true || intent?.wait === false;
+      if (wantsAsync) {
+        const manager = getRuntimeFileSearchScanManager();
+        const job = manager.enqueueScan({ projectKey: resolveFileSearchProjectKey(targetBaseDir), baseDir: targetBaseDir, trigger: 'manual' });
+        const payload = { job, scanner: job.scanner ?? null, status: job.scanner ?? null, runtime_local: true, durable: false };
+        return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
+      }
       const fileDb = openDirectFileSearchDb(targetBaseDir);
       try {
         fileDb.scanAndIndex({ trigger: 'manual' });

@@ -144,6 +144,7 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--messages') { options.generationMessages = requireValue(next, '--messages'); i += 1; }
     else if (arg === '--input') { payload.input = requireValue(next, '--input'); i += 1; }
     else if (arg === '--json') { payload.json = 'true'; }
+    else if (arg === '--async') { payload.async = 'true'; }
     else if (arg === '--watch') { flags.watch = true; }
     else if (arg === '--watch-interval') { flags.watchInterval = requireValue(next, '--watch-interval'); i += 1; }
     else if (arg === '--poll-interval-seconds') { payload.pollIntervalSeconds = requireValue(next, '--poll-interval-seconds'); i += 1; }
@@ -274,6 +275,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         registryDb.close();
       }
     }
+    if (command === 'file-search-scan' && payload.async === 'true') {
+      throw new Error('async-scan-runtime-local-only: file-search-scan --async requires an active runtime worker and is unsupported by the CLI in Sprint 43');
+    }
+
     store = isGenerationCommand || isObserverCommand
       ? undefined
       : openNativeStore({
