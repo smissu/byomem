@@ -11,12 +11,32 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "default": "./dist/mcp/index.js"
+    },
+    "./mcp/bootstrap": {
+      "types": "./dist/mcp/bootstrap.d.ts",
+      "default": "./dist/mcp/bootstrap.js"
+    },
+    "./mcp/readonly": {
+      "types": "./dist/mcp/readonly.d.ts",
+      "default": "./dist/mcp/readonly.js"
+    },
+    "./mcp/operations": {
+      "types": "./dist/mcp/operations.d.ts",
+      "default": "./dist/mcp/operations.js"
     }
   },
   "scripts": {
-    "build": "tsc -p ./tsconfig.build.json"
+    "build": "tsc -p ./tsconfig.build.json",
+    "mcp:bootstrap": "node ./dist/mcp/bootstrap.js",
+    "mcp:readonly": "node ./dist/mcp/readonly.js",
+    "mcp:operations": "node ./dist/mcp/operations.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^11.10.0"
   }
 }

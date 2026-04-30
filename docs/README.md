@@ -39,5 +39,16 @@
 - The TS-native `queue-observe --watch` path is the default active monitoring workflow for runtime queue inspection.
 - Any retained `monitor-queue.sh` or Python queue-monitoring helper should be treated as legacy/non-default or dev-only.
 
+## Project graph
+- [BYOMem project graph](./project-graph.md)
+- [BYOMem semantic graph](./project-semantic-graph.md)
+
+## Hermes / MCP rollout
+- [BYOMem MCP rollout roadmap](./byomem-mcp-rollout-roadmap.md)
+- [BYOMem MCP bootstrap](./byomem-mcp-bootstrap.md)
+- [BYOMem read-only MCP server](./byomem-mcp-readonly.md)
+- [BYOMem mutation-capable MCP server](./sprint-46-byomem-mcp-mutations.md)
+- [Sprint 47 — MCP registry, polling hardening, and docs](./sprint-47-byomem-mcp-registry-polling-hardening.md)
+
 ## Local LLM benchmarks
 - [Local LLM benchmark report](./local-llm-benchmark-report.md)

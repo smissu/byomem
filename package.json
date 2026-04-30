@@ -6,7 +6,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "build": "tsc -p tsconfig.build.json && npm --prefix ts/packages/runtime run build",
-    "byomem:cli": "node ts/packages/runtime/dist/cli.js"
+    "byomem:cli": "node ts/packages/runtime/dist/cli.js",
+    "byomem:mcp-bootstrap": "node ts/packages/runtime/dist/mcp/bootstrap.js",
+    "byomem:mcp-operations": "node ts/packages/runtime/dist/mcp/operations.js"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
@@ -14,6 +16,7 @@
     "vitest": "^2.1.9"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/better-sqlite3": "^7.6.13",
     "better-sqlite3": "^12.9.0"
   }

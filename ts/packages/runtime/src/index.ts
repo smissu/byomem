@@ -24,6 +24,7 @@ export * from './queue.js';
 export * from './queue-runtime.js';
 export * from './markdown-projection.js';
 export { normalizeIdentity, normalizeLeafName, normalizeStableKey, normalizeScope } from './identity.js';
+export * from './readonly-core.js';
 export * from './embedding-client.js';
 export * from './embedding-vector.js';
 export { searchIndex as searchFileIndex } from './file-search-query.js';
@@ -35,3 +36,4 @@ export type { FileSearchAsyncScanJob, FileSearchAsyncScanJobState, FileSearchAsy
 export { ensureFileSearchProjectRegistrySchema, getFileSearchProject, listFileSearchProjects, markFileSearchProjectSeen, registerFileSearchProject, resolveFileSearchProjectRegistryIdentity, unregisterFileSearchProject } from './file-search-project-registry.js';
 export type { FileSearchProjectEntry, FileSearchProjectSource, FileSearchProjectState } from './file-search-project-registry.js';
 export { openSharedCorpusStore, resolveCorpusPath } from './shared-corpus.js';
+export * from './mcp/index.js';
