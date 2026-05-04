@@ -41,6 +41,7 @@ type PruneIntentInput = {
 type RefreshIntentInput = {
   baseDir?: string;
   limit?: number;
+  concurrency?: number;
 };
 
 type ScanIntentInput = {
@@ -115,6 +116,7 @@ const fileSearchQueryIntentSchema = z.object({
 const refreshIntentSchema = z.object({
   baseDir: z.string().trim().min(1).optional(),
   limit: z.number().int().positive().optional(),
+  concurrency: z.number().int().positive().optional(),
 }).strict();
 const projectRegistryIntentSchema = z.object({
   baseDir: z.string().trim().min(1),
@@ -185,6 +187,8 @@ function openDirectFileSearchDb(runtime: OperationsMcpRuntimeContext, baseDir: s
     embeddingDimension: runtime.embeddingConfig.embeddingDimension,
     embeddingTimeoutMs: runtime.embeddingConfig.embeddingTimeoutMs,
     embeddingRequireRemote: Boolean(runtime.embeddingConfig.embeddingBaseUrl),
+    embeddingBatchSize: runtime.fileSearchConfig.embeddingBatchSize,
+    embeddingConcurrency: runtime.fileSearchConfig.embeddingConcurrency,
     scanOnOpen: false,
     schedulerEnabled: false,
     scannerExcludedExtensions: runtime.fileSearchConfig.excludedExtensions,
@@ -353,7 +357,7 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
       const targetBaseDir = resolveFileSearchTargetBaseDir(intent.baseDir);
       const fileDb = openDirectFileSearchDb(runtime, targetBaseDir);
       try {
-        const diagnostics = await fileDb.refreshSemanticIndex(intent.limit === undefined ? undefined : { limit: intent.limit });
+        const diagnostics = await fileDb.refreshSemanticIndex((intent.limit === undefined && intent.concurrency === undefined) ? undefined : { limit: intent.limit, concurrency: intent.concurrency });
         return {
           content: [{ type: 'text', text: safeJson({ tool: 'refresh', baseDir: targetBaseDir, diagnostics }) }],
         };

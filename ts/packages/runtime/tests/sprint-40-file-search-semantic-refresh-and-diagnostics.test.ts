@@ -269,6 +269,98 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     expect(embeddingCount(storeA.fileSearchDb!.db, projectKeyB)).toBe(0);
   });
 
+  it('semantic refresh runs chunk embeddings concurrently within the batch window', async () => {
+    const runtimeDir = tempDir();
+    const projectDir = tempDir('byomem-runtime-sprint-40-refresh-parallel-');
+    dirs.push(runtimeDir, projectDir);
+    writeFileSync(join(projectDir, 'parallel.txt'), [
+      'parallel line one',
+      'parallel line two',
+      'parallel line three',
+    ].join('\n'), 'utf8');
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const fetchSpy = vi.fn(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return new Response(JSON.stringify({ embedding: [1, 0, 0] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } finally {
+        inFlight -= 1;
+      }
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const store = openNativeStore({
+      baseDir: projectDir,
+      fileSearchDbBaseDir: runtimeDir,
+      embeddingBaseUrl: 'http://localhost:11434',
+      embeddingModel: 'parallel-model',
+      embeddingDimension: 3,
+      fileSearchEmbeddingConcurrency: 2,
+      fileSearchScanOnOpen: false,
+    });
+    stores.push(store);
+    store.fileSearchDb!.scanAndIndex();
+
+    await store.fileSearchDb!.refreshSemanticIndex({ limit: 3 });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(maxInFlight).toBeGreaterThan(1);
+    expect(embeddingCount(store.fileSearchDb!.db, resolveFileSearchProjectKey(projectDir))).toBe(3);
+  });
+
+  it('semantic refresh respects a configured concurrency of 1', async () => {
+    const runtimeDir = tempDir();
+    const projectDir = tempDir('byomem-runtime-sprint-40-refresh-serial-');
+    dirs.push(runtimeDir, projectDir);
+    writeFileSync(join(projectDir, 'serial.txt'), [
+      'serial line one',
+      'serial line two',
+      'serial line three',
+    ].join('\n'), 'utf8');
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const fetchSpy = vi.fn(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return new Response(JSON.stringify({ embedding: [1, 0, 0] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      } finally {
+        inFlight -= 1;
+      }
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const store = openNativeStore({
+      baseDir: projectDir,
+      fileSearchDbBaseDir: runtimeDir,
+      embeddingBaseUrl: 'http://localhost:11434',
+      embeddingModel: 'serial-model',
+      embeddingDimension: 3,
+      fileSearchEmbeddingConcurrency: 1,
+      fileSearchScanOnOpen: false,
+    });
+    stores.push(store);
+    store.fileSearchDb!.scanAndIndex();
+
+    await store.fileSearchDb!.refreshSemanticIndex({ limit: 3 });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(maxInFlight).toBe(1);
+    expect(embeddingCount(store.fileSearchDb!.db, resolveFileSearchProjectKey(projectDir))).toBe(3);
+  });
+
   it('CLI hybrid search does not hidden-refresh and returns semantic refresh-needed metadata', async () => {
     const runtimeDir = tempDir();
     const projectDir = tempDir('byomem-runtime-sprint-40-cli-no-hidden-');

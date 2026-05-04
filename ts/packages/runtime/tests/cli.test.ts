@@ -339,7 +339,7 @@ describe('runtime cli', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await main(['file-search-scan', '--base-dir', dir]);
-    await main(['file-search-semantic-refresh', '--base-dir', dir, '--embedding-base-url', 'http://localhost:11434', '--embedding-dimension', '3']);
+    await main(['file-search-semantic-refresh', '--base-dir', dir, '--embedding-base-url', 'http://localhost:11434', '--embedding-dimension', '3', '--file-search-embedding-concurrency', '2']);
     await main(['file-search', '--base-dir', dir, '--mode', 'semantic', '--query', 'meaning query', '--embedding-base-url', 'http://localhost:11434', '--embedding-dimension', '3']);
 
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({

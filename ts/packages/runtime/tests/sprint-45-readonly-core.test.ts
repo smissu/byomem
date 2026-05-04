@@ -24,7 +24,7 @@ describe('Sprint 45 read-only core', () => {
       embeddingConfig: { source: 'default' },
       sessionCaptureConfig: { source: 'default', enabled: true },
       summarizerConfig: { source: 'default' },
-      fileSearchConfig: { source: 'default' },
+      fileSearchConfig: { source: 'default', embeddingBatchSize: 31, embeddingConcurrency: 7 },
     });
 
     expect(status).toMatchObject({
@@ -36,6 +36,8 @@ describe('Sprint 45 read-only core', () => {
       nativeStorePath: '/tmp/byomem-runtime',
       projectKey: 'byomem',
       activeProject,
+      fileSearchEmbeddingBatchSize: 31,
+      fileSearchEmbeddingConcurrency: 7,
     });
   });
 

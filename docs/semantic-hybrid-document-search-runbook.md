@@ -24,6 +24,16 @@ http://localhost:11434
 
 Automated tests use mocked embeddings and do not require live Ollama.
 
+## Refresh batching
+The semantic refresh path embeds chunks in bounded batches with bounded worker concurrency. To tune refresh throughput and memory pressure, set:
+
+- YAML config: `file_search.embedding_batch_size`
+- YAML config: `file_search.embedding_concurrency`
+- Environment variable: `BYOMEM_FILE_SEARCH_EMBEDDING_BATCH_SIZE`
+- Environment variable: `BYOMEM_FILE_SEARCH_EMBEDDING_CONCURRENCY`
+- CLI override: `file-search-semantic-refresh --limit <n>`
+
+This controls refresh throughput and memory pressure on the BYOMem side. Increasing concurrency can justify a higher `OLLAMA_NUM_PARALLEL` on the embedding server, but only if BYOMem is actually issuing multiple embed requests at once.
 
 ## File-search DB location and project scoping
 By default, file-search commands store their physical SQLite DB globally at:

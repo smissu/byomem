@@ -25,6 +25,7 @@ export interface FileSearchDbOptions {
   embeddingRequireRemote?: boolean;
   semanticSearchEnabled?: boolean;
   embeddingBatchSize?: number;
+  embeddingConcurrency?: number;
   scanOnOpen?: boolean;
   schedulerEnabled?: boolean;
   scannerStaleAfterMs?: number;
@@ -131,7 +132,7 @@ export interface FileSearchDbHandle {
   close(): void;
   scanAndIndex(options?: { trigger?: FileSearchScannerTrigger }): FileSearchScannerStatus;
   getScannerStatus(): FileSearchScannerStatus;
-  refreshSemanticIndex(options?: { limit?: number }): Promise<FileSearchEmbeddingDiagnostics>;
+  refreshSemanticIndex(options?: { limit?: number; concurrency?: number }): Promise<FileSearchEmbeddingDiagnostics>;
   getEmbeddingDiagnostics(): FileSearchEmbeddingDiagnostics;
   embedQuery(text: string): Promise<number[] | undefined>;
   semanticSearchEnabled: boolean;
@@ -924,6 +925,26 @@ function embeddingProviderKey(options: FileSearchDbOptions): string {
   return resolveEmbeddingProviderKey(options.embeddingBaseUrl);
 }
 
+async function runConcurrent<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>,
+  shouldStop?: () => boolean,
+): Promise<void> {
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (true) {
+      if (shouldStop?.()) return;
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      if (shouldStop?.()) return;
+      await worker(items[index]!, index);
+    }
+  }));
+}
+
 function embeddingDiagnostics(db: BetterSqliteDatabase, options: FileSearchDbOptions): FileSearchEmbeddingDiagnostics {
   const model = embeddingModel(options);
   const configuredDimension = embeddingConfiguredDimension(options);
@@ -1004,13 +1025,14 @@ function embeddingDiagnostics(db: BetterSqliteDatabase, options: FileSearchDbOpt
   return diagnostics;
 }
 
-async function refreshSemanticIndex(db: BetterSqliteDatabase, options: FileSearchDbOptions, embeddingClient: EmbeddingClient, refreshOptions: { limit?: number } = {}): Promise<FileSearchEmbeddingDiagnostics> {
+async function refreshSemanticIndex(db: BetterSqliteDatabase, options: FileSearchDbOptions, embeddingClient: EmbeddingClient, refreshOptions: { limit?: number; concurrency?: number } = {}): Promise<FileSearchEmbeddingDiagnostics> {
   if (!semanticEnabled(options)) return embeddingDiagnostics(db, options);
   const model = embeddingModel(options);
   const configuredDimension = embeddingConfiguredDimension(options);
   const projectKey = deriveProjectKey(resolveProjectBaseDir(options));
   const providerKey = embeddingProviderKey(options);
   const limit = Math.max(1, refreshOptions.limit ?? options.embeddingBatchSize ?? 100);
+  const concurrency = Math.max(1, refreshOptions.concurrency ?? options.embeddingConcurrency ?? 4);
   const rows = db.prepare(`
     SELECT c.id, c.project_key, c.file_record_id, c.chunk_index, c.chunk_text, c.chunk_hash
     FROM indexed_chunks c
@@ -1023,7 +1045,9 @@ async function refreshSemanticIndex(db: BetterSqliteDatabase, options: FileSearc
     LIMIT ?
   `).all(projectKey, providerKey, model, configuredDimension, configuredDimension, configuredDimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, limit) as Array<{ id: string; project_key: string; file_record_id: string; chunk_index: number; chunk_text: string; chunk_hash: string }>;
   const now = new Date().toISOString();
-  for (const row of rows) {
+  let fatalError: unknown;
+  await runConcurrent(rows, Math.min(concurrency, limit), async (row) => {
+    if (fatalError) return;
     const embeddingText = truncateEmbeddingText(row.chunk_text);
     const textHash = embeddingClient.hashText(embeddingText);
     try {
@@ -1031,7 +1055,7 @@ async function refreshSemanticIndex(db: BetterSqliteDatabase, options: FileSearc
       let id = cacheId(textHash, providerKey, model, configuredDimension, lookupEffectiveDimension);
       let cached = db.prepare('SELECT embedding, dimension FROM file_embedding_cache WHERE id = ?').get(id) as { embedding: Buffer; dimension: number } | undefined;
       const vector = cached ? undefined : await embeddingClient.embed(embeddingText);
-      if (!cached && !vector?.length) continue;
+      if (!cached && !vector?.length) return;
       const dimension = cached?.dimension ?? vector!.length;
       id = cacheId(textHash, providerKey, model, configuredDimension, dimension);
       if (!cached) cached = db.prepare('SELECT embedding, dimension FROM file_embedding_cache WHERE id = ?').get(id) as { embedding: Buffer; dimension: number } | undefined;
@@ -1043,9 +1067,10 @@ async function refreshSemanticIndex(db: BetterSqliteDatabase, options: FileSearc
       const message = error instanceof Error ? error.message : String(error);
       db.prepare(`INSERT OR REPLACE INTO indexed_chunk_embeddings (chunk_id, project_key, file_record_id, chunk_index, chunk_hash, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, identity_version, status, error, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, COALESCE((SELECT created_at FROM indexed_chunk_embeddings WHERE chunk_id = ?), ?), ?)`).run(row.id, row.project_key, row.file_record_id, row.chunk_index, row.chunk_hash, textHash, model, configuredDimension, Buffer.alloc(0), 0, providerKey, 0, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, message, row.id, now, now);
-      if (options.embeddingRequireRemote) throw error;
+      if (options.embeddingRequireRemote && !fatalError) fatalError = error;
     }
-  }
+  }, () => Boolean(fatalError));
+  if (fatalError) throw fatalError instanceof Error ? fatalError : new Error(String(fatalError));
   return embeddingDiagnostics(db, options);
 }
 
@@ -1201,7 +1226,7 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
     getScannerStatus(): FileSearchScannerStatus {
       return buildScannerStatus();
     },
-    refreshSemanticIndex(refreshOptions?: { limit?: number }): Promise<FileSearchEmbeddingDiagnostics> {
+    refreshSemanticIndex(refreshOptions?: { limit?: number; concurrency?: number }): Promise<FileSearchEmbeddingDiagnostics> {
       return refreshSemanticIndex(db, options, embeddingClient, refreshOptions);
     },
     getEmbeddingDiagnostics(): FileSearchEmbeddingDiagnostics {

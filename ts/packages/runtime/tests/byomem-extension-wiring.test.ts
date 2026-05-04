@@ -570,6 +570,9 @@ describe('byomem extension wiring', () => {
       '  base_url: http://localhost:11434/v1',
       '  model: test-embed-model',
       '  request_timeout: 11',
+      'file_search:',
+      '  embedding_batch_size: 17',
+      '  embedding_concurrency: 6',
       'summarizer:',
       '  base_url: http://localhost:11434/v1',
       '  model: qwen3:8b',
@@ -591,6 +594,10 @@ describe('byomem extension wiring', () => {
       embeddingBaseUrl: 'http://localhost:11434/v1',
       embeddingModel: 'test-embed-model',
       embeddingTimeoutMs: 11,
+      fileSearchConfigSource: 'config',
+      fileSearchConfigPath: configPath,
+      fileSearchEmbeddingBatchSize: 17,
+      fileSearchEmbeddingConcurrency: 6,
       summarizerConfigSource: 'config',
       summarizerConfigPath: configPath,
       summarizerBaseUrl: 'http://localhost:11434/v1',
@@ -602,6 +609,34 @@ describe('byomem extension wiring', () => {
       sessionCaptureLargeTurnChars: 100,
       sessionCaptureIdleFlushSeconds: 90,
       sessionCaptureMinTurns: 2,
+    });
+  });
+
+  it('reads file_search embedding batch size from env overrides', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
+    vi.stubEnv('BYOMEM_FILE_SEARCH_EMBEDDING_BATCH_SIZE', '23');
+    vi.resetModules();
+
+    const { byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts');
+    expect(statusFn()).toMatchObject({
+      fileSearchConfigSource: 'env',
+      fileSearchEmbeddingBatchSize: 23,
+    });
+  });
+
+  it('reads file_search embedding concurrency from env overrides', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
+    vi.stubEnv('BYOMEM_FILE_SEARCH_EMBEDDING_CONCURRENCY', '5');
+    vi.resetModules();
+
+    const { byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts');
+    expect(statusFn()).toMatchObject({
+      fileSearchConfigSource: 'env',
+      fileSearchEmbeddingConcurrency: 5,
     });
   });
 

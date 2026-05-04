@@ -24,6 +24,8 @@ type CliOptions = {
   embeddingDimension?: number;
   embeddingTimeoutMs?: number;
   embeddingRequireRemote?: boolean;
+  fileSearchEmbeddingBatchSize?: number;
+  fileSearchEmbeddingConcurrency?: number;
   fileSearchSemanticEnabled?: boolean;
   fileSearchScannerExcludedExtensions?: string[];
   fileSearchBinaryDetectionEnabled?: boolean;
@@ -125,6 +127,22 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     baseDir: mkdtempSync(join(tmpdir(), 'byomem-cli-')),
     fileSearchScannerExcludedExtensions: parseExtensionList(process.env.BYOMEM_FILE_SEARCH_EXCLUDED_EXTENSIONS),
     fileSearchBinaryDetectionEnabled: parseBooleanFlag(process.env.BYOMEM_FILE_SEARCH_BINARY_DETECTION, 'BYOMEM_FILE_SEARCH_BINARY_DETECTION'),
+    fileSearchEmbeddingBatchSize: (() => {
+      const raw = process.env.BYOMEM_FILE_SEARCH_EMBEDDING_BATCH_SIZE?.trim();
+      if (raw === undefined || raw === '') return undefined;
+      if (!/^[1-9]\d*$/.test(raw)) throw new Error('BYOMEM_FILE_SEARCH_EMBEDDING_BATCH_SIZE must be a positive integer');
+      const value = Number(raw);
+      if (!Number.isSafeInteger(value)) throw new Error('BYOMEM_FILE_SEARCH_EMBEDDING_BATCH_SIZE must be a positive integer');
+      return value;
+    })(),
+    fileSearchEmbeddingConcurrency: (() => {
+      const raw = process.env.BYOMEM_FILE_SEARCH_EMBEDDING_CONCURRENCY?.trim();
+      if (raw === undefined || raw === '') return undefined;
+      if (!/^[1-9]\d*$/.test(raw)) throw new Error('BYOMEM_FILE_SEARCH_EMBEDDING_CONCURRENCY must be a positive integer');
+      const value = Number(raw);
+      if (!Number.isSafeInteger(value)) throw new Error('BYOMEM_FILE_SEARCH_EMBEDDING_CONCURRENCY must be a positive integer');
+      return value;
+    })(),
   };
   let command: string | undefined;
   for (let i = 0; i < argv.length; i += 1) {
@@ -159,6 +177,18 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--semantic-file-search') { options.fileSearchSemanticEnabled = true; }
     else if (arg === '--file-search-excluded-extensions') { if (next === undefined) throw new Error('Missing value for --file-search-excluded-extensions'); options.fileSearchScannerExcludedExtensions = parseExtensionList(next); i += 1; }
     else if (arg === '--file-search-binary-detection') { options.fileSearchBinaryDetectionEnabled = parseBooleanFlag(requireValue(next, '--file-search-binary-detection'), '--file-search-binary-detection'); i += 1; }
+    else if (arg === '--file-search-embedding-batch-size') {
+      const raw = requireValue(next, '--file-search-embedding-batch-size');
+      if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(Number(raw))) throw new Error('--file-search-embedding-batch-size must be a positive integer');
+      options.fileSearchEmbeddingBatchSize = Number(raw);
+      i += 1;
+    }
+    else if (arg === '--file-search-embedding-concurrency') {
+      const raw = requireValue(next, '--file-search-embedding-concurrency');
+      if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(Number(raw))) throw new Error('--file-search-embedding-concurrency must be a positive integer');
+      options.fileSearchEmbeddingConcurrency = Number(raw);
+      i += 1;
+    }
     else if (arg === '--prompt') { payload.prompt = requireValue(next, '--prompt'); i += 1; }
     else if (arg === '--text') { payload.text = requireValue(next, '--text'); i += 1; }
   }

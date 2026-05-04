@@ -20,6 +20,7 @@ export interface NativeStoreOptions {
   embeddingRequireRemote?: boolean;
   fileSearchSemanticEnabled?: boolean;
   fileSearchEmbeddingBatchSize?: number;
+  fileSearchEmbeddingConcurrency?: number;
   fileSearchScanOnOpen?: boolean;
   fileSearchProjectBaseDir?: string;
   fileSearchDbFile?: string;
@@ -89,6 +90,7 @@ export function openNativeStore(options: NativeStoreOptions): NativeStore {
     embeddingRequireRemote: options.embeddingRequireRemote,
     semanticSearchEnabled: options.fileSearchSemanticEnabled,
     embeddingBatchSize: options.fileSearchEmbeddingBatchSize,
+    embeddingConcurrency: options.fileSearchEmbeddingConcurrency,
     scanOnOpen: options.fileSearchScanOnOpen,
     schedulerEnabled: options.fileSearchSchedulerEnabled,
     scannerExcludedExtensions: options.fileSearchScannerExcludedExtensions,

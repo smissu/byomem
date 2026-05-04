@@ -9,9 +9,11 @@ build/
 .env
 .byomem/
 .claude/
+.codex/
 .gemini/
 .pi/
 .playwright-cli/
+graphify-out/
 queue/
 tmp/
 watch_*
@@ -39,3 +41,4 @@ pnpm-debug.log*
 .DS_Store
 playwright-report/
 test-results/
+docs/
