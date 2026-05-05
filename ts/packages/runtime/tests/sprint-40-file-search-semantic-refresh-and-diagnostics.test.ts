@@ -5,11 +5,12 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { main } from '../src/cli.js';
-import { openFileSearchDb, resolveFileSearchProjectKey } from '../src/file-search-db.js';
+import { openFileSearchDb, resolveFileSearchProjectKey, type FileSearchEmbeddingDiagnostics } from '../src/file-search-db.js';
 import { searchIndex } from '../src/file-search-query.js';
 import { encodeEmbedding } from '../src/embedding-vector.js';
 import { openNativeStore } from '../src/store.js';
 import { FALLBACK_EMBEDDING_PROVIDER_KEY } from '../src/embedding-client.js';
+import { refreshSemanticIndexAfterManualScan } from '../src/file-search-semantic-refresh.js';
 
 type Store = ReturnType<typeof openNativeStore>;
 type RegisteredTool = {
@@ -29,7 +30,7 @@ type ChunkRow = {
 };
 
 type SearchOutput = {
-  results?: Array<{ file?: { path?: string; project_key?: string } }>;
+  results?: Array<{ chunk?: { filePath?: string }; file?: { path?: string; project_key?: string } }>;
   semantic?: Record<string, unknown>;
 };
 
@@ -150,6 +151,29 @@ function closeTrackedStore(stores: Store[], store: Store): void {
   store.close();
 }
 
+function makeRefreshDiagnostics(overrides: Partial<FileSearchEmbeddingDiagnostics> = {}): FileSearchEmbeddingDiagnostics {
+  return {
+    enabled: true,
+    state: 'refresh-needed',
+    projectKey: 'project:test',
+    baseDir: '/tmp/byomem-test',
+    providerKey: 'local:model2vec:minishlab/potion-code-16M',
+    requireRemote: false,
+    model: 'minishlab/potion-code-16M',
+    configuredDimension: 256,
+    actualDimensions: [],
+    indexedChunks: 2,
+    embeddedChunks: 0,
+    missingChunks: 2,
+    incompatibleChunks: 0,
+    refreshNeededChunks: 2,
+    failedChunks: 0,
+    failures: 0,
+    fallbacks: 0,
+    ...overrides,
+  };
+}
+
 describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts', () => {
   const dirs: string[] = [];
   const stores: Store[] = [];
@@ -181,7 +205,10 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     const projectA = tempDir('byomem-runtime-sprint-40-diagnostics-a-');
     const projectB = tempDir('byomem-runtime-sprint-40-diagnostics-b-');
     dirs.push(runtimeDir, projectA, projectB);
-    writeFileSync(join(projectA, 'mixed.txt'), 'ready compatible\nready wrong dimension\nfailed embedding\nmissing embedding\n', 'utf8');
+    writeFileSync(join(projectA, 'ready-compatible.txt'), 'ready compatible\n', 'utf8');
+    writeFileSync(join(projectA, 'ready-wrong-dimension.txt'), 'ready wrong dimension\n', 'utf8');
+    writeFileSync(join(projectA, 'failed-embedding.txt'), 'failed embedding\n', 'utf8');
+    writeFileSync(join(projectA, 'missing-embedding.txt'), 'missing embedding\n', 'utf8');
     writeFileSync(join(projectB, 'other.txt'), 'other project compatible\n', 'utf8');
 
     const storeA = openNativeStore({ fileSearchIncludeTextFiles: true, baseDir: projectA, fileSearchDbBaseDir: runtimeDir, embeddingModel: 'contract-model', embeddingDimension: 3 });
@@ -193,10 +220,13 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     const chunksB = projectChunks(storeA.fileSearchDb!.db, projectKeyB);
     expect(chunksA).toHaveLength(4);
     expect(chunksB).toHaveLength(1);
+    const compatibleChunk = chunksA.find((chunk) => chunk.chunk_text.startsWith('ready compatible'))!;
+    const wrongDimensionChunk = chunksA.find((chunk) => chunk.chunk_text.startsWith('ready wrong dimension'))!;
+    const failedChunk = chunksA.find((chunk) => chunk.chunk_text.startsWith('failed embedding'))!;
 
-    seedChunkEmbedding(storeA.fileSearchDb!.db, chunksA[0]!, { model: 'contract-model', configuredDimension: 3, dimension: 3, vector: [1, 0, 0] });
-    seedChunkEmbedding(storeA.fileSearchDb!.db, chunksA[1]!, { model: 'contract-model', configuredDimension: 3, dimension: 5, vector: [1, 0, 0, 0, 0] });
-    seedChunkEmbedding(storeA.fileSearchDb!.db, chunksA[2]!, { model: 'contract-model', configuredDimension: 3, dimension: 0, status: 'failed', error: 'remote boom' });
+    seedChunkEmbedding(storeA.fileSearchDb!.db, compatibleChunk, { model: 'contract-model', configuredDimension: 3, dimension: 3, vector: [1, 0, 0] });
+    seedChunkEmbedding(storeA.fileSearchDb!.db, wrongDimensionChunk, { model: 'contract-model', configuredDimension: 3, dimension: 5, vector: [1, 0, 0, 0, 0] });
+    seedChunkEmbedding(storeA.fileSearchDb!.db, failedChunk, { model: 'contract-model', configuredDimension: 3, dimension: 0, status: 'failed', error: 'remote boom' });
     seedChunkEmbedding(storeA.fileSearchDb!.db, chunksB[0]!, { model: 'contract-model', configuredDimension: 3, dimension: 3, vector: [0, 1, 0] });
 
     const diagnostics = storeA.fileSearchDb!.getEmbeddingDiagnostics() as unknown as Record<string, unknown>;
@@ -228,7 +258,7 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
       projectKey: projectKeyA,
       baseDir: resolve(projectA),
       baseUrl: undefined,
-      providerKey: 'remote:http://localhost:11434/api/embeddings',
+      providerKey: FALLBACK_EMBEDDING_PROVIDER_KEY,
       requireRemote: false,
       model: 'contract-model',
       configuredDimension: 3,
@@ -246,6 +276,33 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
       fallbacks: 0,
       lastError: 'remote boom',
     });
+  });
+
+  it('manual scan semantic handoff refreshes local embeddings without requiring a remote base URL', async () => {
+    const after = makeRefreshDiagnostics({
+      state: 'ready',
+      embeddedChunks: 2,
+      missingChunks: 0,
+      refreshNeededChunks: 0,
+      actualDimensions: [{ dimension: 256, chunks: 2 }],
+    });
+    const fileDb = {
+      getEmbeddingDiagnostics: vi.fn(() => makeRefreshDiagnostics()),
+      refreshSemanticIndex: vi.fn(async (options: { limit?: number; concurrency?: number }) => {
+        expect(options).toEqual({ limit: 2, concurrency: 3 });
+        return after;
+      }),
+    } as unknown as NonNullable<Store['fileSearchDb']>;
+
+    const refresh = await refreshSemanticIndexAfterManualScan(fileDb, { concurrency: 3 });
+
+    expect(refresh).toEqual({
+      automatic: true,
+      attempted: true,
+      limit: 2,
+      diagnostics: after,
+    });
+    expect(fileDb.refreshSemanticIndex).toHaveBeenCalledTimes(1);
   });
 
   it('semantic refresh is project-scoped and does not affect same-basename sibling projects', async () => {
@@ -279,11 +336,9 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     const runtimeDir = tempDir();
     const projectDir = tempDir('byomem-runtime-sprint-40-refresh-parallel-');
     dirs.push(runtimeDir, projectDir);
-    writeFileSync(join(projectDir, 'parallel.txt'), [
-      'parallel line one',
-      'parallel line two',
-      'parallel line three',
-    ].join('\n'), 'utf8');
+    writeFileSync(join(projectDir, 'parallel-one.txt'), 'parallel line one\n', 'utf8');
+    writeFileSync(join(projectDir, 'parallel-two.txt'), 'parallel line two\n', 'utf8');
+    writeFileSync(join(projectDir, 'parallel-three.txt'), 'parallel line three\n', 'utf8');
 
     let inFlight = 0;
     let maxInFlight = 0;
@@ -312,6 +367,7 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
       fileSearchEmbeddingConcurrency: 2,
       fileSearchScanOnOpen: false,
     });
+    stores.push(store);
 
     store.fileSearchDb!.scanAndIndex();
 
@@ -326,11 +382,9 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     const runtimeDir = tempDir();
     const projectDir = tempDir('byomem-runtime-sprint-40-refresh-serial-');
     dirs.push(runtimeDir, projectDir);
-    writeFileSync(join(projectDir, 'serial.txt'), [
-      'serial line one',
-      'serial line two',
-      'serial line three',
-    ].join('\n'), 'utf8');
+    writeFileSync(join(projectDir, 'serial-one.txt'), 'serial line one\n', 'utf8');
+    writeFileSync(join(projectDir, 'serial-two.txt'), 'serial line two\n', 'utf8');
+    writeFileSync(join(projectDir, 'serial-three.txt'), 'serial line three\n', 'utf8');
 
     let inFlight = 0;
     let maxInFlight = 0;
@@ -353,11 +407,13 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
       fileSearchIncludeTextFiles: true,
       baseDir: projectDir,
       fileSearchDbBaseDir: runtimeDir,
+      embeddingBaseUrl: 'http://localhost:11434',
       embeddingModel: 'serial-model',
       embeddingDimension: 3,
       fileSearchEmbeddingConcurrency: 1,
       fileSearchScanOnOpen: false,
     });
+    stores.push(store);
 
     store.fileSearchDb!.scanAndIndex();
 
@@ -394,7 +450,7 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     const output = parseLastLog(logSpy) as SearchOutput;
     expect(process.exitCode).toBeUndefined();
     expect(fetchSpy).not.toHaveBeenCalled();
-    expect(output.results?.map((hit) => hit.file?.path)).toEqual([expect.stringContaining('lexical.txt')]);
+    expect(output.results?.map((hit) => hit.chunk?.filePath)).toEqual([expect.stringContaining('lexical.txt')]);
     expect(output.semantic).toMatchObject({
       requested: true,
       enabled: true,
@@ -611,6 +667,7 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     await main([
       'file-search',
       '--base-dir', projectDir,
+      '--file-search-include-text-files', 'true',
       '--mode', 'semantic',
       '--query', 'semantic query',
       '--limit', '10',
@@ -621,7 +678,7 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     ]);
 
     const output = parseLastLog(logSpy) as SearchOutput;
-    expect(output.results?.map((hit) => hit.file?.path)).toEqual([expect.stringContaining('compatible.txt')]);
+    expect(output.results?.map((hit) => hit.chunk?.filePath)).toEqual([expect.stringContaining('compatible.txt')]);
     expect(output.semantic).toMatchObject({
       requested: true,
       enabled: true,

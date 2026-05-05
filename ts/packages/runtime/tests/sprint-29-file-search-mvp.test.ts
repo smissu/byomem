@@ -32,7 +32,7 @@ describe('Sprint 29 file search MVP', () => {
     }
   });
 
-  it('uses the file-search DB as the search source and returns project-scoped FTS-first results', async () => {
+  it('uses the file-search DB as the search source and returns project-scoped BM25-first results', async () => {
     const dir = tempDir();
     dirs.push(dir);
     mkdirSync(join(dir, 'project-a'), { recursive: true });
@@ -103,7 +103,7 @@ describe('Sprint 29 file search MVP', () => {
     fileDb?.db?.prepare('INSERT OR REPLACE INTO indexed_chunks (id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(`indexed-chunk:${projectKey}:queue.json:0`, projectKey, fileRecordId, 0, '{"thinkingSignature":"hidden-signature","encrypted_content":"opaque","body":"stale searchable"}', 'stale-chunk-hash', now, now);
 
-    await expect(searchIndex(store, { query: 'stale searchable hidden', mode: 'fts' })).resolves.toEqual([]);
+    await expect(searchIndex(store, { query: 'stale searchable hidden', mode: 'bm25' })).resolves.toEqual([]);
   });
 
   it('keeps file-search search isolated from the memories DB sidecar', async () => {
@@ -122,7 +122,7 @@ describe('Sprint 29 file search MVP', () => {
     expect(() => fileDb?.db?.prepare('SELECT * FROM record_embeddings').all()).toThrow();
   });
 
-  it('defers semantic retrieval and keeps the MVP grounded on FTS output only', async () => {
+  it('defers semantic retrieval and keeps the MVP grounded on BM25 output only', async () => {
     const dir = tempDir();
     dirs.push(dir);
     mkdirSync(join(dir, 'project-a'), { recursive: true });

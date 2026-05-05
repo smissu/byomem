@@ -397,7 +397,7 @@ describe('Sprint 39 active-project file-search auto polling RED contract', () =>
     await main(['file-search-status', '--base-dir', projectDir, '--json']);
     expect(lastJson(logSpy).status).toEqual(expect.not.objectContaining({ polling_enabled: true }));
     await main(['file-search-scan', '--base-dir', projectDir, '--json']);
-    await main(['file-search', '--base-dir', projectDir, '--query', 'needle', '--mode', 'fts', '--json']);
+    await main(['file-search', '--base-dir', projectDir, '--query', 'needle', '--mode', 'bm25', '--json']);
     await main(['file-search-project-register', '--base-dir', projectDir, '--json']);
     await main(['file-search-project-list', '--base-dir', projectDir, '--json']);
 

@@ -77,7 +77,7 @@ Parameters:
   "type": "object",
   "properties": {
     "query": { "type": "string" },
-    "mode": { "type": "string", "enum": ["fts", "semantic", "hybrid"] },
+    "mode": { "type": "string", "enum": ["bm25", "semantic", "hybrid"] },
     "limit": { "type": "integer", "minimum": 1 },
     "baseDir": { "type": "string" }
   },

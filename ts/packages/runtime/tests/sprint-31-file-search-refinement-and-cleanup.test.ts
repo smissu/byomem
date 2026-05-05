@@ -95,7 +95,7 @@ describe('Sprint 31 file search refinement and cleanup', () => {
 
     const store = openNativeStore({ baseDir: dir });
     const fileDb = openFileSearchDb({ baseDir: dir });
-    const hits = await searchIndex(store, { query: 'metadata alpha', mode: 'fts' });
+    const hits = await searchIndex(store, { query: 'metadata alpha', mode: 'bm25' });
     const persisted = fileDb.db?.prepare('SELECT fr.path, fc.chunk_index, fc.chunk_text, fc.chunk_hash, fr.content_hash FROM indexed_chunks fc JOIN file_records fr ON fr.id = fc.file_record_id WHERE fr.path = ? ORDER BY fc.chunk_index').all(join(dir, 'metadata.txt')) as Array<{ path: string; chunk_index: number; chunk_text: string; chunk_hash: string; content_hash: string | null }>;
 
     expect(persisted?.[0]?.content_hash).toEqual(expect.any(String));

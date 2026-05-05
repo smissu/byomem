@@ -4,7 +4,7 @@ import { basename, extname, join } from 'node:path';
 import { CodeChunker } from '@chonkiejs/core';
 
 export type FileSearchIndexStorageMode = 'disk' | 'memory';
-export type FileSearchSearchMode = 'fts' | 'semantic' | 'hybrid';
+export type FileSearchSearchMode = 'bm25' | 'semantic' | 'hybrid';
 
 export interface FileSearchChunk {
   filePath: string;
@@ -376,7 +376,23 @@ export function resolveAlpha(query: string, alpha: number | undefined): number {
 }
 
 export function candidateScoreMap(rows: FileSearchChunkRow[]): Map<string, FileSearchChunkRow> {
-  return new Map(rows.map((row) => [chunkKey(row), row]));
+  const candidates = new Map<string, FileSearchChunkRow>();
+  for (const row of rows) {
+    const key = chunkKey(row);
+    const current = candidates.get(key);
+    if (!current) {
+      candidates.set(key, row);
+      continue;
+    }
+    candidates.set(key, {
+      ...current,
+      ...row,
+      lexicalScore: current.lexicalScore ?? row.lexicalScore,
+      semanticScore: current.semanticScore ?? row.semanticScore,
+      score: row.score ?? current.score,
+    });
+  }
+  return candidates;
 }
 
 export function boostMultiChunkFiles(scores: Map<string, number>, chunks: Map<string, FileSearchChunkRow>): void {

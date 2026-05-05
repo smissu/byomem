@@ -101,7 +101,7 @@ describe('Sprint 32 file-search semantic schema and lifecycle', () => {
     expect(store.fileSearchDb?.semanticSearchEnabled).toBe(true);
   });
 
-  it('keeps FTS usable when semantic search is disabled or remote embeddings fail without remote-required mode', async () => {
+  it('keeps BM25 usable when semantic search is disabled or remote embeddings fail without remote-required mode', async () => {
     const dir = tempDir();
     dirs.push(dir);
     writeFileSync(join(dir, 'alpha.txt'), 'alpha lexical body\n', 'utf8');

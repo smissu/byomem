@@ -41,6 +41,7 @@ export interface ByomemFileSearchConfig {
   configPath?: string;
   excludedExtensions?: string[];
   binaryDetectionEnabled?: boolean;
+  includeTextFiles?: boolean;
   embeddingBatchSize?: number;
   embeddingConcurrency?: number;
   indexStorageMode?: 'disk' | 'memory';
@@ -219,10 +220,11 @@ export function resolveFileSearchConfig(env: NodeJS.ProcessEnv = process.env): B
   const configBlock = configContent ? extractYamlBlock(configContent, 'file_search') : undefined;
   const envExcludedExtensions = env.BYOMEM_FILE_SEARCH_EXCLUDED_EXTENSIONS;
   const envBinaryDetection = env.BYOMEM_FILE_SEARCH_BINARY_DETECTION;
+  const envIncludeTextFiles = env.BYOMEM_FILE_SEARCH_INCLUDE_TEXT_FILES;
   const envEmbeddingBatchSize = env.BYOMEM_FILE_SEARCH_EMBEDDING_BATCH_SIZE;
   const envEmbeddingConcurrency = env.BYOMEM_FILE_SEARCH_EMBEDDING_CONCURRENCY;
   const envIndexStorageMode = env.BYOMEM_FILE_SEARCH_INDEX_STORAGE_MODE;
-  const hasEnv = envExcludedExtensions !== undefined || envBinaryDetection !== undefined || envEmbeddingBatchSize !== undefined || envEmbeddingConcurrency !== undefined || envIndexStorageMode !== undefined;
+  const hasEnv = envExcludedExtensions !== undefined || envBinaryDetection !== undefined || envIncludeTextFiles !== undefined || envEmbeddingBatchSize !== undefined || envEmbeddingConcurrency !== undefined || envIndexStorageMode !== undefined;
   const parsedConfig = configBlock ? parseFileSearchYamlConfig(configBlock) : undefined;
   const excludedExtensions = hasEnv
     ? parseCommaSeparatedTextList(envExcludedExtensions) ?? parsedConfig?.excludedExtensions
@@ -230,6 +232,9 @@ export function resolveFileSearchConfig(env: NodeJS.ProcessEnv = process.env): B
   const binaryDetectionEnabled = hasEnv
     ? parseBooleanText(envBinaryDetection, 'BYOMEM_FILE_SEARCH_BINARY_DETECTION') ?? parsedConfig?.binaryDetectionEnabled
     : parsedConfig?.binaryDetectionEnabled;
+  const includeTextFiles = hasEnv
+    ? parseBooleanText(envIncludeTextFiles, 'BYOMEM_FILE_SEARCH_INCLUDE_TEXT_FILES') ?? parsedConfig?.includeTextFiles
+    : parsedConfig?.includeTextFiles;
   const embeddingBatchSize = hasEnv
     ? parsePositiveSafeIntegerConfig(envEmbeddingBatchSize, 'BYOMEM_FILE_SEARCH_EMBEDDING_BATCH_SIZE') ?? parsedConfig?.embeddingBatchSize
     : parsedConfig?.embeddingBatchSize;
@@ -245,6 +250,7 @@ export function resolveFileSearchConfig(env: NodeJS.ProcessEnv = process.env): B
       configPath: configBlock ? configPath : undefined,
       excludedExtensions,
       binaryDetectionEnabled,
+      includeTextFiles,
       embeddingBatchSize,
       embeddingConcurrency,
       indexStorageMode,
@@ -425,8 +431,9 @@ export function shapeByomemSearchResults<T extends Parameters<typeof shapeByomem
   return results.map((result) => shapeByomemSearchResult(result));
 }
 
-function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string[]; binaryDetectionEnabled?: boolean; embeddingBatchSize?: number; embeddingConcurrency?: number; indexStorageMode?: 'disk' | 'memory' } {
+function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string[]; binaryDetectionEnabled?: boolean; includeTextFiles?: boolean; embeddingBatchSize?: number; embeddingConcurrency?: number; indexStorageMode?: 'disk' | 'memory' } {
   const binaryDetectionEnabled = parseBooleanText(block.match(/binary_detection:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.binary_detection');
+  const includeTextFiles = parseBooleanText(block.match(/include_text_files:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.include_text_files');
   const embeddingBatchSize = parsePositiveSafeIntegerConfig(block.match(/embedding_batch_size:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.embedding_batch_size');
   const embeddingConcurrency = parsePositiveSafeIntegerConfig(block.match(/embedding_concurrency:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.embedding_concurrency');
   const indexStorageMode = parseStorageModeText(block.match(/(?:index_storage_mode|storage_mode):\s*([^\n]+)/)?.[1]?.trim(), 'file_search.index_storage_mode');
@@ -438,6 +445,7 @@ function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string
       ...(embeddingConcurrency !== undefined ? { embeddingConcurrency } : {}),
       ...(indexStorageMode !== undefined ? { indexStorageMode } : {}),
       ...(binaryDetectionEnabled !== undefined ? { binaryDetectionEnabled } : {}),
+      ...(includeTextFiles !== undefined ? { includeTextFiles } : {}),
     };
   }
   const multiline = block.match(/excluded_extensions:\s*\n((?:\s*-\s*.*\n?)+)/)?.[1];
@@ -452,6 +460,7 @@ function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string
       ...(embeddingConcurrency !== undefined ? { embeddingConcurrency } : {}),
       ...(indexStorageMode !== undefined ? { indexStorageMode } : {}),
       ...(binaryDetectionEnabled !== undefined ? { binaryDetectionEnabled } : {}),
+      ...(includeTextFiles !== undefined ? { includeTextFiles } : {}),
     };
   }
   const inlineExcluded = block.match(/excluded_extensions:\s*([^\n]+)/)?.[1]?.trim();
@@ -462,5 +471,6 @@ function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string
     ...(embeddingConcurrency !== undefined ? { embeddingConcurrency } : {}),
     ...(indexStorageMode !== undefined ? { indexStorageMode } : {}),
     ...(binaryDetectionEnabled !== undefined ? { binaryDetectionEnabled } : {}),
+    ...(includeTextFiles !== undefined ? { includeTextFiles } : {}),
   };
 }

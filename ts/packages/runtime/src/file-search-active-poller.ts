@@ -16,6 +16,7 @@ export interface FileSearchActivePollerOptions {
   semanticSearchEnabled?: boolean;
   scannerExcludedExtensions?: string[];
   scannerBinaryDetectionEnabled?: boolean;
+  scannerIncludeTextFiles?: boolean;
   storageMode?: FileSearchIndexStorageMode;
 }
 
@@ -123,6 +124,7 @@ export class FileSearchActivePoller {
       schedulerEnabled: false,
       scannerExcludedExtensions: this.options.scannerExcludedExtensions,
       scannerBinaryDetectionEnabled: this.options.scannerBinaryDetectionEnabled,
+      scannerIncludeTextFiles: this.options.scannerIncludeTextFiles,
       storageMode: this.options.storageMode,
     });
   }

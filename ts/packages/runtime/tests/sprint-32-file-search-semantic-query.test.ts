@@ -49,11 +49,11 @@ describe('Sprint 32 semantic and hybrid file search', () => {
     writeFileSync(join(dir, 'beta.txt'), 'beta unrelated body\n', 'utf8');
     const mock = mockEmbeddings();
     try {
-      const store = openNativeStore({ baseDir: dir, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://localhost:11434', fileSearchIncludeTextFiles: true });
+      const store = openNativeStore({ baseDir: dir, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://localhost:11434', embeddingModel: 'nomic-embed-text', embeddingDimension: 3, fileSearchIncludeTextFiles: true });
       stores.push(store);
       await store.fileSearchDb?.refreshSemanticIndex();
 
-      expect(await searchIndex(store, { query: 'meaning query', mode: 'fts' })).toEqual([]);
+      expect(await searchIndex(store, { query: 'meaning query', mode: 'bm25' })).toEqual([]);
       const semantic = await searchIndex(store, { query: 'meaning query', mode: 'semantic', limit: 5 });
       expect(semantic).not.toHaveLength(0);
       expect(semantic.some((hit) => hit.file?.path?.includes('alpha.txt'))).toBe(true);
@@ -75,7 +75,7 @@ describe('Sprint 32 semantic and hybrid file search', () => {
     writeFileSync(join(dir, 'newer.txt'), 'newer unrelated body\n', 'utf8');
     const mock = mockEmbeddings();
     try {
-      const store = openNativeStore({ baseDir: dir, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://localhost:11434', fileSearchIncludeTextFiles: true });
+      const store = openNativeStore({ baseDir: dir, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://localhost:11434', embeddingModel: 'nomic-embed-text', embeddingDimension: 3, fileSearchIncludeTextFiles: true });
       stores.push(store);
       await store.fileSearchDb?.refreshSemanticIndex();
 
@@ -116,7 +116,7 @@ describe('Sprint 32 semantic and hybrid file search', () => {
     stores.push(store);
     store.fileSearchDb?.scanAndIndex();
 
-    const lexical = await searchIndex(store, { query: 'alpha beta', mode: 'fts', limit: 5 });
+    const lexical = await searchIndex(store, { query: 'alpha beta', mode: 'bm25', limit: 5 });
     expect(lexical).toHaveLength(3);
     expect(lexical[0]?.file?.path).toContain('both.txt');
     expect(lexical.map((hit) => hit.file?.path)).toEqual(expect.arrayContaining([
@@ -126,7 +126,7 @@ describe('Sprint 32 semantic and hybrid file search', () => {
     ]));
   });
 
-  it('hybrid search preserves strong FTS hits while adding semantic recall', async () => {
+  it('hybrid search preserves strong BM25 hits while adding semantic recall', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const runtimeDir = tempDir();
@@ -136,7 +136,7 @@ describe('Sprint 32 semantic and hybrid file search', () => {
     writeFileSync(join(dir, 'alpha.txt'), 'alpha target body\n', 'utf8');
     const mock = mockEmbeddings();
     try {
-      const store = openNativeStore({ baseDir: dir, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://localhost:11434', fileSearchIncludeTextFiles: true });
+      const store = openNativeStore({ baseDir: dir, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://localhost:11434', embeddingModel: 'nomic-embed-text', embeddingDimension: 3, fileSearchIncludeTextFiles: true });
       stores.push(store);
       await store.fileSearchDb?.refreshSemanticIndex();
 
@@ -150,7 +150,7 @@ describe('Sprint 32 semantic and hybrid file search', () => {
     }
   });
 
-  it('hybrid search preserves strong FTS hits while adding semantic recall', async () => {
+  it('hybrid search preserves strong BM25 hits while adding semantic recall', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const runtimeDir = tempDir();
@@ -160,7 +160,7 @@ describe('Sprint 32 semantic and hybrid file search', () => {
     writeFileSync(join(dir, 'alpha.txt'), 'alpha target body\n', 'utf8');
     const mock = mockEmbeddings();
     try {
-      const store = openNativeStore({ baseDir: dir, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://localhost:11434', fileSearchIncludeTextFiles: true });
+      const store = openNativeStore({ baseDir: dir, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://localhost:11434', embeddingModel: 'nomic-embed-text', embeddingDimension: 3, fileSearchIncludeTextFiles: true });
       stores.push(store);
       await store.fileSearchDb?.refreshSemanticIndex();
 
@@ -174,7 +174,7 @@ describe('Sprint 32 semantic and hybrid file search', () => {
     }
   });
 
-  it('degrades hybrid search to FTS when semantic embeddings are absent', async () => {
+  it('degrades hybrid search to BM25 when semantic embeddings are absent', async () => {
     const dir = tempDir();
     dirs.push(dir);
     const runtimeDir = tempDir();
@@ -227,8 +227,8 @@ describe('Sprint 32 semantic and hybrid file search', () => {
     const store = openNativeStore({ baseDir: dir, fileSearchDbBaseDir: runtimeDir, fileSearchIncludeTextFiles: true });
     stores.push(store);
 
-    expect(await searchIndex(store, { query: 'lexical', scope: 'project', mode: 'fts', limit: 5 })).toHaveLength(1);
-    expect(await searchIndex(store, { query: 'lexical', scope: 'user', mode: 'fts', limit: 5 })).toEqual([]);
+    expect(await searchIndex(store, { query: 'lexical', scope: 'project', mode: 'bm25', limit: 5 })).toHaveLength(1);
+    expect(await searchIndex(store, { query: 'lexical', scope: 'user', mode: 'bm25', limit: 5 })).toEqual([]);
     expect(await searchIndex(store, { query: 'lexical', scope: 'dir', mode: 'hybrid', limit: 5 })).toEqual([]);
   });
 });

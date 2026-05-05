@@ -20,7 +20,7 @@ describe('Sprint 50 file-search path prior', () => {
     while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
   });
 
-  it('uses repo-relative path/stem enrichment so FTS favors code files over docs for routing queries', async () => {
+  it('uses repo-relative path/stem enrichment so BM25 favors code files over docs for routing queries', async () => {
     const projectDir = tempDir();
     const runtimeDir = tempDir();
     dirs.push(projectDir, runtimeDir);
@@ -38,7 +38,7 @@ describe('Sprint 50 file-search path prior', () => {
     stores.push(store);
 
     store.fileSearchDb?.scanAndIndex();
-    const results = await searchIndex(store, { query: 'routing', mode: 'fts', limit: 5 });
+    const results = await searchIndex(store, { query: 'routing', mode: 'bm25', limit: 5 });
 
     expect(results).not.toHaveLength(0);
     expect(results[0]?.file?.path).toContain('src/app/router/routing.py');

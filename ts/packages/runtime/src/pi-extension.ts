@@ -12,6 +12,8 @@ import { openReadPath } from './read.js';
 import { resolveRuntimeMode } from './runtime-mode.js';
 import { searchIndex } from './search-index.js';
 import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searchIndex as searchFileIndexForTool } from './file-search-query.js';
+import { refreshSemanticIndexAfterManualScan } from './file-search-semantic-refresh.js';
+import { buildFileSearchIndex } from './file-search-index.js';
 import { captureSessionCheckpoint, type SessionCaptureInput } from './session-capture.js';
 import { openNativeStore } from './store.js';
 import { resolveActiveProjectContext } from './identity.js';
@@ -248,12 +250,19 @@ function openDirectFileSearchDb(targetBaseDir: string) {
     baseDir: targetBaseDir,
     projectBaseDir: targetBaseDir,
     dbBaseDir: process.env.BYOMEM_RUNTIME_BASE_DIR ?? runtimeBaseDir,
+    embeddingBaseUrl: embeddingConfig.embeddingBaseUrl,
+    embeddingModel: embeddingConfig.embeddingModel,
+    embeddingDimension: embeddingConfig.embeddingDimension,
+    embeddingTimeoutMs: embeddingConfig.embeddingTimeoutMs,
+    embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
+    semanticSearchEnabled: true,
     embeddingBatchSize: fileSearchConfig.embeddingBatchSize,
     embeddingConcurrency: fileSearchConfig.embeddingConcurrency,
     scanOnOpen: false,
     schedulerEnabled: false,
     scannerExcludedExtensions: fileSearchConfig.excludedExtensions,
     scannerBinaryDetectionEnabled: fileSearchConfig.binaryDetectionEnabled,
+    scannerIncludeTextFiles: fileSearchConfig.includeTextFiles ?? true,
     storageMode: fileSearchConfig.indexStorageMode,
   });
 }
@@ -262,25 +271,75 @@ function openDirectFileSearchRegistryDb() {
   return openFileSearchRegistryDb({ dbBaseDir: process.env.BYOMEM_RUNTIME_BASE_DIR ?? runtimeBaseDir });
 }
 
+type DirectFileSearchStore = {
+  baseDir: string;
+  fileSearchDb: ReturnType<typeof openFileSearchDb>;
+  fileSearchProjectBaseDir: string;
+};
+
+const directFileSearchStores = new Map<string, DirectFileSearchStore>();
+let directFileSearchStoreIdleTimer: ReturnType<typeof setTimeout> | undefined;
+
+function getDirectFileSearchStore(targetBaseDir: string): DirectFileSearchStore {
+  if (directFileSearchStoreIdleTimer) {
+    clearTimeout(directFileSearchStoreIdleTimer);
+    directFileSearchStoreIdleTimer = undefined;
+  }
+  const existing = directFileSearchStores.get(targetBaseDir);
+  if (existing) return existing;
+  const store = {
+    baseDir: targetBaseDir,
+    fileSearchDb: openDirectFileSearchDb(targetBaseDir),
+    fileSearchProjectBaseDir: targetBaseDir,
+  };
+  directFileSearchStores.set(targetBaseDir, store);
+  return store;
+}
+
+function closeDirectFileSearchStores(): void {
+  if (directFileSearchStoreIdleTimer) {
+    clearTimeout(directFileSearchStoreIdleTimer);
+    directFileSearchStoreIdleTimer = undefined;
+  }
+  for (const store of directFileSearchStores.values()) store.fileSearchDb.close();
+  directFileSearchStores.clear();
+}
+
+function scheduleDirectFileSearchStoreIdleCleanup(): void {
+  if (directFileSearchStoreIdleTimer) clearTimeout(directFileSearchStoreIdleTimer);
+  directFileSearchStoreIdleTimer = setTimeout(() => closeDirectFileSearchStores(), 1_000);
+  directFileSearchStoreIdleTimer.unref?.();
+}
+
+async function withDirectFileSearchStore<T>(targetBaseDir: string, fn: (store: DirectFileSearchStore) => Promise<T> | T): Promise<T> {
+  const store = getDirectFileSearchStore(targetBaseDir);
+  try {
+    return await fn(store);
+  } finally {
+    scheduleDirectFileSearchStoreIdleCleanup();
+  }
+}
+
 let runtimeFileSearchScanManager: FileSearchScanManager | undefined;
 
 function getRuntimeFileSearchScanManager(): FileSearchScanManager {
   runtimeFileSearchScanManager ??= new FileSearchScanManager({
     concurrency: 1,
-    scanRunner: (request) => {
-      const fileDb = openDirectFileSearchDb(request.baseDir);
-      try {
-        return fileDb.scanAndIndex({ trigger: request.trigger });
-      } finally {
-        fileDb.close();
-      }
+    scanRunner: async (request) => {
+      return withDirectFileSearchStore(request.baseDir, async (store) => {
+        const fileDb = store.fileSearchDb;
+        fileDb.scanAndIndex({ trigger: request.trigger });
+        await refreshSemanticIndexAfterManualScan(fileDb, {
+          concurrency: fileSearchConfig.embeddingConcurrency,
+        });
+        return fileDb.getScannerStatus();
+      });
     },
     statusReader: (request) => {
-      const fileDb = openDirectFileSearchDb(request.baseDir);
       try {
-        return fileDb.getScannerStatus();
+        return getDirectFileSearchStore(request.baseDir).fileSearchDb.getScannerStatus();
       } finally {
-        fileDb.close();
+        scheduleDirectFileSearchStoreIdleCleanup();
       }
     },
   });
@@ -301,21 +360,14 @@ function serializeFileSearchResult(result: { chunk?: { filePath?: unknown; conte
   };
 }
 
-async function searchFileIndexDirect(targetBaseDir: string, query: { query: string; mode?: 'fts' | 'semantic' | 'hybrid'; limit?: number }) {
-  const fileDb = openDirectFileSearchDb(targetBaseDir);
-  try {
-    const store = {
-      baseDir: targetBaseDir,
-      fileSearchDb: fileDb,
-      fileSearchProjectBaseDir: targetBaseDir,
-    } as never;
-    const hits = await searchFileIndexForTool(store, query as never);
+async function searchFileIndexDirect(targetBaseDir: string, query: { query: string; mode?: 'bm25' | 'semantic' | 'hybrid'; limit?: number }) {
+  return withDirectFileSearchStore(targetBaseDir, async (store) => {
+    const hits = await searchFileIndexForTool(store as never, query as never);
     const results = hits.map(serializeFileSearchResult);
-    const semantic = await buildSearchSemanticMetadata(store, query as never, hits);
-    return { results, semantic };
-  } finally {
-    fileDb.close();
-  }
+    const semantic = await buildSearchSemanticMetadata(store as never, query as never, hits);
+    const index = buildFileSearchIndex(store as never).stats();
+    return { results, semantic, index };
+  });
 }
 
 function serializeScannerStatus(status: ReturnType<NonNullable<ReturnType<typeof openFileSearchDb>['getScannerStatus']>>) {
@@ -830,20 +882,22 @@ export default function (pi: ExtensionAPI) {
   pi.on?.('session_before_switch', async (event, ctx) => {
     await captureSessionFromHook('session_before_switch', ctx as Record<string, unknown>, event as TurnEndEvent);
   });
-  const cleanupPollingForSessionEnd = async () => {
-    if (!activeFileSearchPoller) return;
-    activeFileSearchPoller.close('session-ended');
-    activeFileSearchPoller = undefined;
-    activeFileSearchPollingBaseDir = undefined;
+  const cleanupForSessionEnd = async () => {
+    if (activeFileSearchPoller) {
+      activeFileSearchPoller.close('session-ended');
+      activeFileSearchPoller = undefined;
+      activeFileSearchPollingBaseDir = undefined;
+    }
+    closeDirectFileSearchStores();
   };
   pi.on?.('session_shutdown', async (event, ctx) => {
     await captureSessionFromHook('session_shutdown', ctx as Record<string, unknown>, event as TurnEndEvent);
-    await cleanupPollingForSessionEnd();
+    await cleanupForSessionEnd();
   });
-  pi.on?.('session:end', cleanupPollingForSessionEnd);
-  pi.on?.('runtime:end', cleanupPollingForSessionEnd);
-  pi.on?.('shutdown', cleanupPollingForSessionEnd);
-  pi.on?.('dispose', cleanupPollingForSessionEnd);
+  pi.on?.('session:end', cleanupForSessionEnd);
+  pi.on?.('runtime:end', cleanupForSessionEnd);
+  pi.on?.('shutdown', cleanupForSessionEnd);
+  pi.on?.('dispose', cleanupForSessionEnd);
 
   pi.registerTool?.({
     name: 'byomem_runtime_status',
@@ -972,7 +1026,7 @@ export default function (pi: ExtensionAPI) {
       type: 'object',
       properties: {
         query: { type: 'string' },
-        mode: { type: 'string', enum: ['fts', 'semantic', 'hybrid'] },
+        mode: { type: 'string', enum: ['bm25', 'semantic', 'hybrid'] },
         limit: { type: 'integer', minimum: 1 },
         baseDir: { type: 'string' },
       },
@@ -984,7 +1038,7 @@ export default function (pi: ExtensionAPI) {
       const query = normalizeText(intent?.query);
       if (!query) throw new Error('Invalid byomem_file_search intent: query is required');
       const mode = intent?.mode === undefined ? 'hybrid' : intent.mode;
-      if (mode !== 'fts' && mode !== 'semantic' && mode !== 'hybrid') throw new Error('Invalid byomem_file_search intent: invalid mode');
+      if (mode !== 'bm25' && mode !== 'semantic' && mode !== 'hybrid') throw new Error('Invalid byomem_file_search intent: invalid mode');
       const limit = intent?.limit === undefined ? 10 : intent.limit;
       if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1) throw new Error('Invalid byomem_file_search intent: limit must be a positive integer');
       const targetBaseDir = resolveFileSearchTargetBaseDir(intent?.baseDir);
@@ -1016,19 +1070,12 @@ export default function (pi: ExtensionAPI) {
       if (line === undefined) throw new Error('Invalid byomem_file_search_find_related intent: line is required');
       const limit = intent?.limit === undefined ? 5 : normalizePositiveInteger(intent.limit, 'limit');
       const targetBaseDir = resolveFileSearchTargetBaseDir(intent?.baseDir);
-      const fileDb = openDirectFileSearchDb(targetBaseDir);
-      try {
-        const store = {
-          baseDir: targetBaseDir,
-          fileSearchDb: fileDb,
-          fileSearchProjectBaseDir: targetBaseDir,
-        } as never;
-        const results = (await findRelatedFileIndex(store, { filePath, line, limit })).map(serializeFileSearchResult);
-        const payload = { results };
+      return withDirectFileSearchStore(targetBaseDir, async (store) => {
+        const results = (await findRelatedFileIndex(store as never, { filePath, line, limit })).map(serializeFileSearchResult);
+        const index = buildFileSearchIndex(store as never).stats();
+        const payload = { results, index };
         return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
-      } finally {
-        fileDb.close();
-      }
+      });
     },
   });
 
@@ -1049,15 +1096,13 @@ export default function (pi: ExtensionAPI) {
       const intent = params as { baseDir?: unknown; limit?: unknown };
       const targetBaseDir = resolveFileSearchTargetBaseDir(intent?.baseDir);
       const limit = intent?.limit === undefined ? undefined : normalizePositiveInteger(intent.limit, 'limit');
-      const fileDb = openDirectFileSearchDb(targetBaseDir);
-      try {
-        const diagnostics = await fileDb.refreshSemanticIndex({ limit });
+      return withDirectFileSearchStore(targetBaseDir, async (store) => {
+        const diagnostics = await store.fileSearchDb.refreshSemanticIndex({ limit });
         const refresh = { tool: 'byomem_file_search_semantic_refresh', baseDir: diagnostics.baseDir, projectKey: diagnostics.projectKey, limit };
-        const payload = { details: { refresh, diagnostics, embeddings: diagnostics }, refresh, diagnostics, embeddings: diagnostics };
+        const index = buildFileSearchIndex(store as never).stats();
+        const payload = { details: { refresh, diagnostics, embeddings: diagnostics, index }, refresh, diagnostics, embeddings: diagnostics, index };
         return { content: [{ type: 'text', text: safeJson(payload) }], ...payload };
-      } finally {
-        fileDb.close();
-      }
+      });
     },
   });
 
@@ -1076,16 +1121,14 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
       }
       const targetBaseDir = resolveFileSearchTargetBaseDir(intent?.baseDir);
-      const fileDb = openDirectFileSearchDb(targetBaseDir);
-      try {
-        const scanner = fileDb.getScannerStatus();
+      return withDirectFileSearchStore(targetBaseDir, (store) => {
+        const scanner = store.fileSearchDb.getScannerStatus();
         const activeJob = manager.getProjectActiveJob(scanner.projectKey) ?? null;
         const latestJob = manager.getProjectLatestJob(scanner.projectKey) ?? null;
-        const payload = { ...serializeScannerStatus(scanner), job: latestJob, runtime_local_jobs: { active: activeJob, latest: latestJob, durable: false } };
+        const index = buildFileSearchIndex(store as never).stats();
+        const payload = { ...serializeScannerStatus(scanner), index, job: latestJob, runtime_local_jobs: { active: activeJob, latest: latestJob, durable: false } };
         return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
-      } finally {
-        fileDb.close();
-      }
+      });
     },
   });
 
@@ -1106,15 +1149,17 @@ export default function (pi: ExtensionAPI) {
         const payload = { job, scanner: job.scanner ?? null, status: job.scanner ?? null, runtime_local: true, durable: false };
         return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
       }
-      const fileDb = openDirectFileSearchDb(targetBaseDir);
-      try {
+      return withDirectFileSearchStore(targetBaseDir, async (store) => {
+        const fileDb = store.fileSearchDb;
         fileDb.scanAndIndex({ trigger: 'manual' });
+        const refresh = await refreshSemanticIndexAfterManualScan(fileDb, {
+          concurrency: fileSearchConfig.embeddingConcurrency,
+        });
         const scanner = fileDb.getScannerStatus();
-        const payload = serializeScannerStatus(scanner);
+        const index = buildFileSearchIndex(store as never).stats();
+        const payload = { ...serializeScannerStatus(scanner), refresh, diagnostics: refresh.diagnostics, embeddings: refresh.diagnostics, index };
         return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
-      } finally {
-        fileDb.close();
-      }
+      });
     },
   });
 
@@ -1163,6 +1208,7 @@ export default function (pi: ExtensionAPI) {
         semanticSearchEnabled: false,
         scannerExcludedExtensions: fileSearchConfig.excludedExtensions,
         scannerBinaryDetectionEnabled: fileSearchConfig.binaryDetectionEnabled,
+        scannerIncludeTextFiles: fileSearchConfig.includeTextFiles,
         storageMode: fileSearchConfig.indexStorageMode,
       });
       activeFileSearchPollingBaseDir = targetBaseDir;

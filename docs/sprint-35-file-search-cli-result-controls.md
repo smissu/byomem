@@ -1,7 +1,7 @@
 # Sprint 35: File Search CLI Result Controls
 
 ## Objective
-Add a small, stable result-control option to the BYOMem `file-search` CLI so users can bound output size explicitly. This sprint introduces `--limit` for file-search while preserving default behavior and existing FTS/semantic/hybrid modes.
+Add a small, stable result-control option to the BYOMem `file-search` CLI so users can bound output size explicitly. This sprint introduces `--limit` for file-search while preserving default behavior and existing BM25/semantic/hybrid modes.
 
 ## Scope
 ### In scope
@@ -27,7 +27,7 @@ Add a small, stable result-control option to the BYOMem `file-search` CLI so use
 - [x] AC35-1: `file-search --limit 1` returns at most one result when more matches exist.
 - [x] AC35-2: Omitting `--limit` preserves the existing default limit of 10.
 - [x] AC35-3: Invalid values such as `0`, negative numbers, non-integers, or non-numeric input fail with JSON error `--limit must be a positive integer`.
-- [x] AC35-4: `--limit` works with existing `fts`, `semantic`, and `hybrid` mode validation without changing ranking behavior.
+- [x] AC35-4: `--limit` works with existing `bm25`, `semantic`, and `hybrid` mode validation without changing ranking behavior.
 - [x] AC35-5: Existing Sprint 33/34 CLI behavior remains green.
 
 ## Execution Mode

@@ -27,6 +27,8 @@ export { normalizeIdentity, normalizeLeafName, normalizeStableKey, normalizeScop
 export * from './readonly-core.js';
 export * from './embedding-client.js';
 export * from './embedding-vector.js';
+export { FileSearchIndex, FileSearchIndexBuilder, buildFileSearchIndex, invalidateFileSearchIndex } from './file-search-index.js';
+export type { FileSearchHotIndexState, FileSearchHotIndexStats, FileSearchIndexBuildStats, FileSearchIndexFindRelatedOptions, FileSearchIndexIdentity, FileSearchIndexMode, FileSearchIndexSearchOptions, FileSearchIndexSeed, FileSearchIndexStats } from './file-search-index.js';
 export { searchIndex as searchFileIndex, findRelated, findRelated as findRelatedFileSearch } from './file-search-query.js';
 export type { FileSearchHit, FileSearchQuery } from './file-search-query.js';
 export { openFileSearchDb, openFileSearchRegistryDb, resolveDefaultFileSearchDbPath, resolveFileSearchProjectKey } from './file-search-db.js';

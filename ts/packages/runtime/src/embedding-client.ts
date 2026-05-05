@@ -223,6 +223,7 @@ export function openEmbeddingClient(options: EmbeddingClientOptions = {}): Embed
       const originalIndexes = filtered.map((text, index) => ({ text, index })).filter((entry) => entry.text.length > 0);
       const results = new Array<number[] | undefined>(texts.length).fill(undefined);
       if (!originalIndexes.length) return results;
+      if (!options.baseUrl && options.requireRemote) throw new Error('Remote embedding provider is required but no embedding base URL is configured');
       if (model2VecServer) {
         if (options.baseUrl) throw new Error('Model2Vec backend only applies when no embedding base URL is configured');
         const vectors = await model2VecServer.embedMany(originalIndexes.map((entry) => entry.text));
@@ -232,7 +233,6 @@ export function openEmbeddingClient(options: EmbeddingClientOptions = {}): Embed
         return results;
       }
       if (!options.baseUrl) {
-        if (options.requireRemote) throw new Error('Remote embedding provider is required but no embedding base URL is configured');
         for (const entry of originalIndexes) results[entry.index] = fallbackEmbedding(entry.text, options.dimension);
         return results;
       }

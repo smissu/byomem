@@ -239,7 +239,7 @@ Implementation notes:
 
 - [ ] **3.2** Run Sprint 27–33 file-search regression suite
   - Role: test-engineer
-  - Deliverable: evidence that DB foundation, scanner/indexer, `.gitignore`, FTS, scheduler, semantic/hybrid search, and scanner status remain green
+  - Deliverable: evidence that DB foundation, scanner/indexer, `.gitignore`, BM25, scheduler, semantic/hybrid search, and scanner status remain green
   - Depends on: 1.5, 2.2
   - Verify: `npm test -- --run ts/packages/runtime/tests/sprint-27-file-search-db-foundation.test.ts ts/packages/runtime/tests/sprint-28-file-scanner-indexer-mvp.test.ts ts/packages/runtime/tests/sprint-28-file-scanner-gitignore.test.ts ts/packages/runtime/tests/sprint-29-file-search-mvp.test.ts ts/packages/runtime/tests/sprint-30-file-index-scheduler-and-hardening.test.ts ts/packages/runtime/tests/sprint-31-file-search-refinement-and-cleanup.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-schema.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-query.test.ts ts/packages/runtime/tests/sprint-33-file-search-scanner-status.test.ts`
 
@@ -264,7 +264,7 @@ Implementation notes:
 - Full suite: `npm test -- --run`
 - Build: `npm run build`
 - Manual smoke examples:
-  - `node ts/packages/runtime/dist/cli.js file-search --base-dir . --mode fts --query "Sprint 33"`
+  - `node ts/packages/runtime/dist/cli.js file-search --base-dir . --mode bm25 --query "Sprint 33"`
   - `node ts/packages/runtime/dist/cli.js file-search-status --base-dir .`
   - Optional semantic status after `file-search --semantic-file-search --mode hybrid ...`
 

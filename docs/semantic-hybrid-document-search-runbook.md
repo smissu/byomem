@@ -1,7 +1,7 @@
 # Semantic / Hybrid Document Search Runbook
 
 ## Status
-Sprint 32 adds semantic and hybrid search over the BYOMem file-search DB. Sprint 36 makes file-search DB storage global by default while preserving per-project `project_key` partitioning. Sprint 37 adds an explicit file-search project registry with `seen`, `enabled`, and `disabled` states for future scanner automation. Sprint 38 adds direct Pi extension file-search tools for search, status, manual scan, and registry management. Sprint 39 adds explicit active-project file-search polling controls that remain default/global off. Sprint 42 adds source line-range metadata to indexed chunks and search results. Sprint 43 adds runtime-local async scan jobs for Pi-hosted direct scan calls while preserving synchronous CLI/default scan behavior. The file-search stack remains physically separate from the memories DB and keeps SQLite FTS as the lexical baseline. Semantic and hybrid file-search are enabled by default, and when no remote embedding endpoint is configured the runtime uses deterministic fallback embeddings so semantic/hybrid search still works.
+Sprint 32 adds semantic and hybrid search over the BYOMem file-search DB. Sprint 36 makes file-search DB storage global by default while preserving per-project `project_key` partitioning. Sprint 37 adds an explicit file-search project registry with `seen`, `enabled`, and `disabled` states for future scanner automation. Sprint 38 adds direct Pi extension file-search tools for search, status, manual scan, and registry management. Sprint 39 adds explicit active-project file-search polling controls that remain default/global off. Sprint 42 adds source line-range metadata to indexed chunks and search results. Sprint 43 adds runtime-local async scan jobs for Pi-hosted direct scan calls while preserving synchronous CLI/default scan behavior. The file-search stack remains physically separate from the memories DB and keeps SQLite BM25 as the lexical baseline. Semantic and hybrid file-search are enabled by default, and when no remote embedding endpoint is configured the runtime uses deterministic fallback embeddings so semantic/hybrid search still works.
 
 ## Prerequisites
 For real Ollama-backed semantic search, install/pull the embedding model:
@@ -98,7 +98,7 @@ node ts/packages/runtime/dist/cli.js file-search-status --base-dir /path/to/proj
 node ts/packages/runtime/dist/cli.js file-search-scan --base-dir /path/to/project --json
 ```
 
-The file-search stack remains physically separate from the memories DB and keeps SQLite FTS as the lexical baseline.
+The file-search stack remains physically separate from the memories DB and keeps SQLite BM25 as the lexical baseline.
 
 ## Runtime-local async scans
 Sprint 43 async scan jobs are an in-process Pi/runtime convenience, not a durable background service:
@@ -198,11 +198,11 @@ node ts/packages/runtime/dist/cli.js file-search-project-unregister --base-dir /
 ## Modes
 Document/file search supports:
 
-- `fts` — lexical SQLite FTS5 only; does not require embeddings.
+- `bm25` — lexical SQLite FTS5 only; does not require embeddings.
 - `semantic` — query and chunk vectors only; requires persisted chunk embeddings.
-- `hybrid` — combines FTS and semantic candidates with deterministic score blending and deduplication.
+- `hybrid` — combines BM25 and semantic candidates with deterministic score blending and deduplication.
 
-FTS-only behavior remains safe when semantic search is disabled or unconfigured. `--semantic-file-search` is legacy/explicit and should not be required for the default-on path.
+BM25-only behavior remains safe when semantic search is disabled or unconfigured. `--semantic-file-search` is legacy/explicit and should not be required for the default-on path.
 
 ## Runtime API
 Use the file-search query path, not the memory search path. Direct Pi tools and the CLI fallback should both resolve the active project the same way:
@@ -249,13 +249,13 @@ node ts/packages/runtime/dist/cli.js \
   --query "semantic document search"
 ```
 
-For FTS-only smoke testing:
+For BM25-only smoke testing:
 
 ```bash
 node ts/packages/runtime/dist/cli.js \
   file-search \
   --base-dir /path/to/project \
-  --mode fts \
+  --mode bm25 \
   --query "exact lexical terms" \
   --limit 10
 ```
@@ -343,8 +343,8 @@ Embedding diagnostic fields include:
 - lastError
 
 ## Failure behavior
-- FTS mode remains usable without Ollama.
-- Semantic mode requires semantic search to be enabled and ready chunk embeddings to return semantic results. Hybrid mode uses semantic candidates when available and falls back to FTS candidates when semantic search is disabled, unconfigured, or has no ready embeddings.
+- BM25 mode remains usable without Ollama.
+- Semantic mode requires semantic search to be enabled and ready chunk embeddings to return semantic results. Hybrid mode uses semantic candidates when available and falls back to BM25 candidates when semantic search is disabled, unconfigured, or has no ready embeddings.
 - When remote embeddings are not required, the embedding client may use deterministic fallback embeddings for test/dev mechanics.
 - When `embeddingRequireRemote` is true, remote embedding failures fail loudly.
 

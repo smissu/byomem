@@ -31,7 +31,7 @@ This sprint is intentionally **not** a durable DB queue/lease sprint. Cross-proc
 - Do not redesign the scanner's file discovery/chunking/indexing algorithm.
 - Do not replace semantic embedding refresh with a background embedding job system.
 - Do not add filesystem watchers or long-running OS daemons.
-- Do not change search ranking, FTS, semantic search, or line-range behavior from Sprint 42.
+- Do not change search ranking, BM25, semantic search, or line-range behavior from Sprint 42.
 - Do not make polling globally automatic by default.
 
 ## Investigation Summary

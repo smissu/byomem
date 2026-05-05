@@ -1,7 +1,7 @@
 # Sprint 32: Semantic / Hybrid Document Search
 
 ## Objective
-Implement true semantic and hybrid search for the BYOMem document/file-search stack by embedding stable indexed file chunks and querying them with the same embedding-client approach already used by memory search. The sprint keeps FTS-first behavior intact, adds Ollama-compatible semantic retrieval over persisted chunk embeddings, and makes hybrid ranking the optimized path for document search when embeddings are available.
+Implement true semantic and hybrid search for the BYOMem document/file-search stack by embedding stable indexed file chunks and querying them with the same embedding-client approach already used by memory search. The sprint keeps BM25-first behavior intact, adds Ollama-compatible semantic retrieval over persisted chunk embeddings, and makes hybrid ranking the optimized path for document search when embeddings are available.
 
 ## Scope
 ### In scope
@@ -10,12 +10,12 @@ Implement true semantic and hybrid search for the BYOMem document/file-search st
 - Embed only stable indexed chunks and avoid re-embedding unchanged chunks via chunk/text hash caching
 - Add a bounded backfill/resume path for existing `indexed_chunks` that lack embeddings
 - Track embedding coverage/status per chunk/model so partial coverage is visible and testable
-- Keep semantic indexing/search explicitly enableable/configurable so FTS-only document search remains the safe default when embeddings are not configured
+- Keep semantic indexing/search explicitly enableable/configurable so BM25-only document search remains the safe default when embeddings are not configured
 - Define batch size, timeout, and partial-batch failure behavior for embedding generation
-- Add `semantic` mode to document search and make `hybrid` combine FTS and semantic evidence
-- Preserve `fts` mode as the deterministic lexical baseline
-- Keep project scoping mandatory for all FTS, semantic, and hybrid file-search results
-- Handle unavailable Ollama/remote embedding service cleanly without wedging scanner/indexer or breaking FTS search
+- Add `semantic` mode to document search and make `hybrid` combine BM25 and semantic evidence
+- Preserve `bm25` mode as the deterministic lexical baseline
+- Keep project scoping mandatory for all BM25, semantic, and hybrid file-search results
+- Handle unavailable Ollama/remote embedding service cleanly without wedging scanner/indexer or breaking BM25 search
 - Add explicit RED tests before implementation for schema, embedding, semantic retrieval, hybrid ranking, fallback, and regression behavior
 - Add docs/runbook guidance for configuring and testing semantic document search
 - Keep live Ollama usage out of normal automated tests by using mocked/fake embeddings; live Ollama smoke tests should be explicit/manual or skippable
@@ -37,7 +37,7 @@ Implement true semantic and hybrid search for the BYOMem document/file-search st
 ## Investigation Summary
 - Scanner stopped/inactive: current file-search scanning is synchronous during `openNativeStore({ baseDir })` / `openFileSearchDb()` and there is no background scanner process to stop.
 - Current document/file-search indexing lives in `ts/packages/runtime/src/file-search-db.ts` and stores stable chunks in `indexed_chunks` plus FTS5 rows in `indexed_chunks_fts`.
-- Current document search lives in `ts/packages/runtime/src/file-search-query.ts`; it supports `mode?: 'fts' | 'hybrid'`, but `hybrid` currently returns FTS hits when present and otherwise returns `[]`.
+- Current document search lives in `ts/packages/runtime/src/file-search-query.ts`; it supports `mode?: 'bm25' | 'hybrid'`, but `hybrid` currently returns BM25 hits when present and otherwise returns `[]`.
 - Current memory search already has semantic/hybrid behavior in `ts/packages/runtime/src/sqlite-sidecar-internal.ts`, using `record_embeddings`, `embedding_cache`, cosine similarity, and `openEmbeddingClient()`.
 - Memory-sidecar vector helpers such as embedding BLOB encode/decode, cosine similarity, and text truncation are currently private to `sqlite-sidecar-internal.ts`; Sprint 32 should extract shared utilities rather than importing private sidecar internals from file-search code.
 - Existing embedding client lives in `ts/packages/runtime/src/embedding-client.ts`; it supports Ollama-compatible `/api/embeddings`, defaults to `nomic-embed-text`, supports timeout/remote-required behavior, and has deterministic fallback embeddings when remote embeddings are not required.
@@ -52,22 +52,22 @@ Implement true semantic and hybrid search for the BYOMem document/file-search st
 ## Acceptance Criteria
 - AC-1: File-search DB schema includes persisted chunk embeddings, embedding cache/metadata, model name, dimension, text/chunk hash, and update timestamps without touching the memories DB schema.
 - AC-2: Scanner/indexer embeds stable indexed chunks using the existing embedding client when semantic indexing is enabled/configured, and it skips re-embedding unchanged chunks.
-- AC-3: If Ollama/remote embeddings are unavailable, indexing/search degrades safely according to configuration: FTS remains usable, no partial write corrupts the file-search DB, and remote-required mode fails loudly in tests.
-- AC-4: Document search supports explicit `mode: 'fts'`, `mode: 'semantic'`, and `mode: 'hybrid'` with stable typed results.
-- AC-5: Semantic document search can return relevant chunk hits when lexical FTS would miss, using persisted chunk embeddings scoped to the current project.
-- AC-6: Hybrid document search combines FTS score and semantic score so lexical hits remain strong while semantically relevant chunks can improve ranking or fill gaps.
+- AC-3: If Ollama/remote embeddings are unavailable, indexing/search degrades safely according to configuration: BM25 remains usable, no partial write corrupts the file-search DB, and remote-required mode fails loudly in tests.
+- AC-4: Document search supports explicit `mode: 'bm25'`, `mode: 'semantic'`, and `mode: 'hybrid'` with stable typed results.
+- AC-5: Semantic document search can return relevant chunk hits when lexical BM25 would miss, using persisted chunk embeddings scoped to the current project.
+- AC-6: Hybrid document search combines BM25 score and semantic score so lexical hits remain strong while semantically relevant chunks can improve ranking or fill gaps.
 - AC-7: All file-search modes enforce project scoping and do not leak chunks across project keys or into the memories DB.
 - AC-8: Embedding cache/reuse behavior is test-covered: unchanged chunks are not re-embedded; changed chunks are re-embedded; deleted chunks remove stale embedding rows.
-- AC-9: Existing Sprint 27–31 FTS/scanner/scheduler behavior remains green and unchanged outside the intended semantic/hybrid additions.
+- AC-9: Existing Sprint 27–31 BM25/scanner/scheduler behavior remains green and unchanged outside the intended semantic/hybrid additions.
 - AC-10: Documentation explains required Ollama setup, default model (`nomic-embed-text`), configuration options, fallback behavior, and manual verification steps.
 - AC-11: RED tests are committed/recorded before implementation work, and verification includes focused semantic/hybrid tests plus full regression/build.
 - AC-12: Existing `indexed_chunks` without embeddings can be backfilled in bounded/resumable batches, and model/version changes do not silently reuse incompatible embeddings.
 - AC-13: Automated semantic/hybrid tests use mocked/fake embeddings and do not require live Ollama unless explicitly marked as a manual/skippable smoke test.
 - AC-14: Minimal diagnostics expose embedding coverage, failures/fallbacks, configured model/dimension, and enough search degradation information to troubleshoot missing semantic results.
 - AC-15: Embedding configuration is consistently propagated into file-search indexing/search from existing runtime, CLI, and Pi extension configuration paths without duplicating Ollama client logic.
-- AC-16: A minimal public runtime/CLI/API entrypoint supports document search mode selection (`fts`, `semantic`, `hybrid`) and returns structured file/chunk metadata suitable for manual testing.
+- AC-16: A minimal public runtime/CLI/API entrypoint supports document search mode selection (`bm25`, `semantic`, `hybrid`) and returns structured file/chunk metadata suitable for manual testing.
 - AC-17: Async embedding generation is exposed through an explicit awaited refresh/backfill path; no semantic embedding work is hidden in unawaited synchronous scanner calls.
-- AC-18: Semantic document indexing/search can be disabled or left unconfigured without breaking existing FTS document search, and remote-required behavior is explicit.
+- AC-18: Semantic document indexing/search can be disabled or left unconfigured without breaking existing BM25 document search, and remote-required behavior is explicit.
 - AC-19: Hybrid/semantic result limits, deduplication, score normalization, tie-breaking, and pagination/limit semantics are deterministic and test-covered.
 - AC-20: Sprint documentation includes Ollama setup with the model pull command, expected config, MVP corpus/latency assumptions, and known limitations.
 
@@ -115,7 +115,7 @@ Rationale: the sprint has a shared schema/config/test kernel, then separable wor
 
 - [ ] **0.4** Add failing remote-unavailable/fallback tests for file-search embeddings
   - Role: test-engineer
-  - Deliverable: RED tests proving FTS remains usable when remote embeddings are unavailable and remote-required mode fails loudly without corrupting file-search state
+  - Deliverable: RED tests proving BM25 remains usable when remote embeddings are unavailable and remote-required mode fails loudly without corrupting file-search state
   - Depends on: 0.2, 0.3
   - Verify: Sprint 32 schema/query tests fail for missing degradation behavior
 
@@ -133,7 +133,7 @@ Rationale: the sprint has a shared schema/config/test kernel, then separable wor
 
 - [ ] **0.7** Add failing tests for embedding config propagation and minimal public document-search surfacing
   - Role: test-engineer
-  - Deliverable: RED tests proving runtime/CLI/Pi config reaches file-search embeddings and that a public/manual entrypoint can run `fts`, `semantic`, and `hybrid` document search modes without private imports
+  - Deliverable: RED tests proving runtime/CLI/Pi config reaches file-search embeddings and that a public/manual entrypoint can run `bm25`, `semantic`, and `hybrid` document search modes without private imports
   - Depends on: 0.3, 0.4
   - Verify: focused config/API tests fail before implementation; likely targets include `ts/packages/runtime/tests/cli.test.ts`, `ts/packages/runtime/tests/byomem-extension-wiring.test.ts`, or a focused Sprint 32 public-surface test
 
@@ -145,7 +145,7 @@ Rationale: the sprint has a shared schema/config/test kernel, then separable wor
 
 - [ ] **0.9** Add failing tests for enablement, batching, limit/pagination, and partial-failure semantics
   - Role: test-engineer
-  - Deliverable: RED tests proving FTS-only remains safe when semantic search is disabled/unconfigured, embedding batches respect configured bounds, partial failures are recorded/degraded deterministically, and result limits/deduplication are stable
+  - Deliverable: RED tests proving BM25-only remains safe when semantic search is disabled/unconfigured, embedding batches respect configured bounds, partial failures are recorded/degraded deterministically, and result limits/deduplication are stable
   - Depends on: 0.3, 0.4, 0.8
   - Verify: focused Sprint 32 tests fail before enablement/batching/limit semantics are implemented
 
@@ -188,7 +188,7 @@ Rationale: the sprint has a shared schema/config/test kernel, then separable wor
 
 - [ ] **1.5** Harden embedding failure behavior for document indexing
   - Role: backend-coder
-  - Deliverable: remote-unavailable behavior follows config, leaves FTS indexing usable where allowed, and avoids corrupting embedding rows
+  - Deliverable: remote-unavailable behavior follows config, leaves BM25 indexing usable where allowed, and avoids corrupting embedding rows
   - Depends on: 1.3, 0.4
   - Verify: remote-unavailable/fallback tests pass
 
@@ -223,9 +223,9 @@ Rationale: the sprint has a shared schema/config/test kernel, then separable wor
   - Depends on: 2.1
   - Verify: semantic ranking tests pass with mocked vectors
 
-- [ ] **2.3** Implement true hybrid FTS + semantic blending for document search
+- [ ] **2.3** Implement true hybrid BM25 + semantic blending for document search
   - Role: backend-coder
-  - Deliverable: `mode: 'hybrid'` combines FTS and semantic candidates, normalizes lexical/vector scores, dedupes by chunk identity, preserves FTS-first strength, and allows semantic evidence to improve ranking/fill gaps
+  - Deliverable: `mode: 'hybrid'` combines BM25 and semantic candidates, normalizes lexical/vector scores, dedupes by chunk identity, preserves BM25-first strength, and allows semantic evidence to improve ranking/fill gaps
   - Depends on: 2.1, 2.2, 0.3, 0.9
   - Verify: hybrid ranking/blending/limit tests pass
 
@@ -237,12 +237,12 @@ Rationale: the sprint has a shared schema/config/test kernel, then separable wor
 
 - [ ] **2.5** Add minimal public runtime/CLI/API surfacing for document search mode selection
   - Role: typescript-coder
-  - Deliverable: public/manual entrypoint for document search that accepts `mode: fts|semantic|hybrid`, uses existing embedding config conventions, and returns structured file/chunk metadata without replacing memory `byomem_search`
+  - Deliverable: public/manual entrypoint for document search that accepts `mode: bm25|semantic|hybrid`, uses existing embedding config conventions, and returns structured file/chunk metadata without replacing memory `byomem_search`
   - Depends on: 2.4, 0.7
   - Verify: CLI/API/config tests pass and manual smoke command can run without private imports
 
 ### Phase 3 — Integration / Regression / Operator Docs
-- [ ] **3.1** Add focused integration tests for FTS-only, semantic-only, hybrid, unavailable-remote, rescan/cache, backfill, model-version, diagnostics, async refresh, enablement/batching, limits, and public surfacing scenarios
+- [ ] **3.1** Add focused integration tests for BM25-only, semantic-only, hybrid, unavailable-remote, rescan/cache, backfill, model-version, diagnostics, async refresh, enablement/batching, limits, and public surfacing scenarios
   - Role: test-engineer
   - Deliverable: complete Sprint 32 focused suite covering AC-1 through AC-20 without requiring live Ollama
   - Depends on: 1.8, 2.5
@@ -250,7 +250,7 @@ Rationale: the sprint has a shared schema/config/test kernel, then separable wor
 
 - [ ] **3.2** Run Sprint 27–32 file-search regression suite
   - Role: test-engineer
-  - Deliverable: regression evidence that DB foundation, scanner, gitignore, FTS MVP, scheduler, and refinement behavior remain green
+  - Deliverable: regression evidence that DB foundation, scanner, gitignore, BM25 MVP, scheduler, and refinement behavior remain green
   - Depends on: 3.1
   - Verify: `npm test -- --run ts/packages/runtime/tests/sprint-27-file-search-db-foundation.test.ts ts/packages/runtime/tests/sprint-28-file-scanner-indexer-mvp.test.ts ts/packages/runtime/tests/sprint-28-file-scanner-gitignore.test.ts ts/packages/runtime/tests/sprint-29-file-search-mvp.test.ts ts/packages/runtime/tests/sprint-30-file-index-scheduler-and-hardening.test.ts ts/packages/runtime/tests/sprint-31-file-search-refinement-and-cleanup.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-schema.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-query.test.ts`
 
@@ -279,16 +279,16 @@ Rationale: the sprint has a shared schema/config/test kernel, then separable wor
 - Full runtime suite: `npm test -- --run`
 - Build: `npm run build`
 - Manual smoke test against BYOMem repo root with Ollama running and `embeddingBaseUrl` configured, verifying:
-  - FTS search still works
+  - BM25 search still works
   - semantic search returns non-lexical relevant chunks
   - hybrid search returns optimized blended results
-  - minimal public runtime/CLI/API entrypoint can select `fts`, `semantic`, and `hybrid` document modes
+  - minimal public runtime/CLI/API entrypoint can select `bm25`, `semantic`, and `hybrid` document modes
   - ignored directories remain excluded
   - embedding coverage/diagnostics report expected model, dimension, coverage, and fallback state
 
 ## Risks & Mitigations
 - **Risk:** embedding every chunk can be slow or expensive on large repos.  
-  **Mitigation:** cache by chunk/text hash and model, skip unchanged chunks, support bounded/resumable backfill batches, define MVP corpus/latency assumptions, preserve FTS-only usability, and defer ANN/vector-index optimization until needed.
+  **Mitigation:** cache by chunk/text hash and model, skip unchanged chunks, support bounded/resumable backfill batches, define MVP corpus/latency assumptions, preserve BM25-only usability, and defer ANN/vector-index optimization until needed.
 - **Risk:** remote Ollama outages, missing models, timeouts, bad responses, or partial batch failures could wedge indexing.  
   **Mitigation:** make failure behavior explicit and test fallback-allowed, remote-required, timeout/bad-response, and partial-batch modes.
 - **Risk:** semantic retrieval could leak cross-project chunks.  
@@ -296,30 +296,30 @@ Rationale: the sprint has a shared schema/config/test kernel, then separable wor
 - **Risk:** file-search embeddings accidentally reuse or mutate memory-sidecar tables.  
   **Mitigation:** keep schema physically in the file-search DB and run Sprint 27 boundary tests.
 - **Risk:** hybrid ranking is hard to tune deterministically.  
-  **Mitigation:** use mocked embeddings with simple vectors, define deterministic score blending, deduplication, limit/pagination semantics, and tie-breakers, and preserve `fts` mode as baseline.
+  **Mitigation:** use mocked embeddings with simple vectors, define deterministic score blending, deduplication, limit/pagination semantics, and tie-breakers, and preserve `bm25` mode as baseline.
 - **Risk:** embedding fallback vectors may produce misleading semantic quality.  
   **Mitigation:** document fallback as test/dev behavior; prefer remote Ollama for real semantic search; remote-required mode must fail loudly; automated tests should mock embeddings instead of requiring live Ollama.
-- **Risk:** async embedding generation is accidentally hidden behind the synchronous scanner, causing races and flaky tests.  
+- **Risk:** async embedding generation is accidentally hidden behind the synchronous scanner, causing races and flaky tests.
   **Mitigation:** require an explicit awaited refresh/backfill API and tests proving no hidden fire-and-forget semantic work is required for correctness.
-- **Risk:** binary/non-UTF8 file reads remain a scanner limitation.  
+- **Risk:** binary/non-UTF8 file reads remain a scanner limitation.
   **Mitigation:** keep this out of Sprint 32 unless tests expose it as blocking; consider a later binary-skip sprint.
-- **Risk:** partial embedding coverage can produce confusing or biased semantic/hybrid results.  
+- **Risk:** partial embedding coverage can produce confusing or biased semantic/hybrid results.
   **Mitigation:** store explicit coverage/status metadata, expose diagnostics, and ensure hybrid/semantic behavior is well-defined when only some chunks have embeddings.
-- **Risk:** semantic rollout could break FTS-only file search when embeddings are disabled or unavailable.  
-  **Mitigation:** keep semantic indexing/search explicitly enableable/configurable and verify FTS-only remains green without Ollama.
-- **Risk:** model drift or dimension changes can silently mix incompatible vectors.  
+- **Risk:** semantic rollout could break BM25-only file search when embeddings are disabled or unavailable.
+  **Mitigation:** keep semantic indexing/search explicitly enableable/configurable and verify BM25-only remains green without Ollama.
+- **Risk:** model drift or dimension changes can silently mix incompatible vectors.
   **Mitigation:** store model and dimension with every embedding/cache row and force fresh embeddings when model/dimension changes.
 
 ## Definition of Done
 - [x] All acceptance criteria are satisfied by passing tests.
 - [x] File-search DB stores chunk embeddings separately from the memories DB.
-- [x] `fts`, `semantic`, and `hybrid` document search modes are implemented and typed.
-- [x] Hybrid search demonstrably improves or supplements FTS results under mocked embedding tests.
+- [x] `bm25`, `semantic`, and `hybrid` document search modes are implemented and typed.
+- [x] Hybrid search demonstrably improves or supplements BM25 results under mocked embedding tests.
 - [x] Unchanged chunks are not re-embedded; changed/deleted chunks update embedding state correctly.
-- [x] Ollama unavailable behavior is explicit, test-covered, and does not break FTS search unexpectedly.
+- [x] Ollama unavailable behavior is explicit, test-covered, and does not break BM25 search unexpectedly.
 - [x] Backfill, model-version changes, embedding coverage, and diagnostics are test-covered.
 - [x] Embedding configuration reaches file-search from runtime and CLI paths; Pi extension embedding config continues to flow through `openNativeStore()`.
-- [x] Minimal public runtime/CLI/API surfacing can run document `fts`, `semantic`, and `hybrid` modes without private imports.
+- [x] Minimal public runtime/CLI/API surfacing can run document `bm25`, `semantic`, and `hybrid` modes without private imports.
 - [x] Async semantic indexing/backfill is explicitly awaited and test-covered; no hidden unawaited scanner embedding work is required.
 - [x] Semantic enablement, batch sizing, partial failures, result limits, dedupe, and deterministic tie-breaking are test-covered.
 - [x] Docs include `ollama pull nomic-embed-text`, config examples, MVP corpus/latency assumptions, and limitations.
@@ -331,8 +331,8 @@ Rationale: the sprint has a shared schema/config/test kernel, then separable wor
 
 ## Closeout Notes
 - Implemented file-search-owned chunk embedding storage with cache metadata, model/dimension tracking, diagnostics, and explicit async `refreshSemanticIndex()` backfill/refresh.
-- Added true document `fts`, `semantic`, and `hybrid` query modes, preserving FTS-only fallback when embeddings are absent/unconfigured.
-- Added public runtime export `searchFileIndex` and CLI `file-search --mode fts|semantic|hybrid` surface for manual testing.
+- Added true document `bm25`, `semantic`, and `hybrid` query modes, preserving BM25-only fallback when embeddings are absent/unconfigured.
+- Added public runtime export `searchFileIndex` and CLI `file-search --mode bm25|semantic|hybrid` surface for manual testing.
 - Added runbook: `docs/semantic-hybrid-document-search-runbook.md`.
 - Verification completed before review: focused Sprint 32 tests, CLI tests, full runtime suite, and build all passed.
 

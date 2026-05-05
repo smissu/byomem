@@ -91,9 +91,9 @@ describe('Sprint 36 global file-search DB decoupling', () => {
       expect(statusA.projectKey).toMatch(/^project:same-project-[a-f0-9]{12}$/);
       expect(statusB.projectKey).toMatch(/^project:same-project-[a-f0-9]{12}$/);
 
-      const aAlpha = await searchFileIndex(storeA, { query: 'alpha', mode: 'fts' });
-      const aBeta = await searchFileIndex(storeA, { query: 'beta', mode: 'fts' });
-      const bBeta = await searchFileIndex(storeB, { query: 'beta', mode: 'fts' });
+      const aAlpha = await searchFileIndex(storeA, { query: 'alpha', mode: 'bm25' });
+      const aBeta = await searchFileIndex(storeA, { query: 'beta', mode: 'bm25' });
+      const bBeta = await searchFileIndex(storeB, { query: 'beta', mode: 'bm25' });
       expect(aAlpha).toHaveLength(1);
       expect(aAlpha[0].file?.path).toContain('a.txt');
       expect(aBeta).toHaveLength(0);
@@ -144,7 +144,7 @@ describe('Sprint 36 global file-search DB decoupling', () => {
 
     vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    await main(['file-search', '--base-dir', projectDir, '--mode', 'fts']);
+    await main(['file-search', '--base-dir', projectDir, '--mode', 'bm25']);
     expect(existsSync(join(projectDir, 'byomem-file-search.sqlite'))).toBe(false);
     expect(existsSync(resolve(runtimeDir, 'byomem-file-search.sqlite'))).toBe(false);
 

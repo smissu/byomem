@@ -173,7 +173,7 @@ describe('Sprint 37 file-search project registry', () => {
 
     const store = openNativeStore({ baseDir: projectDir, fileSearchScanOnOpen: false });
     try {
-      await searchFileIndex(store, { query: 'needle', mode: 'fts' });
+      await searchFileIndex(store, { query: 'needle', mode: 'bm25' });
       expect(listFileSearchProjects(store.fileSearchDb!.db)).toEqual([expect.objectContaining({ baseDir: resolve(projectDir), state: 'seen', source: 'manual-search' })]);
     } finally {
       store.close();

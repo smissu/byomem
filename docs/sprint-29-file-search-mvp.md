@@ -1,11 +1,11 @@
 # Sprint 29: File Search MVP
 
 ## Objective
-Deliver the initial file search experience on top of the indexed project-partitioned file-search DB. This sprint focuses on FTS-first retrieval and only allows semantic retrieval when it is grounded on stable indexed chunks, returning project-scoped results from the global file-search store.
+Deliver the initial file search experience on top of the indexed project-partitioned file-search DB. This sprint focuses on BM25-first retrieval and only allows semantic retrieval when it is grounded on stable indexed chunks, returning project-scoped results from the global file-search store.
 
 ## Scope
 ### In scope
-- Implement FTS-first file search over the indexed corpus
+- Implement BM25-first file search over the indexed corpus
 - Return project-scoped results from the global file-search DB
 - Allow semantic retrieval only when it is grounded on stable indexed chunks
 - Add RED tests for query behavior, project scoping, and grounded semantic fallback
@@ -28,15 +28,15 @@ Deliver the initial file search experience on top of the indexed project-partiti
 ## Investigation Summary
 - Sprint 27 establishes the physically separate file-search DB boundary.
 - Sprint 28 provides the project-partitioned indexed corpus and stable indexed chunk/output foundation that search can query.
-- FTS should be the primary retrieval mechanism for the MVP because it is grounded in the stable index.
+- BM25 should be the primary retrieval mechanism for the MVP because it is grounded in the stable index.
 - Semantic retrieval is allowed only when it uses the stable indexed chunks or equivalent output produced by the scanner/indexer path.
 - The main risk is mixing retrieval concerns with freshness or scheduler behavior before the MVP is stable.
 
 ## Acceptance Criteria
 - AC-1: File search returns project-scoped results from the global file-search DB.
-- AC-2: FTS is the first retrieval path used by the MVP.
+- AC-2: BM25 is the first retrieval path used by the MVP.
 - AC-3: Semantic retrieval is only used when it is grounded on stable indexed chunks or equivalent stable indexed output from Sprint 28.
-- AC-4: Search tests cover scoped retrieval, FTS-first behavior, and the Sprint 28-gated semantic fallback.
+- AC-4: Search tests cover scoped retrieval, BM25-first behavior, and the Sprint 28-gated semantic fallback.
 - AC-5: RED tests define the search contract before implementation.
 
 ## Execution Mode
@@ -45,9 +45,9 @@ Rationale: search ranking, project scoping, and grounded semantic fallback are c
 
 ## Phases & Tasks
 ### Phase 0 — RED tests and search contract
-- [ ] **0.1** Add failing tests for FTS-first project-scoped file search
+- [ ] **0.1** Add failing tests for BM25-first project-scoped file search
   - Role: test-engineer
-  - Deliverable: RED tests covering scoped search results and the FTS-first retrieval path.
+  - Deliverable: RED tests covering scoped search results and the BM25-first retrieval path.
   - Depends on: Sprint 28 indexer MVP
   - Verify: targeted file-search test run fails before implementation.
 
@@ -58,11 +58,11 @@ Rationale: search ranking, project scoping, and grounded semantic fallback are c
   - Verify: semantic fallback tests fail before implementation.
 
 ### Phase 1 — Search implementation
-- [ ] **1.1** Implement FTS-first retrieval over the project-partitioned index
+- [ ] **1.1** Implement BM25-first retrieval over the project-partitioned index
   - Role: backend-coder
   - Deliverable: search logic that ranks and returns project-scoped results from the file-search DB.
   - Depends on: 0.1
-  - Verify: FTS-first search tests pass.
+  - Verify: BM25-first search tests pass.
 
 - [ ] **1.2** Implement grounded semantic retrieval integration for stable indexed chunks
   - Role: backend-coder
@@ -73,14 +73,14 @@ Rationale: search ranking, project scoping, and grounded semantic fallback are c
 ### Phase 2 — Validation and docs
 - [ ] **2.1** Document the MVP search behavior and the boundary to future freshness/scheduler work
   - Role: documenter
-  - Deliverable: concise docs for FTS-first file search and grounded semantic fallback.
+  - Deliverable: concise docs for BM25-first file search and grounded semantic fallback.
   - Depends on: 1.1, 1.2
   - Verify: docs review confirms the search MVP is clearly bounded.
 
 ## Verification
 - Run the targeted file-search tests added in Phase 0.
 - Confirm search results are project-scoped.
-- Confirm FTS remains the primary MVP retrieval path.
+- Confirm BM25 remains the primary MVP retrieval path.
 - Confirm semantic retrieval does not run on unstable or unindexed chunk sets.
 
 ## Risks & Mitigations
@@ -93,7 +93,7 @@ Rationale: search ranking, project scoping, and grounded semantic fallback are c
 
 ## Definition of Done
 - [ ] Project-scoped file search works from the global file-search DB
-- [ ] FTS-first retrieval is implemented and tested
+- [ ] BM25-first retrieval is implemented and tested
 - [ ] Semantic retrieval is grounded on stable indexed chunks only
 - [ ] RED tests cover the search contract
 - [ ] Docs describe the MVP behavior and the next-sprint boundary

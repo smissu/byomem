@@ -9,7 +9,7 @@ Add source line-number ranges to BYOMem file-search results so search hits are d
 ### In Scope
 
 - Add scanner-derived physical source line metadata to indexed file-search chunks.
-- Return line ranges from FTS, semantic, and hybrid file-search modes when available.
+- Return line ranges from BM25, semantic, and hybrid file-search modes when available.
 - Expose line ranges through CLI JSON output and Pi extension direct tool output.
 - Preserve existing result fields and consumer compatibility.
 - Safely handle old file-search DBs that do not yet have line metadata.
@@ -33,7 +33,7 @@ Relevant implementation files:
   - Existing schema helper `ensureColumn(...)` can support additive nullable migration.
 - `ts/packages/runtime/src/file-search-query.ts`
   - `FileSearchHit.file` currently exposes `path`, `chunkIndex`, `chunkText`, `chunkHash`, and scores.
-  - FTS and semantic SELECTs currently read chunk metadata but not line ranges.
+  - BM25 and semantic SELECTs currently read chunk metadata but not line ranges.
 - `ts/packages/runtime/src/pi-extension.ts`
   - `serializeFileSearchResult(...)` currently emits `chunk_index`, `chunk_text`, `chunk_hash`, and scores.
 - `ts/packages/runtime/src/cli.ts`
@@ -57,7 +57,7 @@ Current repo state note:
 - **AC-2:** Blank lines are counted correctly when deriving physical line numbers; `chunk_index` is not treated as a source line.
 - **AC-3:** Current one-non-empty-line chunk behavior is preserved unless explicitly changed by a later sprint.
 - **AC-4:** Existing DBs migrate safely: old rows without line metadata remain queryable, public line fields are omitted/undefined when unavailable, and rescanning files populates line ranges.
-- **AC-5:** FTS search results include line ranges when available.
+- **AC-5:** BM25 search results include line ranges when available.
 - **AC-6:** Semantic search results include line ranges when available without duplicating line metadata into embedding rows.
 - **AC-7:** Hybrid search preserves line ranges through blended result merging.
 - **AC-8:** Pi extension `byomem_file_search` output includes snake_case `start_line` and `end_line` fields when available.
@@ -93,9 +93,9 @@ The RED test pass should explicitly cover these behaviors before implementation:
    - Rescanning a file populates line ranges for the current indexed chunks.
 
 3. **Search result payloads**
-   - FTS results include `file.startLine` / `file.endLine` when available.
+   - BM25 results include `file.startLine` / `file.endLine` when available.
    - Semantic results include line ranges by joining back to `indexed_chunks` rather than duplicating metadata into embedding rows.
-   - Hybrid blended results preserve line ranges through dedup/merge, including when the same chunk appears in both FTS and semantic result sets.
+   - Hybrid blended results preserve line ranges through dedup/merge, including when the same chunk appears in both BM25 and semantic result sets.
    - Sensitive/redacted chunk filtering behavior is unchanged by line metadata.
 
 4. **CLI and Pi extension output**
@@ -117,7 +117,7 @@ Rationale: the work centers on shared file-search schema and query/result contra
 
 - **WS-A: RED tests** — new Sprint 42 tests plus focused updates to existing scanner/search/extension tests.
 - **WS-B: Scanner/schema kernel** — line-aware chunk metadata and additive DB migration.
-- **WS-C: Query/API surfacing** — FTS, semantic, hybrid, CLI, and Pi tool output.
+- **WS-C: Query/API surfacing** — BM25, semantic, hybrid, CLI, and Pi tool output.
 - **WS-D: Docs/validation/review** — runbook updates, regression slice, review.
 
 ## Phases & Tasks
@@ -143,7 +143,7 @@ Rationale: the work centers on shared file-search schema and query/result contra
     npm test -- --run ts/packages/runtime/tests/sprint-42-file-search-line-ranges.test.ts
     ```
 
-- [ ] **0.3** Add RED search payload tests for FTS, semantic, and hybrid modes.
+- [ ] **0.3** Add RED search payload tests for BM25, semantic, and hybrid modes.
   - Role: `test-engineer`
   - File: `ts/packages/runtime/tests/sprint-42-file-search-line-ranges.test.ts`
   - Deliverable: failing assertions that all search modes return line ranges when indexed rows have them.
@@ -217,10 +217,10 @@ Rationale: the work centers on shared file-search schema and query/result contra
     npm run build
     ```
 
-- [ ] **2.2** Return line ranges from FTS and semantic queries.
+- [ ] **2.2** Return line ranges from BM25 and semantic queries.
   - Role: `typescript-coder`
   - File: `ts/packages/runtime/src/file-search-query.ts`
-  - Deliverable: FTS and semantic SELECTs read line metadata from `indexed_chunks`; hybrid merge preserves it.
+  - Deliverable: BM25 and semantic SELECTs read line metadata from `indexed_chunks`; hybrid merge preserves it.
   - Depends on: 2.1
   - Verify:
     ```bash
@@ -317,7 +317,7 @@ Rationale: the work centers on shared file-search schema and query/result contra
 
 - [ ] All acceptance criteria validated.
 - [ ] RED tests added before implementation and pass after implementation.
-- [ ] Search results include line ranges in FTS, semantic, and hybrid modes.
+- [ ] Search results include line ranges in BM25, semantic, and hybrid modes.
 - [ ] Pi extension and CLI output expose the new metadata.
 - [ ] Existing DBs remain query-compatible.
 - [ ] Docs updated to explain line ranges and `chunk_index` semantics.

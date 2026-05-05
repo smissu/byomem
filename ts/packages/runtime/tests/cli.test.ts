@@ -302,7 +302,7 @@ describe('runtime cli', () => {
     writeFileSync(join(dir, 'alpha-three.txt'), 'alpha shared term three\n', 'utf8');
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await main(['file-search', '--base-dir', dir, '--file-search-include-text-files', 'true', '--mode', 'fts', '--query', 'alpha', '--limit', '1']);
+    await main(['file-search', '--base-dir', dir, '--file-search-include-text-files', 'true', '--mode', 'bm25', '--query', 'alpha', '--limit', '1']);
 
     const output = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'));
     expect(output.results).toHaveLength(1);
@@ -316,7 +316,7 @@ describe('runtime cli', () => {
       dirs.push(dir);
       writeFileSync(join(dir, 'alpha.txt'), 'alpha body\n', 'utf8');
 
-      await main(['file-search', '--base-dir', dir, '--file-search-include-text-files', 'true', '--mode', 'fts', '--query', 'alpha', '--limit', invalidLimit]);
+      await main(['file-search', '--base-dir', dir, '--file-search-include-text-files', 'true', '--mode', 'bm25', '--query', 'alpha', '--limit', invalidLimit]);
 
       expect(JSON.parse(String(errSpy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
         error: '--limit must be a positive integer',
@@ -327,7 +327,7 @@ describe('runtime cli', () => {
     }
   });
 
-  it('runs semantic file-search through the public CLI surface', async () => {
+  it('runs semantic file-search through the public CLI surface after scan refreshes embeddings', async () => {
     const dir = tempDir();
     dirs.push(dir);
     writeFileSync(join(dir, 'alpha.txt'), 'alpha target body\n', 'utf8');
@@ -338,8 +338,11 @@ describe('runtime cli', () => {
     }) as typeof fetch;
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await main(['file-search-scan', '--base-dir', dir, '--file-search-include-text-files', 'true']);
-    await main(['file-search-semantic-refresh', '--base-dir', dir, '--embedding-base-url', 'http://localhost:11434', '--embedding-dimension', '3', '--file-search-embedding-concurrency', '2']);
+    await main(['file-search-scan', '--base-dir', dir, '--file-search-include-text-files', 'true', '--embedding-base-url', 'http://localhost:11434', '--embedding-dimension', '3', '--file-search-embedding-concurrency', '2']);
+    expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      refresh: expect.objectContaining({ automatic: true, attempted: true }),
+      embeddings: expect.objectContaining({ state: 'ready', embeddedChunks: expect.any(Number), refreshNeededChunks: 0 }),
+    });
     await main(['file-search', '--base-dir', dir, '--file-search-include-text-files', 'true', '--mode', 'semantic', '--query', 'meaning query', '--embedding-base-url', 'http://localhost:11434', '--embedding-dimension', '3']);
 
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({

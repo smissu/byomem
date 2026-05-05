@@ -135,6 +135,7 @@ export interface FileSearchRegistryDbHandle {
 export interface FileSearchDbHandle {
   path: string;
   db: BetterSqliteDatabase;
+  readonly indexRevision: number;
   close(): void;
   scanAndIndex(options?: { trigger?: FileSearchScannerTrigger }): FileSearchScannerStatus;
   getScannerStatus(): FileSearchScannerStatus;
@@ -155,6 +156,9 @@ const IGNORED_DIRS = new Set(['node_modules', '.git']);
 const ROOT_RUNTIME_IGNORED_DIRS = new Set(['queue', '.byomem']);
 const IGNORED_BASENAMES = new Set(['byomem-index.sqlite', 'byomem-file-search.sqlite', 'native-store.json', 'queue.json', 'worker.json', 'session-capture-state.json', 'byomem-turn-end.jsonl']);
 const SENSITIVE_CONTENT_MARKERS = ['thinkingSignature', 'textSignature', 'encrypted_content', 'encryptedContent'];
+const SENSITIVE_CONTENT_FIELD_RE = new RegExp(
+  String.raw`(?:^|[{\[,])\s*["'](?:${SENSITIVE_CONTENT_MARKERS.join('|')})["']\s*:\s*(?:["']|[{[]|true\b|false\b|null\b|-?\d)`,
+);
 const MAX_ACTIVE_PROJECTS = 3;
 const DEBOUNCE_WINDOW_MS = 250;
 const BACKSTOP_WINDOW_MS = 60_000;
@@ -222,7 +226,7 @@ export function isIgnoredFileSearchArtifact(filePath: string, baseDir?: string):
 }
 
 export function containsSensitiveFileSearchContent(content: string): boolean {
-  return SENSITIVE_CONTENT_MARKERS.some((marker) => content.includes(marker));
+  return SENSITIVE_CONTENT_FIELD_RE.test(content);
 }
 
 function isIgnoredInternalFile(filePath: string, baseDir?: string): boolean {
@@ -373,6 +377,11 @@ function ensureFoundationSchema(db: BetterSqliteDatabase, storageMode: FileSearc
     CREATE TABLE IF NOT EXISTS schema_meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS file_search_index_revisions (
+      project_key TEXT PRIMARY KEY,
+      revision INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS file_records (
       id TEXT PRIMARY KEY,
@@ -538,7 +547,24 @@ function hashContent(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
-function buildFileSearchFtsText(rel: string, content: string): string {
+function readFileSearchIndexRevision(db: BetterSqliteDatabase, projectKey: string): number {
+  const row = db.prepare('SELECT revision FROM file_search_index_revisions WHERE project_key = ?').get(projectKey) as { revision?: number } | undefined;
+  return typeof row?.revision === 'number' ? row.revision : 0;
+}
+
+function bumpFileSearchIndexRevision(db: BetterSqliteDatabase, projectKey: string): number {
+  const now = new Date().toISOString();
+  const current = readFileSearchIndexRevision(db, projectKey);
+  const next = current + 1;
+  db.prepare(`
+    INSERT INTO file_search_index_revisions (project_key, revision, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(project_key) DO UPDATE SET revision = excluded.revision, updated_at = excluded.updated_at
+  `).run(projectKey, next, now);
+  return next;
+}
+
+function buildFileSearchLexicalText(rel: string, content: string): string {
   const normalized = rel.replace(/\\/g, '/');
   const parts = normalized.split('/').filter((part) => part && part !== '.');
   const stem = basename(normalized).replace(/\.[^.]+$/, '').toLowerCase();
@@ -560,7 +586,7 @@ function canBackfillIndexedChunkLineMetadata(existingChunks: IndexedChunkSnapsho
     return chunk !== undefined
       && row.chunk_index === index
       && row.chunk_text === chunk.content
-      && row.search_text === buildFileSearchFtsText(rel, chunk.content)
+      && row.search_text === buildFileSearchLexicalText(rel, chunk.content)
       && row.chunk_hash === hashContent(chunk.content);
   });
 }
@@ -720,7 +746,7 @@ function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel
     ? db.prepare('SELECT id, chunk_index, chunk_text, search_text, chunk_hash FROM indexed_chunks WHERE file_record_id = ? ORDER BY chunk_index').all(recordId) as IndexedChunkSnapshotRow[]
     : [];
   const missingSearchText = contentAndMetadataMatch
-    ? existingChunks.some((row, index) => row.search_text !== buildFileSearchFtsText(rel, chunks[index]?.content ?? row.chunk_text))
+    ? existingChunks.some((row, index) => row.search_text !== buildFileSearchLexicalText(rel, chunks[index]?.content ?? row.chunk_text))
     : false;
 
   if (contentAndMetadataMatch && !missingLineMetadata && !missingSearchText) return { changed: false, chunksWritten: 0 };
@@ -764,7 +790,7 @@ function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel
         const updateChunkSearchText = db.prepare('UPDATE indexed_chunks SET search_text = ?, updated_at = ? WHERE id = ?');
         existingChunks.forEach((row, chunkIndex) => {
           const chunk = chunks[chunkIndex]!;
-          updateChunkSearchText.run(buildFileSearchFtsText(rel, chunk.content), now, row.id);
+          updateChunkSearchText.run(buildFileSearchLexicalText(rel, chunk.content), now, row.id);
         });
       }
       return { changed: true, chunksWritten: chunks.length };
@@ -811,7 +837,7 @@ function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel
       recordId,
       chunkIndex,
       chunk.content,
-      buildFileSearchFtsText(rel, chunk.content),
+      buildFileSearchLexicalText(rel, chunk.content),
       hashContent(chunk.content),
       chunk.startLine,
       chunk.endLine,
@@ -1094,23 +1120,27 @@ async function refreshSemanticIndex(db: BetterSqliteDatabase, options: FileSearc
     }
   }
   if (missing.length) {
-    const vectors = await embeddingClient.embedMany(missing.map((entry) => entry.embeddingText));
-    for (let index = 0; index < missing.length; index += 1) {
-      const entry = missing[index]!;
-      const vector = vectors[index];
-      if (!vector?.length) {
-        const message = options.embeddingRequireRemote ? `Remote embedding request returned no embedding for model ${model}` : 'Embedding request returned no vector';
+    const batchSize = Math.max(1, Math.min(refreshOptions.concurrency ?? options.embeddingConcurrency ?? missing.length, missing.length));
+    for (let start = 0; start < missing.length; start += batchSize) {
+      const batch = missing.slice(start, start + batchSize);
+      const vectors = await embeddingClient.embedMany(batch.map((entry) => entry.embeddingText));
+      for (let index = 0; index < batch.length; index += 1) {
+        const entry = batch[index]!;
+        const vector = vectors[index];
+        if (!vector?.length) {
+          const message = options.embeddingRequireRemote ? `Remote embedding request returned no embedding for model ${model}` : 'Embedding request returned no vector';
+          db.prepare(`INSERT OR REPLACE INTO indexed_chunk_embeddings (chunk_id, project_key, file_record_id, chunk_index, chunk_hash, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, identity_version, status, error, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, COALESCE((SELECT created_at FROM indexed_chunk_embeddings WHERE chunk_id = ?), ?), ?)`).run(entry.row.id, entry.row.project_key, entry.row.file_record_id, entry.row.chunk_index, entry.row.chunk_hash, entry.textHash, model, configuredDimension, Buffer.alloc(0), 0, providerKey, 0, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, message, entry.row.id, now, now);
+          if (options.embeddingRequireRemote) throw new Error(message);
+          continue;
+        }
+        const embedding = encodeEmbedding(vector);
+        const dimension = vector.length;
+        const cacheIdValue = cacheId(entry.textHash, providerKey, model, configuredDimension, dimension);
+        db.prepare('INSERT OR REPLACE INTO file_embedding_cache (id, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, cache_version, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cacheIdValue, entry.textHash, model, configuredDimension, embedding, dimension, providerKey, dimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, now);
         db.prepare(`INSERT OR REPLACE INTO indexed_chunk_embeddings (chunk_id, project_key, file_record_id, chunk_index, chunk_hash, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, identity_version, status, error, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, COALESCE((SELECT created_at FROM indexed_chunk_embeddings WHERE chunk_id = ?), ?), ?)`).run(entry.row.id, entry.row.project_key, entry.row.file_record_id, entry.row.chunk_index, entry.row.chunk_hash, entry.textHash, model, configuredDimension, Buffer.alloc(0), 0, providerKey, 0, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, message, entry.row.id, now, now);
-        if (options.embeddingRequireRemote) throw new Error(message);
-        continue;
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', NULL, COALESCE((SELECT created_at FROM indexed_chunk_embeddings WHERE chunk_id = ?), ?), ?)`).run(entry.row.id, entry.row.project_key, entry.row.file_record_id, entry.row.chunk_index, entry.row.chunk_hash, entry.textHash, model, configuredDimension, embedding, dimension, providerKey, dimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, entry.row.id, now, now);
       }
-      const embedding = encodeEmbedding(vector);
-      const dimension = vector.length;
-      const cacheIdValue = cacheId(entry.textHash, providerKey, model, configuredDimension, dimension);
-      db.prepare('INSERT OR REPLACE INTO file_embedding_cache (id, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, cache_version, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cacheIdValue, entry.textHash, model, configuredDimension, embedding, dimension, providerKey, dimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, now);
-      db.prepare(`INSERT OR REPLACE INTO indexed_chunk_embeddings (chunk_id, project_key, file_record_id, chunk_index, chunk_hash, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, identity_version, status, error, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', NULL, COALESCE((SELECT created_at FROM indexed_chunk_embeddings WHERE chunk_id = ?), ?), ?)`).run(entry.row.id, entry.row.project_key, entry.row.file_record_id, entry.row.chunk_index, entry.row.chunk_hash, entry.textHash, model, configuredDimension, embedding, dimension, providerKey, dimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, entry.row.id, now, now);
     }
   }
   return embeddingDiagnostics(db, options);
@@ -1238,6 +1268,13 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
       activeRunId = undefined;
     }
   };
+  const runScanAndBumpRevision = (trigger: FileSearchScannerTrigger): FileSearchScannerStatus => {
+    try {
+      return runScan(trigger);
+    } finally {
+      bumpFileSearchIndexRevision(db, projectKey);
+    }
+  };
   const embeddingClient = openEmbeddingClient({
     baseUrl: options.embeddingBaseUrl,
     model: options.embeddingModel,
@@ -1247,13 +1284,16 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
   });
   const scheduler = schedulerEnabled
     ? new FileIndexScheduler({
-        scanAndIndex: (scanOptions?: { trigger?: FileSearchScannerTrigger }) => runScan(scanOptions?.trigger ?? 'manual'),
+        scanAndIndex: (scanOptions?: { trigger?: FileSearchScannerTrigger }) => runScanAndBumpRevision(scanOptions?.trigger ?? 'manual'),
       } as FileSearchDbHandle, projectBaseDir, { maxActiveProjects: MAX_ACTIVE_PROJECTS, debounceWindowMs: DEBOUNCE_WINDOW_MS, backstopWindowMs: BACKSTOP_WINDOW_MS })
     : undefined;
 
   const handle: FileSearchDbHandle = {
     path,
     db,
+    get indexRevision(): number {
+      return readFileSearchIndexRevision(db, projectKey);
+    },
     semanticSearchEnabled: semanticEnabled(options),
     embeddingModel: embeddingModel(options),
     embeddingConfiguredDimension: embeddingConfiguredDimension(options),
@@ -1261,15 +1301,19 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
     refreshMetrics: scheduler?.refreshMetrics ?? { runs: 0, failures: 0, skips: 0, retries: 0 },
     scanAndIndex(scanOptions?: { trigger?: FileSearchScannerTrigger }): FileSearchScannerStatus {
       const trigger = scanOptions?.trigger ?? 'manual';
-      runScan(trigger);
+      runScanAndBumpRevision(trigger);
       if (trigger === 'manual') markFileSearchProjectSeen(db, projectBaseDir, 'manual-scan');
       return buildScannerStatus();
     },
     getScannerStatus(): FileSearchScannerStatus {
       return buildScannerStatus();
     },
-    refreshSemanticIndex(refreshOptions?: { limit?: number; concurrency?: number }): Promise<FileSearchEmbeddingDiagnostics> {
-      return refreshSemanticIndex(db, options, embeddingClient, refreshOptions);
+    async refreshSemanticIndex(refreshOptions?: { limit?: number; concurrency?: number }): Promise<FileSearchEmbeddingDiagnostics> {
+      try {
+        return await refreshSemanticIndex(db, options, embeddingClient, refreshOptions);
+      } finally {
+        bumpFileSearchIndexRevision(db, projectKey);
+      }
     },
     getEmbeddingDiagnostics(): FileSearchEmbeddingDiagnostics {
       return embeddingDiagnostics(db, options);

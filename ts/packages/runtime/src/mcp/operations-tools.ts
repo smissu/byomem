@@ -2,10 +2,12 @@ import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { resolve } from 'node:path';
 import * as z from 'zod/v3';
 import { openFileSearchDb, openFileSearchRegistryDb } from '../file-search-db.js';
+import { buildFileSearchIndex } from '../file-search-index.js';
 import { configureFileSearchPolling, disableFileSearchPolling, getFileSearchPollingStatus } from '../file-search-active-poller.js';
 import { listFileSearchProjects, registerFileSearchProject, unregisterFileSearchProject, type FileSearchPollingDisabledReason, type FileSearchProjectEntry } from '../file-search-project-registry.js';
 import { resolveActiveProjectContext, normalizeStableKey } from '../identity.js';
 import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searchIndex as searchFileIndexForTool } from '../file-search-query.js';
+import { refreshSemanticIndexAfterManualScan } from '../file-search-semantic-refresh.js';
 import { safeJson } from '../readonly-core.js';
 import type { ReadOnlyMcpRuntimeContext } from './readonly-tools.js';
 
@@ -50,7 +52,7 @@ type ScanIntentInput = {
 
 type FileSearchQueryIntentInput = {
   query: string;
-  mode?: 'fts' | 'semantic' | 'hybrid';
+  mode?: 'bm25' | 'semantic' | 'hybrid';
   limit?: number;
   baseDir?: string;
 };
@@ -116,7 +118,7 @@ const scanIntentSchema = z.object({
 }).strict();
 const fileSearchQueryIntentSchema = z.object({
   query: z.string().trim().min(1),
-  mode: z.enum(['fts', 'semantic', 'hybrid']).optional(),
+  mode: z.enum(['bm25', 'semantic', 'hybrid']).optional(),
   limit: z.number().int().positive().optional(),
   baseDir: z.string().trim().min(1).optional(),
 }).strict();
@@ -207,12 +209,63 @@ function openDirectFileSearchDb(runtime: OperationsMcpRuntimeContext, baseDir: s
     schedulerEnabled: false,
     scannerExcludedExtensions: runtime.fileSearchConfig.excludedExtensions,
     scannerBinaryDetectionEnabled: runtime.fileSearchConfig.binaryDetectionEnabled,
+    scannerIncludeTextFiles: runtime.fileSearchConfig.includeTextFiles ?? true,
     storageMode: runtime.fileSearchConfig.indexStorageMode,
   });
 }
 
 function openDirectFileSearchRegistryDb(runtime: OperationsMcpRuntimeContext) {
   return openFileSearchRegistryDb({ dbBaseDir: runtime.runtimeBaseDir });
+}
+
+type DirectFileSearchStore = {
+  baseDir: string;
+  fileSearchDb: ReturnType<typeof openFileSearchDb>;
+  fileSearchProjectBaseDir: string;
+};
+
+const directFileSearchStores = new Map<string, DirectFileSearchStore>();
+let directFileSearchStoreIdleTimer: ReturnType<typeof setTimeout> | undefined;
+
+function getDirectFileSearchStore(runtime: OperationsMcpRuntimeContext, targetBaseDir: string): DirectFileSearchStore {
+  if (directFileSearchStoreIdleTimer) {
+    clearTimeout(directFileSearchStoreIdleTimer);
+    directFileSearchStoreIdleTimer = undefined;
+  }
+  const cacheKey = [runtime.runtimeBaseDir, targetBaseDir].join('\0');
+  const existing = directFileSearchStores.get(cacheKey);
+  if (existing) return existing;
+  const store = {
+    baseDir: targetBaseDir,
+    fileSearchDb: openDirectFileSearchDb(runtime, targetBaseDir),
+    fileSearchProjectBaseDir: targetBaseDir,
+  };
+  directFileSearchStores.set(cacheKey, store);
+  return store;
+}
+
+function closeDirectFileSearchStores(): void {
+  if (directFileSearchStoreIdleTimer) {
+    clearTimeout(directFileSearchStoreIdleTimer);
+    directFileSearchStoreIdleTimer = undefined;
+  }
+  for (const store of directFileSearchStores.values()) store.fileSearchDb.close();
+  directFileSearchStores.clear();
+}
+
+function scheduleDirectFileSearchStoreIdleCleanup(): void {
+  if (directFileSearchStoreIdleTimer) clearTimeout(directFileSearchStoreIdleTimer);
+  directFileSearchStoreIdleTimer = setTimeout(() => closeDirectFileSearchStores(), 1_000);
+  directFileSearchStoreIdleTimer.unref?.();
+}
+
+async function withDirectFileSearchStore<T>(runtime: OperationsMcpRuntimeContext, targetBaseDir: string, fn: (store: DirectFileSearchStore) => Promise<T> | T): Promise<T> {
+  const store = getDirectFileSearchStore(runtime, targetBaseDir);
+  try {
+    return await fn(store);
+  } finally {
+    scheduleDirectFileSearchStoreIdleCleanup();
+  }
 }
 
 function serializeFileSearchResult(result: { chunk?: { filePath?: unknown; content?: unknown; startLine?: unknown; endLine?: unknown; language?: unknown }; score?: unknown; source?: unknown }) {
@@ -230,20 +283,13 @@ function serializeFileSearchResult(result: { chunk?: { filePath?: unknown; conte
 }
 
 async function searchFileIndexDirect(runtime: OperationsMcpRuntimeContext, targetBaseDir: string, query: FileSearchQueryIntentInput) {
-  const fileDb = openDirectFileSearchDb(runtime, targetBaseDir);
-  try {
-    const store = {
-      baseDir: targetBaseDir,
-      fileSearchDb: fileDb,
-      fileSearchProjectBaseDir: targetBaseDir,
-    } as never;
-    const hits = await searchFileIndexForTool(store, query as never);
+  return withDirectFileSearchStore(runtime, targetBaseDir, async (store) => {
+    const hits = await searchFileIndexForTool(store as never, query as never);
     const results = hits.map(serializeFileSearchResult);
-    const semantic = await buildSearchSemanticMetadata(store, query as never, hits);
-    return { results, semantic };
-  } finally {
-    fileDb.close();
-  }
+    const semantic = await buildSearchSemanticMetadata(store as never, query as never, hits);
+    const index = buildFileSearchIndex(store as never).stats();
+    return { results, semantic, index };
+  });
 }
 
 function serializeFileSearchProjectEntry(entry: FileSearchProjectEntry) {
@@ -319,16 +365,19 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
       const runtime = getRuntimeContext();
       const intent = scanIntentSchema.parse(params) as ScanIntentInput;
       const targetBaseDir = resolveFileSearchTargetBaseDir(intent.baseDir);
-      const fileDb = openDirectFileSearchDb(runtime, targetBaseDir);
-      try {
-        const scanner = fileDb.scanAndIndex({ trigger: 'manual' });
+      return withDirectFileSearchStore(runtime, targetBaseDir, async (store) => {
+        const fileDb = store.fileSearchDb;
+        fileDb.scanAndIndex({ trigger: 'manual' });
+        const refresh = await refreshSemanticIndexAfterManualScan(fileDb, {
+          concurrency: runtime.fileSearchConfig.embeddingConcurrency,
+        });
         const status = fileDb.getScannerStatus();
+        const scanner = status;
+        const index = buildFileSearchIndex(store as never).stats();
         return {
-          content: [{ type: 'text', text: safeJson({ tool: 'scan', baseDir: targetBaseDir, scanner, status }) }],
+          content: [{ type: 'text', text: safeJson({ tool: 'scan', baseDir: targetBaseDir, scanner, status, refresh, diagnostics: refresh.diagnostics, embeddings: refresh.diagnostics, index }) }],
         };
-      } finally {
-        fileDb.close();
-      }
+      });
     },
   );
 
@@ -365,26 +414,20 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
       const runtime = getRuntimeContext();
       const intent = fileSearchRelatedIntentSchema.parse(params) as FileSearchRelatedIntentInput;
       const targetBaseDir = resolveFileSearchTargetBaseDir(intent.baseDir);
-      const fileDb = openDirectFileSearchDb(runtime, targetBaseDir);
-      try {
-        const store = {
-          baseDir: targetBaseDir,
-          fileSearchDb: fileDb,
-          fileSearchProjectBaseDir: targetBaseDir,
-        } as never;
-        const results = (await findRelatedFileIndex(store, {
+      return withDirectFileSearchStore(runtime, targetBaseDir, async (store) => {
+        const results = (await findRelatedFileIndex(store as never, {
           filePath: intent.filePath,
           line: intent.line,
           limit: intent.limit ?? 5,
         })).map(serializeFileSearchResult);
+        const index = buildFileSearchIndex(store as never).stats();
+        const payload = { results, index };
         return {
-          content: [{ type: 'text', text: safeJson({ results }) }],
-          details: { results },
-          results,
+          content: [{ type: 'text', text: safeJson(payload) }],
+          details: payload,
+          ...payload,
         };
-      } finally {
-        fileDb.close();
-      }
+      });
     },
   );
 
@@ -398,15 +441,13 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
       const runtime = getRuntimeContext();
       const intent = refreshIntentSchema.parse(params) as RefreshIntentInput;
       const targetBaseDir = resolveFileSearchTargetBaseDir(intent.baseDir);
-      const fileDb = openDirectFileSearchDb(runtime, targetBaseDir);
-      try {
-        const diagnostics = await fileDb.refreshSemanticIndex((intent.limit === undefined && intent.concurrency === undefined) ? undefined : { limit: intent.limit, concurrency: intent.concurrency });
+      return withDirectFileSearchStore(runtime, targetBaseDir, async (store) => {
+        const diagnostics = await store.fileSearchDb.refreshSemanticIndex((intent.limit === undefined && intent.concurrency === undefined) ? undefined : { limit: intent.limit, concurrency: intent.concurrency });
+        const index = buildFileSearchIndex(store as never).stats();
         return {
-          content: [{ type: 'text', text: safeJson({ tool: 'refresh', baseDir: targetBaseDir, diagnostics }) }],
+          content: [{ type: 'text', text: safeJson({ tool: 'refresh', baseDir: targetBaseDir, diagnostics, index }) }],
         };
-      } finally {
-        fileDb.close();
-      }
+      });
     },
   );
 

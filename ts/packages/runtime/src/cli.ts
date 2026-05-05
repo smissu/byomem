@@ -4,11 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openNativeStore } from './store.js';
 import { openFileSearchRegistryDb } from './file-search-db.js';
+import { buildFileSearchIndex } from './file-search-index.js';
 import { listFileSearchProjects, markFileSearchProjectSeen, normalizeFileSearchPollingDisabledReason, registerFileSearchProject, unregisterFileSearchProject } from './file-search-project-registry.js';
 import { configureFileSearchPolling, disableFileSearchPolling, getFileSearchPollingStatus } from './file-search-active-poller.js';
 import { openQueueRuntime } from './queue-runtime.js';
 import { searchIndex } from './search-index.js';
 import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searchIndex as searchFileIndex } from './file-search-query.js';
+import { refreshSemanticIndexAfterManualScan } from './file-search-semantic-refresh.js';
 import { openGenerationClient } from './generation-client.js';
 import { observeQueue, renderQueueObserver } from './queue-observer.js';
 
@@ -76,7 +78,7 @@ function parseWatchMode(flags: { watch: boolean; watchInterval?: string }, json:
   return { enabled: true, intervalSeconds };
 }
 
-type FileSearchCliRequest = { query: string; mode: 'fts' | 'semantic' | 'hybrid'; limit: number };
+type FileSearchCliRequest = { query: string; mode: 'bm25' | 'semantic' | 'hybrid'; limit: number };
 type FileSearchRelatedCliRequest = { filePath: string; line: number; limit: number };
 
 type CliFileSearchProject = {
@@ -160,6 +162,7 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--embedding-model') { options.embeddingModel = requireValue(next, '--embedding-model'); i += 1; }
     else if (arg === '--embedding-dimension') { const raw = requireValue(next, '--embedding-dimension'); if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(Number(raw))) throw new Error('--embedding-dimension must be a positive integer'); options.embeddingDimension = Number(raw); i += 1; }
     else if (arg === '--embedding-timeout-ms') { options.embeddingTimeoutMs = Number(requireValue(next, '--embedding-timeout-ms')); i += 1; }
+    else if (arg === '--embedding-require-remote') { options.embeddingRequireRemote = true; }
     else if (arg === '--generation-base-url') { options.generationBaseUrl = requireValue(next, '--generation-base-url'); i += 1; }
     else if (arg === '--generation-model') { options.generationModel = requireValue(next, '--generation-model'); i += 1; }
     else if (arg === '--generation-timeout-ms') { options.generationTimeoutMs = Number(requireValue(next, '--generation-timeout-ms')); i += 1; }
@@ -239,8 +242,8 @@ function parseOptionalPositiveIntegerFlag(payload: Record<string, string>, key: 
 function parseFileSearchRequest(payload: Record<string, string>): FileSearchCliRequest {
   const query = payload.query?.trim();
   if (!query) throw new Error('Missing --query for file-search');
-  const mode = (payload.mode?.trim() || 'hybrid') as 'fts' | 'semantic' | 'hybrid';
-  if (mode !== 'fts' && mode !== 'semantic' && mode !== 'hybrid') throw new Error('--mode must be fts, semantic, or hybrid');
+  const mode = (payload.mode?.trim() || 'hybrid') as 'bm25' | 'semantic' | 'hybrid';
+  if (mode !== 'bm25' && mode !== 'semantic' && mode !== 'hybrid') throw new Error('--mode must be bm25, semantic, or hybrid');
   const limitRaw = payload.limit?.trim() || '10';
   if (!/^[1-9]\d*$/.test(limitRaw)) throw new Error('--limit must be a positive integer');
   const limit = Number(limitRaw);
@@ -372,20 +375,29 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const limit = parseOptionalPositiveIntegerFlag(payload, 'limit', '--limit');
       const diagnostics = await store.fileSearchDb.refreshSemanticIndex({ limit });
       const refresh = { command: 'file-search-semantic-refresh', baseDir: diagnostics.baseDir, projectKey: diagnostics.projectKey, limit };
-      console.log(JSON.stringify({ refresh, diagnostics, embeddings: diagnostics }, null, 2));
+      const index = buildFileSearchIndex(store).stats();
+      console.log(JSON.stringify({ refresh, diagnostics, embeddings: diagnostics, index }, null, 2));
       return;
     }
     if (command === 'file-search-status') {
       if (!store) throw new Error('Missing native store');
       const scanner = store.fileSearchDb?.getScannerStatus();
-      console.log(JSON.stringify({ scanner, status: scanner }, null, 2));
+      const index = buildFileSearchIndex(store).stats();
+      console.log(JSON.stringify({ scanner, status: scanner, index }, null, 2));
       return;
     }
     if (command === 'file-search-scan') {
       if (!store) throw new Error('Missing native store');
-      store.fileSearchDb?.scanAndIndex();
-      const scanner = store.fileSearchDb?.getScannerStatus();
-      console.log(JSON.stringify({ scanner, status: scanner }, null, 2));
+      if (!store.fileSearchDb) throw new Error('Missing file-search DB');
+      store.fileSearchDb.scanAndIndex();
+      const refreshLimit = parseOptionalPositiveIntegerFlag(payload, 'limit', '--limit');
+      const refresh = await refreshSemanticIndexAfterManualScan(store.fileSearchDb, {
+        limit: refreshLimit,
+        concurrency: options.fileSearchEmbeddingConcurrency,
+      });
+      const index = buildFileSearchIndex(store).stats();
+      const scanner = store.fileSearchDb.getScannerStatus();
+      console.log(JSON.stringify({ scanner, status: scanner, refresh, diagnostics: refresh.diagnostics, embeddings: refresh.diagnostics, index }, null, 2));
       return;
     }
     if (command === 'file-search') {
@@ -395,7 +407,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const request = { query, mode, limit };
       const results = await searchFileIndex(store, request);
       const semantic = await buildSearchSemanticMetadata(store, request, results);
-      console.log(JSON.stringify({ results, ...(semantic ? { semantic } : {}) }, null, 2));
+      const index = buildFileSearchIndex(store).stats();
+      console.log(JSON.stringify({ results, ...(semantic ? { semantic } : {}), index }, null, 2));
       return;
     }
     if (command === 'file-search-related') {

@@ -307,9 +307,17 @@ describe('Sprint 47 operations MCP server hardening', () => {
 
     const scanResult = await client.callTool({ name: 'scan', arguments: { baseDir: projectDir } });
     const scanPayload = JSON.parse(scanResult.content[0].text ?? '{}') as {
+      refresh?: { automatic?: boolean; attempted?: boolean };
+      embeddings?: { state?: string; model?: string; embeddedChunks?: number; actualDimensions?: Array<{ dimension: number }> };
       scanner?: { embeddings?: { model?: string; embeddedChunks?: number; actualDimensions?: Array<{ dimension: number }> } };
       status?: { embeddings?: { model?: string; embeddedChunks?: number; actualDimensions?: Array<{ dimension: number }> } };
     };
+    expect(scanPayload.refresh).toMatchObject({ automatic: true, attempted: true });
+    expect(scanPayload.embeddings).toMatchObject({
+      state: 'ready',
+      model: 'semble-mock-code-model',
+      embeddedChunks: expect.any(Number),
+    });
     expect(scanPayload.status?.embeddings).toMatchObject({
       model: 'semble-mock-code-model',
       embeddedChunks: expect.any(Number),
