@@ -22,7 +22,7 @@ function tempDir(): string {
 }
 
 function openFileDb(dir: string): FileSearchDbHandle | undefined {
-  return (openNativeStore({ baseDir: dir, fileSearchDbBaseDir: dir }) as unknown as { fileSearchDb?: FileSearchDbHandle }).fileSearchDb;
+  return (openNativeStore({ baseDir: dir, fileSearchDbBaseDir: dir, fileSearchIncludeTextFiles: true }) as unknown as { fileSearchDb?: FileSearchDbHandle }).fileSearchDb;
 }
 
 function indexedPaths(fileDb: FileSearchDbHandle | undefined): string[] {

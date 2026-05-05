@@ -14,6 +14,7 @@ function openFileDb(
   options: Partial<Parameters<typeof openFileSearchDb>[0]> & {
     scannerExcludedExtensions?: string[];
     scannerBinaryDetectionEnabled?: boolean;
+    scannerIncludeTextFiles?: boolean;
   } = {},
 ) {
   return openFileSearchDb({
@@ -22,6 +23,7 @@ function openFileDb(
     scanOnOpen: false,
     schedulerEnabled: false,
     semanticSearchEnabled: false,
+    scannerIncludeTextFiles: true,
     ...options,
   });
 }
@@ -39,6 +41,24 @@ describe('Sprint 41 file-search scanner binary and database exclusion contract',
 
   afterEach(() => {
     while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+  });
+
+  it('skips text files by default when includeTextFiles is disabled', () => {
+    const projectDir = tempDir();
+    const runtimeDir = tempDir();
+    dirs.push(projectDir, runtimeDir);
+    writeFileSync(join(projectDir, 'keep.ts'), 'export const keep = 1;\n', 'utf8');
+    writeFileSync(join(projectDir, 'keep.md'), 'keep body\n', 'utf8');
+    writeFileSync(join(projectDir, 'keep.txt'), 'keep text body\n', 'utf8');
+
+    const fileDb = openFileDb(projectDir, runtimeDir, { scannerIncludeTextFiles: false });
+    try {
+      fileDb.scanAndIndex({ trigger: 'manual' });
+      expect(indexedPaths(fileDb)).toEqual([join(projectDir, 'keep.ts')]);
+      expect(indexedChunks(fileDb)).toEqual(['export const keep = 1;']);
+    } finally {
+      fileDb.close();
+    }
   });
 
   it('continues honoring .gitignore while skipping default database extensions before indexing', () => {

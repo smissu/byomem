@@ -5,7 +5,7 @@ import { openFileSearchDb, openFileSearchRegistryDb } from '../file-search-db.js
 import { configureFileSearchPolling, disableFileSearchPolling, getFileSearchPollingStatus } from '../file-search-active-poller.js';
 import { listFileSearchProjects, registerFileSearchProject, unregisterFileSearchProject, type FileSearchPollingDisabledReason, type FileSearchProjectEntry } from '../file-search-project-registry.js';
 import { resolveActiveProjectContext, normalizeStableKey } from '../identity.js';
-import { buildSearchSemanticMetadata, redactSensitiveFileSearchText, searchIndex as searchFileIndexForTool } from '../file-search-query.js';
+import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searchIndex as searchFileIndexForTool } from '../file-search-query.js';
 import { safeJson } from '../readonly-core.js';
 import type { ReadOnlyMcpRuntimeContext } from './readonly-tools.js';
 
@@ -51,6 +51,13 @@ type ScanIntentInput = {
 type FileSearchQueryIntentInput = {
   query: string;
   mode?: 'fts' | 'semantic' | 'hybrid';
+  limit?: number;
+  baseDir?: string;
+};
+
+type FileSearchRelatedIntentInput = {
+  filePath: string;
+  line: number;
   limit?: number;
   baseDir?: string;
 };
@@ -110,6 +117,12 @@ const scanIntentSchema = z.object({
 const fileSearchQueryIntentSchema = z.object({
   query: z.string().trim().min(1),
   mode: z.enum(['fts', 'semantic', 'hybrid']).optional(),
+  limit: z.number().int().positive().optional(),
+  baseDir: z.string().trim().min(1).optional(),
+}).strict();
+const fileSearchRelatedIntentSchema = z.object({
+  filePath: z.string().trim().min(1),
+  line: z.number().int().positive(),
   limit: z.number().int().positive().optional(),
   baseDir: z.string().trim().min(1).optional(),
 }).strict();
@@ -187,12 +200,14 @@ function openDirectFileSearchDb(runtime: OperationsMcpRuntimeContext, baseDir: s
     embeddingDimension: runtime.embeddingConfig.embeddingDimension,
     embeddingTimeoutMs: runtime.embeddingConfig.embeddingTimeoutMs,
     embeddingRequireRemote: Boolean(runtime.embeddingConfig.embeddingBaseUrl),
+    semanticSearchEnabled: true,
     embeddingBatchSize: runtime.fileSearchConfig.embeddingBatchSize,
     embeddingConcurrency: runtime.fileSearchConfig.embeddingConcurrency,
     scanOnOpen: false,
     schedulerEnabled: false,
     scannerExcludedExtensions: runtime.fileSearchConfig.excludedExtensions,
     scannerBinaryDetectionEnabled: runtime.fileSearchConfig.binaryDetectionEnabled,
+    storageMode: runtime.fileSearchConfig.indexStorageMode,
   });
 }
 
@@ -200,21 +215,16 @@ function openDirectFileSearchRegistryDb(runtime: OperationsMcpRuntimeContext) {
   return openFileSearchRegistryDb({ dbBaseDir: runtime.runtimeBaseDir });
 }
 
-function serializeFileSearchResult(result: { id?: unknown; score?: unknown; file?: { projectKey?: unknown; path?: unknown; chunkIndex?: unknown; chunkText?: unknown; chunkHash?: unknown; startLine?: unknown; endLine?: unknown; lexicalScore?: unknown; semanticScore?: unknown } }) {
-  const file = result.file;
+function serializeFileSearchResult(result: { chunk?: { filePath?: unknown; content?: unknown; startLine?: unknown; endLine?: unknown; language?: unknown }; score?: unknown; source?: unknown }) {
   return {
-    id: typeof result.id === 'string' ? result.id : undefined,
     score: typeof result.score === 'number' ? result.score : undefined,
-    file: file ? {
-      project_key: typeof file.projectKey === 'string' ? file.projectKey : undefined,
-      path: typeof file.path === 'string' ? file.path : undefined,
-      chunk_index: typeof file.chunkIndex === 'number' ? file.chunkIndex : undefined,
-      chunk_text: typeof file.chunkText === 'string' ? redactSensitiveFileSearchText(file.chunkText) : undefined,
-      chunk_hash: typeof file.chunkHash === 'string' ? file.chunkHash : undefined,
-      start_line: typeof file.startLine === 'number' ? file.startLine : undefined,
-      end_line: typeof file.endLine === 'number' ? file.endLine : undefined,
-      lexical_score: typeof file.lexicalScore === 'number' ? file.lexicalScore : undefined,
-      semantic_score: typeof file.semanticScore === 'number' ? file.semanticScore : undefined,
+    source: typeof result.source === 'string' ? result.source : undefined,
+    chunk: result.chunk ? {
+      filePath: typeof result.chunk.filePath === 'string' ? result.chunk.filePath : undefined,
+      content: typeof result.chunk.content === 'string' ? result.chunk.content : undefined,
+      startLine: typeof result.chunk.startLine === 'number' ? result.chunk.startLine : undefined,
+      endLine: typeof result.chunk.endLine === 'number' ? result.chunk.endLine : undefined,
+      ...(typeof result.chunk.language === 'string' ? { language: result.chunk.language } : {}),
     } : undefined,
   };
 }
@@ -342,6 +352,39 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
         details: payload,
         ...payload,
       };
+    },
+  );
+
+  registerTool(
+    'byomem_file_search_find_related',
+    {
+      description: 'Find Semble-style related chunks for a file path and line number.',
+      inputSchema: fileSearchRelatedIntentSchema,
+    },
+    async (params: unknown) => {
+      const runtime = getRuntimeContext();
+      const intent = fileSearchRelatedIntentSchema.parse(params) as FileSearchRelatedIntentInput;
+      const targetBaseDir = resolveFileSearchTargetBaseDir(intent.baseDir);
+      const fileDb = openDirectFileSearchDb(runtime, targetBaseDir);
+      try {
+        const store = {
+          baseDir: targetBaseDir,
+          fileSearchDb: fileDb,
+          fileSearchProjectBaseDir: targetBaseDir,
+        } as never;
+        const results = (await findRelatedFileIndex(store, {
+          filePath: intent.filePath,
+          line: intent.line,
+          limit: intent.limit ?? 5,
+        })).map(serializeFileSearchResult);
+        return {
+          content: [{ type: 'text', text: safeJson({ results }) }],
+          details: { results },
+          results,
+        };
+      } finally {
+        fileDb.close();
+      }
     },
   );
 

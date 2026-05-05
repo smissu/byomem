@@ -69,6 +69,7 @@ describe('Sprint 38 file-search extension direct tool contract RED tests', () =>
       'byomem_store',
       'byomem_prune',
       'byomem_file_search',
+      'byomem_file_search_find_related',
       'byomem_file_search_semantic_refresh',
       'byomem_file_search_status',
       'byomem_file_search_scan',
@@ -89,6 +90,17 @@ describe('Sprint 38 file-search extension direct tool contract RED tests', () =>
         baseDir: { type: 'string' },
       },
       required: ['query'],
+      additionalProperties: false,
+    });
+    expect(mock.tools.find((tool) => tool.name === 'byomem_file_search_find_related')?.parameters).toEqual({
+      type: 'object',
+      properties: {
+        filePath: { type: 'string' },
+        line: { type: 'integer', minimum: 1 },
+        limit: { type: 'integer', minimum: 1 },
+        baseDir: { type: 'string' },
+      },
+      required: ['filePath', 'line'],
       additionalProperties: false,
     });
     expect(mock.tools.find((tool) => tool.name === 'byomem_file_search_status')?.parameters).toEqual({

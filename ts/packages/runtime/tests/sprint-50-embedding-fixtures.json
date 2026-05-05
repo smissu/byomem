@@ -1,0 +1,15 @@
+{
+  "benchmark": "fastapi",
+  "activeEmbeddingIdentity": {
+    "model": "nomic-embed-text",
+    "providerKey": "remote:http://localhost:11434/api/embeddings",
+    "baseUrl": "http://localhost:11434",
+    "dimension": 768
+  },
+  "querySet": [
+    "how does dependency injection work",
+    "request validation and error handling",
+    "how are routes registered",
+    "Depends"
+  ]
+}

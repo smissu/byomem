@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import { disableFileSearchProjectPolling, enableFileSearchProjectPolling, getFileSearchProjectPollingStatus, recordFileSearchPollAttempt, recordFileSearchPollFailure, recordFileSearchPollSuccess, serializeFileSearchPollingStatus, type FileSearchPollingDisabledReason, type FileSearchPollingStatusDto } from './file-search-project-registry.js';
 import { openFileSearchDb, openFileSearchRegistryDb, type FileSearchDbOptions } from './file-search-db.js';
+import type { FileSearchIndexStorageMode } from './file-search-semble.js';
 
 export interface FileSearchActivePollerOptions {
   baseDir: string;
@@ -15,6 +16,7 @@ export interface FileSearchActivePollerOptions {
   semanticSearchEnabled?: boolean;
   scannerExcludedExtensions?: string[];
   scannerBinaryDetectionEnabled?: boolean;
+  storageMode?: FileSearchIndexStorageMode;
 }
 
 function validatePositiveInteger(value: number, name: string): number {
@@ -121,6 +123,7 @@ export class FileSearchActivePoller {
       schedulerEnabled: false,
       scannerExcludedExtensions: this.options.scannerExcludedExtensions,
       scannerBinaryDetectionEnabled: this.options.scannerBinaryDetectionEnabled,
+      storageMode: this.options.storageMode,
     });
   }
 

@@ -102,6 +102,7 @@ describe('byomem extension wiring', () => {
       'byomem_store',
       'byomem_prune',
       'byomem_file_search',
+      'byomem_file_search_find_related',
       'byomem_file_search_semantic_refresh',
       'byomem_file_search_status',
       'byomem_file_search_scan',
@@ -637,6 +638,37 @@ describe('byomem extension wiring', () => {
     expect(statusFn()).toMatchObject({
       fileSearchConfigSource: 'env',
       fileSearchEmbeddingConcurrency: 5,
+    });
+  });
+
+  it('reads file_search index storage mode from env and YAML config', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
+    vi.stubEnv('BYOMEM_FILE_SEARCH_INDEX_STORAGE_MODE', 'memory');
+    vi.resetModules();
+
+    let { byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts');
+    expect(statusFn()).toMatchObject({
+      fileSearchConfigSource: 'env',
+      fileSearchIndexStorageMode: 'memory',
+    });
+
+    const configPath = join(dir, 'file-search-storage.yaml');
+    writeConfig(configPath, [
+      'file_search:',
+      '  index_storage_mode: memory',
+    ]);
+    vi.unstubAllEnvs();
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
+    vi.stubEnv('BYOMEM_CONFIG_PATH', configPath);
+    vi.resetModules();
+
+    ({ byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts'));
+    expect(statusFn()).toMatchObject({
+      fileSearchConfigSource: 'config',
+      fileSearchConfigPath: configPath,
+      fileSearchIndexStorageMode: 'memory',
     });
   });
 

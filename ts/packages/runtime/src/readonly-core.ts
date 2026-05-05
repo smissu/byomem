@@ -43,6 +43,7 @@ export interface ByomemFileSearchConfig {
   binaryDetectionEnabled?: boolean;
   embeddingBatchSize?: number;
   embeddingConcurrency?: number;
+  indexStorageMode?: 'disk' | 'memory';
 }
 
 export interface ReadOnlyByomemRuntimeContext {
@@ -109,6 +110,13 @@ function parseBooleanText(value: string | undefined, name: string): boolean | un
   if (normalized === 'true') return true;
   if (normalized === 'false') return false;
   throw new Error(`${name} must be true or false`);
+}
+
+function parseStorageModeText(value: string | undefined, name: string): 'disk' | 'memory' | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'disk' || normalized === 'memory') return normalized;
+  throw new Error(`${name} must be disk or memory`);
 }
 
 function parseCommaSeparatedTextList(value: string | undefined): string[] | undefined {
@@ -213,7 +221,8 @@ export function resolveFileSearchConfig(env: NodeJS.ProcessEnv = process.env): B
   const envBinaryDetection = env.BYOMEM_FILE_SEARCH_BINARY_DETECTION;
   const envEmbeddingBatchSize = env.BYOMEM_FILE_SEARCH_EMBEDDING_BATCH_SIZE;
   const envEmbeddingConcurrency = env.BYOMEM_FILE_SEARCH_EMBEDDING_CONCURRENCY;
-  const hasEnv = envExcludedExtensions !== undefined || envBinaryDetection !== undefined || envEmbeddingBatchSize !== undefined || envEmbeddingConcurrency !== undefined;
+  const envIndexStorageMode = env.BYOMEM_FILE_SEARCH_INDEX_STORAGE_MODE;
+  const hasEnv = envExcludedExtensions !== undefined || envBinaryDetection !== undefined || envEmbeddingBatchSize !== undefined || envEmbeddingConcurrency !== undefined || envIndexStorageMode !== undefined;
   const parsedConfig = configBlock ? parseFileSearchYamlConfig(configBlock) : undefined;
   const excludedExtensions = hasEnv
     ? parseCommaSeparatedTextList(envExcludedExtensions) ?? parsedConfig?.excludedExtensions
@@ -227,6 +236,9 @@ export function resolveFileSearchConfig(env: NodeJS.ProcessEnv = process.env): B
   const embeddingConcurrency = hasEnv
     ? parsePositiveSafeIntegerConfig(envEmbeddingConcurrency, 'BYOMEM_FILE_SEARCH_EMBEDDING_CONCURRENCY') ?? parsedConfig?.embeddingConcurrency
     : parsedConfig?.embeddingConcurrency;
+  const indexStorageMode = hasEnv
+    ? parseStorageModeText(envIndexStorageMode, 'BYOMEM_FILE_SEARCH_INDEX_STORAGE_MODE') ?? parsedConfig?.indexStorageMode
+    : parsedConfig?.indexStorageMode;
   if (hasEnv || configBlock) {
     return {
       source: hasEnv ? 'env' : 'config',
@@ -235,6 +247,7 @@ export function resolveFileSearchConfig(env: NodeJS.ProcessEnv = process.env): B
       binaryDetectionEnabled,
       embeddingBatchSize,
       embeddingConcurrency,
+      indexStorageMode,
     };
   }
   return { source: 'default' };
@@ -348,6 +361,7 @@ export function buildByomemRuntimeStatus(input: ByomemRuntimeStatusInput) {
     fileSearchBinaryDetectionEnabled: input.fileSearchConfig.binaryDetectionEnabled,
     fileSearchEmbeddingBatchSize: input.fileSearchConfig.embeddingBatchSize,
     fileSearchEmbeddingConcurrency: input.fileSearchConfig.embeddingConcurrency,
+    fileSearchIndexStorageMode: input.fileSearchConfig.indexStorageMode,
     summarizerConfigSource: input.summarizerConfig.source,
     summarizerConfigPath: input.summarizerConfig.configPath,
     summarizerBaseUrl: input.summarizerConfig.generationBaseUrl,
@@ -411,16 +425,18 @@ export function shapeByomemSearchResults<T extends Parameters<typeof shapeByomem
   return results.map((result) => shapeByomemSearchResult(result));
 }
 
-function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string[]; binaryDetectionEnabled?: boolean; embeddingBatchSize?: number; embeddingConcurrency?: number } {
+function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string[]; binaryDetectionEnabled?: boolean; embeddingBatchSize?: number; embeddingConcurrency?: number; indexStorageMode?: 'disk' | 'memory' } {
   const binaryDetectionEnabled = parseBooleanText(block.match(/binary_detection:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.binary_detection');
   const embeddingBatchSize = parsePositiveSafeIntegerConfig(block.match(/embedding_batch_size:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.embedding_batch_size');
   const embeddingConcurrency = parsePositiveSafeIntegerConfig(block.match(/embedding_concurrency:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.embedding_concurrency');
+  const indexStorageMode = parseStorageModeText(block.match(/(?:index_storage_mode|storage_mode):\s*([^\n]+)/)?.[1]?.trim(), 'file_search.index_storage_mode');
   const bracketed = block.match(/excluded_extensions:\s*\[([\s\S]*?)\]/)?.[1];
   if (bracketed !== undefined) {
     return {
       excludedExtensions: parseYamlListTokens(bracketed),
       ...(embeddingBatchSize !== undefined ? { embeddingBatchSize } : {}),
       ...(embeddingConcurrency !== undefined ? { embeddingConcurrency } : {}),
+      ...(indexStorageMode !== undefined ? { indexStorageMode } : {}),
       ...(binaryDetectionEnabled !== undefined ? { binaryDetectionEnabled } : {}),
     };
   }
@@ -431,9 +447,10 @@ function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string
         .split(/\r?\n/)
         .map((line) => line.replace(/^\s*-\s*/, '').trim())
         .map((line) => parseYamlListToken(line))
-        .filter((line): line is string => Boolean(line)),
+      .filter((line): line is string => Boolean(line)),
       ...(embeddingBatchSize !== undefined ? { embeddingBatchSize } : {}),
       ...(embeddingConcurrency !== undefined ? { embeddingConcurrency } : {}),
+      ...(indexStorageMode !== undefined ? { indexStorageMode } : {}),
       ...(binaryDetectionEnabled !== undefined ? { binaryDetectionEnabled } : {}),
     };
   }
@@ -443,6 +460,7 @@ function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string
     ...(block.match(/excluded_extensions:\s*$/m) ? { excludedExtensions: [] } : {}),
     ...(embeddingBatchSize !== undefined ? { embeddingBatchSize } : {}),
     ...(embeddingConcurrency !== undefined ? { embeddingConcurrency } : {}),
+    ...(indexStorageMode !== undefined ? { indexStorageMode } : {}),
     ...(binaryDetectionEnabled !== undefined ? { binaryDetectionEnabled } : {}),
   };
 }

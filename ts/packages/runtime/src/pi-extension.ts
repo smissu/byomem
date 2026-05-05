@@ -11,7 +11,7 @@ import { openQueueRuntime } from './queue-runtime.js';
 import { openReadPath } from './read.js';
 import { resolveRuntimeMode } from './runtime-mode.js';
 import { searchIndex } from './search-index.js';
-import { buildSearchSemanticMetadata, redactSensitiveFileSearchText, searchIndex as searchFileIndexForTool } from './file-search-query.js';
+import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searchIndex as searchFileIndexForTool } from './file-search-query.js';
 import { captureSessionCheckpoint, type SessionCaptureInput } from './session-capture.js';
 import { openNativeStore } from './store.js';
 import { resolveActiveProjectContext } from './identity.js';
@@ -42,8 +42,11 @@ const nativeStore = openNativeStore({
   fileSearchSchedulerEnabled: false,
   fileSearchScannerExcludedExtensions: fileSearchConfig.excludedExtensions,
   fileSearchBinaryDetectionEnabled: fileSearchConfig.binaryDetectionEnabled,
+  fileSearchIncludeTextFiles: fileSearchConfig.includeTextFiles,
+  fileSearchIndexStorageMode: fileSearchConfig.indexStorageMode,
 });
 const readPath = openReadPath(nativeStore);
+
 const queueRuntime = openQueueRuntime(nativeStore, { baseDir: runtimeBaseDir });
 const debugLogPath = join(runtimeBaseDir, 'queue', 'debug', 'byomem-turn-end.jsonl');
 let shouldInjectInitialContext = true;
@@ -95,8 +98,10 @@ export interface ByomemFileSearchConfig {
   configPath?: string;
   excludedExtensions?: string[];
   binaryDetectionEnabled?: boolean;
+  includeTextFiles?: boolean;
   embeddingBatchSize?: number;
   embeddingConcurrency?: number;
+  indexStorageMode?: 'disk' | 'memory';
 }
 
 const SENSITIVE_OUTPUT_KEYS = new Set(['thinkingSignature', 'textSignature', 'encrypted_content', 'encryptedContent']);
@@ -243,17 +248,13 @@ function openDirectFileSearchDb(targetBaseDir: string) {
     baseDir: targetBaseDir,
     projectBaseDir: targetBaseDir,
     dbBaseDir: process.env.BYOMEM_RUNTIME_BASE_DIR ?? runtimeBaseDir,
-    embeddingBaseUrl: embeddingConfig.embeddingBaseUrl,
-    embeddingModel: embeddingConfig.embeddingModel,
-    embeddingDimension: embeddingConfig.embeddingDimension,
-    embeddingTimeoutMs: embeddingConfig.embeddingTimeoutMs,
-    embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
     embeddingBatchSize: fileSearchConfig.embeddingBatchSize,
     embeddingConcurrency: fileSearchConfig.embeddingConcurrency,
     scanOnOpen: false,
     schedulerEnabled: false,
     scannerExcludedExtensions: fileSearchConfig.excludedExtensions,
     scannerBinaryDetectionEnabled: fileSearchConfig.binaryDetectionEnabled,
+    storageMode: fileSearchConfig.indexStorageMode,
   });
 }
 
@@ -286,21 +287,16 @@ function getRuntimeFileSearchScanManager(): FileSearchScanManager {
   return runtimeFileSearchScanManager;
 }
 
-function serializeFileSearchResult(result: { id?: unknown; score?: unknown; file?: { projectKey?: unknown; path?: unknown; chunkIndex?: unknown; chunkText?: unknown; chunkHash?: unknown; startLine?: unknown; endLine?: unknown; lexicalScore?: unknown; semanticScore?: unknown } }) {
-  const file = result.file;
+function serializeFileSearchResult(result: { chunk?: { filePath?: unknown; content?: unknown; startLine?: unknown; endLine?: unknown; language?: unknown }; score?: unknown; source?: unknown }) {
   return {
-    id: typeof result.id === 'string' ? result.id : undefined,
     score: typeof result.score === 'number' ? result.score : undefined,
-    file: file ? {
-      project_key: typeof file.projectKey === 'string' ? file.projectKey : undefined,
-      path: typeof file.path === 'string' ? file.path : undefined,
-      chunk_index: typeof file.chunkIndex === 'number' ? file.chunkIndex : undefined,
-      chunk_text: typeof file.chunkText === 'string' ? redactSensitiveFileSearchText(file.chunkText) : undefined,
-      chunk_hash: typeof file.chunkHash === 'string' ? file.chunkHash : undefined,
-      start_line: typeof file.startLine === 'number' ? file.startLine : undefined,
-      end_line: typeof file.endLine === 'number' ? file.endLine : undefined,
-      lexical_score: typeof file.lexicalScore === 'number' ? file.lexicalScore : undefined,
-      semantic_score: typeof file.semanticScore === 'number' ? file.semanticScore : undefined,
+    source: typeof result.source === 'string' ? result.source : undefined,
+    chunk: result.chunk ? {
+      filePath: typeof result.chunk.filePath === 'string' ? result.chunk.filePath : undefined,
+      content: typeof result.chunk.content === 'string' ? result.chunk.content : undefined,
+      startLine: typeof result.chunk.startLine === 'number' ? result.chunk.startLine : undefined,
+      endLine: typeof result.chunk.endLine === 'number' ? result.chunk.endLine : undefined,
+      ...(typeof result.chunk.language === 'string' ? { language: result.chunk.language } : {}),
     } : undefined,
   };
 }
@@ -457,6 +453,13 @@ function parseBooleanText(value: string | undefined, name: string): boolean | un
   throw new Error(`${name} must be true or false`);
 }
 
+function parseStorageModeText(value: string | undefined, name: string): 'disk' | 'memory' | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'disk' || normalized === 'memory') return normalized;
+  throw new Error(`${name} must be disk or memory`);
+}
+
 function parseCommaSeparatedTextList(value: string | undefined): string[] | undefined {
   if (value === undefined) return undefined;
   return value.split(',').map((part) => part.trim()).filter(Boolean);
@@ -474,16 +477,19 @@ function parseYamlListTokens(value: string | undefined): string[] | undefined {
   return value.split(',').map((part) => parseYamlListToken(part)).filter((part): part is string => Boolean(part));
 }
 
-function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string[]; binaryDetectionEnabled?: boolean; embeddingBatchSize?: number; embeddingConcurrency?: number } {
+function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string[]; binaryDetectionEnabled?: boolean; includeTextFiles?: boolean; embeddingBatchSize?: number; embeddingConcurrency?: number; indexStorageMode?: 'disk' | 'memory' } {
   const binaryDetectionEnabled = parseBooleanText(block.match(/binary_detection:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.binary_detection');
+  const includeTextFiles = parseBooleanText(block.match(/include_text_files:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.include_text_files');
   const embeddingBatchSize = parsePositiveSafeIntegerConfig(block.match(/embedding_batch_size:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.embedding_batch_size');
   const embeddingConcurrency = parsePositiveSafeIntegerConfig(block.match(/embedding_concurrency:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.embedding_concurrency');
+  const indexStorageMode = parseStorageModeText(block.match(/(?:index_storage_mode|storage_mode):\s*([^\n]+)/)?.[1]?.trim(), 'file_search.index_storage_mode');
   const bracketed = block.match(/excluded_extensions:\s*\[(.*?)\]/s)?.[1];
   if (bracketed !== undefined) {
     return {
       excludedExtensions: parseYamlListTokens(bracketed),
       ...(embeddingBatchSize !== undefined ? { embeddingBatchSize } : {}),
       ...(embeddingConcurrency !== undefined ? { embeddingConcurrency } : {}),
+      ...(indexStorageMode !== undefined ? { indexStorageMode } : {}),
       ...(binaryDetectionEnabled !== undefined ? { binaryDetectionEnabled } : {}),
     };
   }
@@ -494,9 +500,10 @@ function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string
         .split(/\r?\n/)
         .map((line) => line.replace(/^\s*-\s*/, '').trim())
         .map((line) => parseYamlListToken(line))
-        .filter((line): line is string => Boolean(line)),
+      .filter((line): line is string => Boolean(line)),
       ...(embeddingBatchSize !== undefined ? { embeddingBatchSize } : {}),
       ...(embeddingConcurrency !== undefined ? { embeddingConcurrency } : {}),
+      ...(indexStorageMode !== undefined ? { indexStorageMode } : {}),
       ...(binaryDetectionEnabled !== undefined ? { binaryDetectionEnabled } : {}),
     };
   }
@@ -506,7 +513,9 @@ function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string
     ...(block.match(/excluded_extensions:\s*$/m) ? { excludedExtensions: [] } : {}),
     ...(embeddingBatchSize !== undefined ? { embeddingBatchSize } : {}),
     ...(embeddingConcurrency !== undefined ? { embeddingConcurrency } : {}),
+    ...(indexStorageMode !== undefined ? { indexStorageMode } : {}),
     ...(binaryDetectionEnabled !== undefined ? { binaryDetectionEnabled } : {}),
+    ...(includeTextFiles !== undefined ? { includeTextFiles } : {}),
   };
 }
 
@@ -516,9 +525,11 @@ function resolveFileSearchConfig(): ByomemFileSearchConfig {
   const configBlock = configContent ? extractYamlBlock(configContent, 'file_search') : undefined;
   const envExcludedExtensions = process.env.BYOMEM_FILE_SEARCH_EXCLUDED_EXTENSIONS;
   const envBinaryDetection = process.env.BYOMEM_FILE_SEARCH_BINARY_DETECTION;
+  const envIncludeTextFiles = process.env.BYOMEM_FILE_SEARCH_INCLUDE_TEXT_FILES;
   const envEmbeddingBatchSize = process.env.BYOMEM_FILE_SEARCH_EMBEDDING_BATCH_SIZE;
   const envEmbeddingConcurrency = process.env.BYOMEM_FILE_SEARCH_EMBEDDING_CONCURRENCY;
-  const hasEnv = envExcludedExtensions !== undefined || envBinaryDetection !== undefined || envEmbeddingBatchSize !== undefined || envEmbeddingConcurrency !== undefined;
+  const envIndexStorageMode = process.env.BYOMEM_FILE_SEARCH_INDEX_STORAGE_MODE;
+  const hasEnv = envExcludedExtensions !== undefined || envBinaryDetection !== undefined || envIncludeTextFiles !== undefined || envEmbeddingBatchSize !== undefined || envEmbeddingConcurrency !== undefined || envIndexStorageMode !== undefined;
   const parsedConfig = configBlock ? parseFileSearchYamlConfig(configBlock) : undefined;
   const excludedExtensions = hasEnv
     ? parseCommaSeparatedTextList(envExcludedExtensions) ?? parsedConfig?.excludedExtensions
@@ -526,20 +537,28 @@ function resolveFileSearchConfig(): ByomemFileSearchConfig {
   const binaryDetectionEnabled = hasEnv
     ? parseBooleanText(envBinaryDetection, 'BYOMEM_FILE_SEARCH_BINARY_DETECTION') ?? parsedConfig?.binaryDetectionEnabled
     : parsedConfig?.binaryDetectionEnabled;
+  const includeTextFiles = hasEnv
+    ? parseBooleanText(envIncludeTextFiles, 'BYOMEM_FILE_SEARCH_INCLUDE_TEXT_FILES') ?? parsedConfig?.includeTextFiles
+    : parsedConfig?.includeTextFiles;
   const embeddingBatchSize = hasEnv
     ? parsePositiveSafeIntegerConfig(envEmbeddingBatchSize, 'BYOMEM_FILE_SEARCH_EMBEDDING_BATCH_SIZE') ?? parsedConfig?.embeddingBatchSize
     : parsedConfig?.embeddingBatchSize;
   const embeddingConcurrency = hasEnv
     ? parsePositiveSafeIntegerConfig(envEmbeddingConcurrency, 'BYOMEM_FILE_SEARCH_EMBEDDING_CONCURRENCY') ?? parsedConfig?.embeddingConcurrency
     : parsedConfig?.embeddingConcurrency;
+  const indexStorageMode = hasEnv
+    ? parseStorageModeText(envIndexStorageMode, 'BYOMEM_FILE_SEARCH_INDEX_STORAGE_MODE') ?? parsedConfig?.indexStorageMode
+    : parsedConfig?.indexStorageMode;
   if (hasEnv || configBlock) {
     return {
       source: hasEnv ? 'env' : 'config',
       configPath: configBlock ? configPath : undefined,
       excludedExtensions,
       binaryDetectionEnabled,
+      includeTextFiles,
       embeddingBatchSize,
       embeddingConcurrency,
+      indexStorageMode,
     };
   }
   return { source: 'default' };
@@ -774,6 +793,7 @@ export function byomem_runtime_status() {
     fileSearchBinaryDetectionEnabled: fileSearchConfig.binaryDetectionEnabled,
     fileSearchEmbeddingBatchSize: fileSearchConfig.embeddingBatchSize,
     fileSearchEmbeddingConcurrency: fileSearchConfig.embeddingConcurrency,
+    fileSearchIndexStorageMode: fileSearchConfig.indexStorageMode,
     summarizerConfigSource: summarizerConfig.source,
     summarizerConfigPath: summarizerConfig.configPath,
     summarizerBaseUrl: summarizerConfig.generationBaseUrl,
@@ -973,7 +993,46 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  pi.registerTool?.({
+    name: 'byomem_file_search_find_related',
+    label: 'BYOMem File Search Related',
+    description: 'Find Semble-style related chunks for a file path and line number.',
+    parameters: {
+      type: 'object',
+      properties: {
+        filePath: { type: 'string' },
+        line: { type: 'integer', minimum: 1 },
+        limit: { type: 'integer', minimum: 1 },
+        baseDir: { type: 'string' },
+      },
+      required: ['filePath', 'line'],
+      additionalProperties: false,
+    },
+    async execute(_toolCallId: string, params: unknown) {
+      const intent = params as { filePath?: unknown; line?: unknown; limit?: unknown; baseDir?: unknown };
+      const filePath = normalizeText(intent?.filePath);
+      if (!filePath) throw new Error('Invalid byomem_file_search_find_related intent: filePath is required');
+      const line = intent?.line === undefined ? undefined : normalizePositiveInteger(intent.line, 'line');
+      if (line === undefined) throw new Error('Invalid byomem_file_search_find_related intent: line is required');
+      const limit = intent?.limit === undefined ? 5 : normalizePositiveInteger(intent.limit, 'limit');
+      const targetBaseDir = resolveFileSearchTargetBaseDir(intent?.baseDir);
+      const fileDb = openDirectFileSearchDb(targetBaseDir);
+      try {
+        const store = {
+          baseDir: targetBaseDir,
+          fileSearchDb: fileDb,
+          fileSearchProjectBaseDir: targetBaseDir,
+        } as never;
+        const results = (await findRelatedFileIndex(store, { filePath, line, limit })).map(serializeFileSearchResult);
+        const payload = { results };
+        return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
+      } finally {
+        fileDb.close();
+      }
+    },
+  });
 
+  
   pi.registerTool?.({
     name: 'byomem_file_search_semantic_refresh',
     label: 'BYOMem File Search Semantic Refresh',
@@ -1104,6 +1163,7 @@ export default function (pi: ExtensionAPI) {
         semanticSearchEnabled: false,
         scannerExcludedExtensions: fileSearchConfig.excludedExtensions,
         scannerBinaryDetectionEnabled: fileSearchConfig.binaryDetectionEnabled,
+        storageMode: fileSearchConfig.indexStorageMode,
       });
       activeFileSearchPollingBaseDir = targetBaseDir;
       const polling = activeFileSearchPoller.start();

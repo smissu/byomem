@@ -23,11 +23,6 @@ function buildRuntimeContext(): CachedOperationsRuntimeContext {
   const activeProject = resolveActiveProjectContext(process.env, process.cwd());
   const nativeStore = openNativeStore({
     baseDir: runtime.runtimeBaseDir,
-    embeddingBaseUrl: runtime.embeddingConfig.embeddingBaseUrl,
-    embeddingModel: runtime.embeddingConfig.embeddingModel,
-    embeddingDimension: runtime.embeddingConfig.embeddingDimension,
-    embeddingTimeoutMs: runtime.embeddingConfig.embeddingTimeoutMs,
-    embeddingRequireRemote: Boolean(runtime.embeddingConfig.embeddingBaseUrl),
     fileSearchSemanticEnabled: true,
     fileSearchScanOnOpen: false,
     fileSearchSchedulerEnabled: false,

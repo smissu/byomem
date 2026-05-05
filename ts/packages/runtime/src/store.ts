@@ -7,6 +7,7 @@ import { normalizeIdentity, normalizeStableKey } from './identity.js';
 import { type SqliteSidecar } from './sqlite-sidecar.js';
 import { openSqliteSidecarInternal } from './sqlite-sidecar-internal.js';
 import { openFileSearchDb, type FileSearchDbHandle } from './file-search-db.js';
+import type { FileSearchIndexStorageMode } from './file-search-semble.js';
 
 
 export interface NativeStoreOptions {
@@ -28,6 +29,8 @@ export interface NativeStoreOptions {
   fileSearchSchedulerEnabled?: boolean;
   fileSearchScannerExcludedExtensions?: string[];
   fileSearchBinaryDetectionEnabled?: boolean;
+  fileSearchIncludeTextFiles?: boolean;
+  fileSearchIndexStorageMode?: FileSearchIndexStorageMode;
 }
 
 export const storeKey = Symbol.for('byomem.runtime.nativeStore.singleWriter');
@@ -95,6 +98,8 @@ export function openNativeStore(options: NativeStoreOptions): NativeStore {
     schedulerEnabled: options.fileSearchSchedulerEnabled,
     scannerExcludedExtensions: options.fileSearchScannerExcludedExtensions,
     scannerBinaryDetectionEnabled: options.fileSearchBinaryDetectionEnabled,
+    scannerIncludeTextFiles: options.fileSearchIncludeTextFiles,
+    storageMode: options.fileSearchIndexStorageMode,
   });
   const sidecarOwner = Object.freeze({ kind: 'native-store' as const });
   const snapshot = loadSnapshot(filePath);

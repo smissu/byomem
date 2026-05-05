@@ -11,5 +11,5 @@
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true
   },
-  "include": ["vitest.config.ts", "ts/packages/**/*.ts"]
+  "include": ["vitest.config.ts", "ts/packages/**/*.ts", "ts/packages/**/*.d.ts"]
 }

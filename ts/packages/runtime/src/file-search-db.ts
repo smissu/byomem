@@ -6,9 +6,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { resolveProjectContext } from './project-context.js';
 import { FileIndexScheduler } from './file-index-scheduler.js';
-import { FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, openEmbeddingClient, resolveEmbeddingProviderKey, type EmbeddingClient } from './embedding-client.js';
+import { FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, openEmbeddingClient, resolveEmbeddingProviderKey, SEMBLE_EMBEDDING_MODEL, type EmbeddingClient } from './embedding-client.js';
 import { DEFAULT_EMBEDDING_DIMENSION, encodeEmbedding, truncateEmbeddingText } from './embedding-vector.js';
 import { ensureFileSearchProjectRegistrySchema, getFileSearchProject, markFileSearchProjectSeen, serializeFileSearchPollingStatus } from './file-search-project-registry.js';
+import { chunkFileContent, inferFileSearchLanguage, type FileSearchChunk, type FileSearchIndexStorageMode } from './file-search-semble.js';
 
 export interface FileSearchDbOptions {
   /** Project root to scan and use for project_key/status identity. */
@@ -31,6 +32,8 @@ export interface FileSearchDbOptions {
   scannerStaleAfterMs?: number;
   scannerExcludedExtensions?: string[];
   scannerBinaryDetectionEnabled?: boolean;
+  scannerIncludeTextFiles?: boolean;
+  storageMode?: FileSearchIndexStorageMode;
 }
 
 export interface FileSearchEmbeddingDiagnostics {
@@ -38,6 +41,9 @@ export interface FileSearchEmbeddingDiagnostics {
   state: 'disabled' | 'ready' | 'refresh-needed' | 'incompatible';
   projectKey: string;
   baseDir: string;
+  baseUrl?: string;
+  providerKey: string;
+  requireRemote: boolean;
   model: string;
   configuredDimension: number;
   actualDimensions: Array<{ dimension: number; chunks: number }>;
@@ -152,7 +158,7 @@ const SENSITIVE_CONTENT_MARKERS = ['thinkingSignature', 'textSignature', 'encryp
 const MAX_ACTIVE_PROJECTS = 3;
 const DEBOUNCE_WINDOW_MS = 250;
 const BACKSTOP_WINDOW_MS = 60_000;
-const DEFAULT_EMBEDDING_MODEL = 'nomic-embed-text';
+const DEFAULT_EMBEDDING_MODEL = 'minishlab/potion-code-16M';
 const DEFAULT_SCANNER_STALE_AFTER_MS = 5 * 60_000;
 
 function isSQLiteCompanion(filePath: string): boolean {
@@ -331,6 +337,7 @@ export function resolveDefaultFileSearchDbPath(options: Pick<FileSearchDbOptions
 }
 
 function resolveFileSearchDbPath(options: FileSearchDbOptions, projectBaseDir: string): string {
+  if ((options.storageMode ?? 'disk') === 'memory') return ':memory:';
   const resolvedPath = options.dbFile
     ? resolve(options.dbBaseDir ?? projectBaseDir, options.dbFile)
     : resolveDefaultFileSearchDbPath({ dbBaseDir: options.dbBaseDir });
@@ -345,6 +352,7 @@ function resolveFileSearchDbPath(options: FileSearchDbOptions, projectBaseDir: s
 }
 
 function assertFileSearchDbPath(path: string): void {
+  if (path === ':memory:') return;
   const canonical = resolve(path);
   const fileName = canonical.split(/[/\\]/).pop() ?? canonical;
   if (fileName === 'byomem-index.sqlite' || fileName === 'native-store.json') {
@@ -358,8 +366,8 @@ function ensureColumn(db: BetterSqliteDatabase, table: string, column: string, d
   if (!columns.some((entry) => entry.name === column)) db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
 }
 
-function ensureFoundationSchema(db: BetterSqliteDatabase): void {
-  db.pragma('journal_mode = WAL');
+function ensureFoundationSchema(db: BetterSqliteDatabase, storageMode: FileSearchIndexStorageMode = 'disk'): void {
+  db.pragma(storageMode === 'memory' ? 'journal_mode = MEMORY' : 'journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_meta (
@@ -420,6 +428,7 @@ function ensureScannerIndexerSchema(db: BetterSqliteDatabase): void {
       file_record_id TEXT NOT NULL,
       chunk_index INTEGER NOT NULL,
       chunk_text TEXT NOT NULL,
+      search_text TEXT NOT NULL,
       chunk_hash TEXT NOT NULL,
       start_line INTEGER,
       end_line INTEGER,
@@ -429,14 +438,14 @@ function ensureScannerIndexerSchema(db: BetterSqliteDatabase): void {
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS indexed_chunks_fts USING fts5(id UNINDEXED, project_key UNINDEXED, file_record_id UNINDEXED, chunk_index UNINDEXED, chunk_text, chunk_hash, content='indexed_chunks', content_rowid='rowid', tokenize = 'unicode61');
     CREATE TRIGGER IF NOT EXISTS indexed_chunks_ai AFTER INSERT ON indexed_chunks BEGIN
-      INSERT INTO indexed_chunks_fts(rowid, id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash) VALUES (new.rowid, new.id, new.project_key, new.file_record_id, new.chunk_index, new.chunk_text, new.chunk_hash);
+      INSERT INTO indexed_chunks_fts(rowid, id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash) VALUES (new.rowid, new.id, new.project_key, new.file_record_id, new.chunk_index, new.search_text, new.chunk_hash);
     END;
     CREATE TRIGGER IF NOT EXISTS indexed_chunks_ad AFTER DELETE ON indexed_chunks BEGIN
-      INSERT INTO indexed_chunks_fts(indexed_chunks_fts, rowid, id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash) VALUES('delete', old.rowid, old.id, old.project_key, old.file_record_id, old.chunk_index, old.chunk_text, old.chunk_hash);
+      INSERT INTO indexed_chunks_fts(indexed_chunks_fts, rowid, id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash) VALUES('delete', old.rowid, old.id, old.project_key, old.file_record_id, old.chunk_index, old.search_text, old.chunk_hash);
     END;
     CREATE TRIGGER IF NOT EXISTS indexed_chunks_au AFTER UPDATE ON indexed_chunks BEGIN
-      INSERT INTO indexed_chunks_fts(indexed_chunks_fts, rowid, id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash) VALUES('delete', old.rowid, old.id, old.project_key, old.file_record_id, old.chunk_index, old.chunk_text, old.chunk_hash);
-      INSERT INTO indexed_chunks_fts(rowid, id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash) VALUES (new.rowid, new.id, new.project_key, new.file_record_id, new.chunk_index, new.chunk_text, new.chunk_hash);
+      INSERT INTO indexed_chunks_fts(indexed_chunks_fts, rowid, id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash) VALUES('delete', old.rowid, old.id, old.project_key, old.file_record_id, old.chunk_index, old.search_text, old.chunk_hash);
+      INSERT INTO indexed_chunks_fts(rowid, id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash) VALUES (new.rowid, new.id, new.project_key, new.file_record_id, new.chunk_index, new.search_text, new.chunk_hash);
     END;
     CREATE INDEX IF NOT EXISTS idx_indexed_chunks_project_key ON indexed_chunks(project_key);
     CREATE INDEX IF NOT EXISTS idx_indexed_chunks_file_record_id ON indexed_chunks(file_record_id);
@@ -494,6 +503,7 @@ function ensureScannerIndexerSchema(db: BetterSqliteDatabase): void {
   `);
   ensureColumn(db, 'indexed_chunks', 'start_line', 'INTEGER');
   ensureColumn(db, 'indexed_chunks', 'end_line', 'INTEGER');
+  ensureColumn(db, 'indexed_chunks', 'search_text', 'TEXT');
   ensureColumn(db, 'file_embedding_cache', 'provider_key', 'TEXT');
   ensureColumn(db, 'file_embedding_cache', 'effective_dimension', 'INTEGER');
   ensureColumn(db, 'file_embedding_cache', 'cache_version', 'TEXT');
@@ -528,32 +538,30 @@ function hashContent(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
-interface IndexedContentChunk {
-  text: string;
-  startLine: number;
-  endLine: number;
-}
-
-function chunkContent(content: string): IndexedContentChunk[] {
-  return content.split(/\r?\n/)
-    .map((line, index) => ({ text: line, startLine: index + 1, endLine: index + 1 }))
-    .filter((chunk) => chunk.text.trim().length > 0);
+function buildFileSearchFtsText(rel: string, content: string): string {
+  const normalized = rel.replace(/\\/g, '/');
+  const parts = normalized.split('/').filter((part) => part && part !== '.');
+  const stem = basename(normalized).replace(/\.[^.]+$/, '').toLowerCase();
+  const dirText = parts.slice(0, -1).slice(-3).join(' ').toLowerCase();
+  return `${content} ${stem} ${stem} ${dirText}`.trim();
 }
 
 type IndexedChunkSnapshotRow = {
   id: string;
   chunk_index: number;
   chunk_text: string;
+  search_text: string;
   chunk_hash: string;
 };
 
-function canBackfillIndexedChunkLineMetadata(existingChunks: IndexedChunkSnapshotRow[], chunks: IndexedContentChunk[]): boolean {
+function canBackfillIndexedChunkLineMetadata(existingChunks: IndexedChunkSnapshotRow[], chunks: FileSearchChunk[], rel: string): boolean {
   return existingChunks.length === chunks.length && existingChunks.every((row, index) => {
     const chunk = chunks[index];
     return chunk !== undefined
       && row.chunk_index === index
-      && row.chunk_text === chunk.text
-      && row.chunk_hash === hashContent(chunk.text);
+      && row.chunk_text === chunk.content
+      && row.search_text === buildFileSearchFtsText(rel, chunk.content)
+      && row.chunk_hash === hashContent(chunk.content);
   });
 }
 
@@ -704,16 +712,21 @@ function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel
   const metadataChanged = Boolean(current && (current.mtime_ms !== stats.mtimeMs || current.size_bytes !== stats.size));
   const hashConfirmed = !current || current.content_hash !== contentHash || metadataChanged;
   const contentAndMetadataMatch = Boolean(current && current.content_hash === contentHash && current.mtime_ms === stats.mtimeMs && current.size_bytes === stats.size);
+  const chunks = chunkFileContent(filePath, content);
   const missingLineMetadata = contentAndMetadataMatch
     ? ((db.prepare('SELECT COUNT(*) AS count FROM indexed_chunks WHERE file_record_id = ? AND (start_line IS NULL OR end_line IS NULL)').get(recordId) as { count: number }).count > 0)
     : false;
+  const existingChunks = contentAndMetadataMatch
+    ? db.prepare('SELECT id, chunk_index, chunk_text, search_text, chunk_hash FROM indexed_chunks WHERE file_record_id = ? ORDER BY chunk_index').all(recordId) as IndexedChunkSnapshotRow[]
+    : [];
+  const missingSearchText = contentAndMetadataMatch
+    ? existingChunks.some((row, index) => row.search_text !== buildFileSearchFtsText(rel, chunks[index]?.content ?? row.chunk_text))
+    : false;
 
-  if (contentAndMetadataMatch && !missingLineMetadata) return { changed: false, chunksWritten: 0 };
+  if (contentAndMetadataMatch && !missingLineMetadata && !missingSearchText) return { changed: false, chunksWritten: 0 };
 
-  const chunks = chunkContent(content);
-  if (contentAndMetadataMatch && missingLineMetadata) {
-    const existingChunks = db.prepare('SELECT id, chunk_index, chunk_text, chunk_hash FROM indexed_chunks WHERE file_record_id = ? ORDER BY chunk_index').all(recordId) as IndexedChunkSnapshotRow[];
-    if (canBackfillIndexedChunkLineMetadata(existingChunks, chunks)) {
+  if (contentAndMetadataMatch && (missingLineMetadata || missingSearchText)) {
+    if (canBackfillIndexedChunkLineMetadata(existingChunks, chunks, rel)) {
       db.prepare('UPDATE file_records SET path = ?, content_hash = ?, mtime_ms = ?, size_bytes = ?, updated_at = ? WHERE id = ?').run(
         filePath,
         contentHash,
@@ -747,6 +760,13 @@ function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel
         const chunk = chunks[chunkIndex]!;
         updateChunkLineMetadata.run(chunk.startLine, chunk.endLine, now, row.id);
       });
+      if (missingSearchText) {
+        const updateChunkSearchText = db.prepare('UPDATE indexed_chunks SET search_text = ?, updated_at = ? WHERE id = ?');
+        existingChunks.forEach((row, chunkIndex) => {
+          const chunk = chunks[chunkIndex]!;
+          updateChunkSearchText.run(buildFileSearchFtsText(rel, chunk.content), now, row.id);
+        });
+      }
       return { changed: true, chunksWritten: chunks.length };
     }
   }
@@ -785,13 +805,14 @@ function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel
   ]);
   db.prepare('DELETE FROM indexed_chunks WHERE file_record_id = ?').run(recordId);
   chunks.forEach((chunk, chunkIndex) => {
-    upsertRow(db, 'INSERT OR REPLACE INTO indexed_chunks (id, project_key, file_record_id, chunk_index, chunk_text, chunk_hash, start_line, end_line, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+    upsertRow(db, 'INSERT OR REPLACE INTO indexed_chunks (id, project_key, file_record_id, chunk_index, chunk_text, search_text, chunk_hash, start_line, end_line, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
       `indexed-chunk:${projectKey}:${rel}:${chunkIndex}`,
       projectKey,
       recordId,
       chunkIndex,
-      chunk.text,
-      hashContent(chunk.text),
+      chunk.content,
+      buildFileSearchFtsText(rel, chunk.content),
+      hashContent(chunk.content),
       chunk.startLine,
       chunk.endLine,
       now,
@@ -809,6 +830,7 @@ function scanAndIndexFiles(db: BetterSqliteDatabase, baseDir: string, progress: 
   const seen = new Set<string>();
   const excludedExtensions = resolveScannerExcludedExtensions(options);
   const binaryDetectionEnabled = options.scannerBinaryDetectionEnabled ?? true;
+  const includeTextFiles = Boolean(options.scannerIncludeTextFiles);
   let lastPath: string | undefined;
   progress.discoveredFiles = files.length;
   progress.ignoredFiles = walked.ignoredFiles;
@@ -823,6 +845,12 @@ function scanAndIndexFiles(db: BetterSqliteDatabase, baseDir: string, progress: 
       const stats = statSync(filePath);
       const prefilterId = `prefilter:${projectKey}:${rel}`;
       if (matchesScannerExcludedExtension(filePath, excludedExtensions)) {
+        progress.ignoredFiles += 1;
+        progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
+        onProgress?.(rel, lastPath);
+        continue;
+      }
+      if (!includeTextFiles && inferFileSearchLanguage(filePath) === undefined) {
         progress.ignoredFiles += 1;
         progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
         onProgress?.(rel, lastPath);
@@ -906,7 +934,8 @@ function embeddingModel(options: FileSearchDbOptions): string {
 }
 
 function embeddingConfiguredDimension(options: FileSearchDbOptions): number {
-  return options.embeddingDimension ?? 0;
+  if (options.embeddingDimension !== undefined) return options.embeddingDimension;
+  return embeddingModel(options) === SEMBLE_EMBEDDING_MODEL ? 256 : DEFAULT_EMBEDDING_DIMENSION;
 }
 
 function semanticEnabled(options: FileSearchDbOptions): boolean {
@@ -922,7 +951,7 @@ function cacheId(textHash: string, providerKey: string, model: string, configure
 }
 
 function embeddingProviderKey(options: FileSearchDbOptions): string {
-  return resolveEmbeddingProviderKey(options.embeddingBaseUrl);
+  return resolveEmbeddingProviderKey(options.embeddingBaseUrl, embeddingModel(options));
 }
 
 async function runConcurrent<T>(
@@ -1009,6 +1038,9 @@ function embeddingDiagnostics(db: BetterSqliteDatabase, options: FileSearchDbOpt
     state,
     projectKey,
     baseDir,
+    baseUrl: options.embeddingBaseUrl,
+    providerKey,
+    requireRemote: Boolean(options.embeddingRequireRemote),
     model,
     configuredDimension,
     actualDimensions: dimensions.map((entry) => ({ dimension: entry.dimension, chunks: entry.chunks })),
@@ -1032,7 +1064,6 @@ async function refreshSemanticIndex(db: BetterSqliteDatabase, options: FileSearc
   const projectKey = deriveProjectKey(resolveProjectBaseDir(options));
   const providerKey = embeddingProviderKey(options);
   const limit = Math.max(1, refreshOptions.limit ?? options.embeddingBatchSize ?? 100);
-  const concurrency = Math.max(1, refreshOptions.concurrency ?? options.embeddingConcurrency ?? 4);
   const rows = db.prepare(`
     SELECT c.id, c.project_key, c.file_record_id, c.chunk_index, c.chunk_text, c.chunk_hash
     FROM indexed_chunks c
@@ -1045,32 +1076,43 @@ async function refreshSemanticIndex(db: BetterSqliteDatabase, options: FileSearc
     LIMIT ?
   `).all(projectKey, providerKey, model, configuredDimension, configuredDimension, configuredDimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, limit) as Array<{ id: string; project_key: string; file_record_id: string; chunk_index: number; chunk_text: string; chunk_hash: string }>;
   const now = new Date().toISOString();
-  let fatalError: unknown;
-  await runConcurrent(rows, Math.min(concurrency, limit), async (row) => {
-    if (fatalError) return;
+  const pending = rows.map((row) => {
     const embeddingText = truncateEmbeddingText(row.chunk_text);
     const textHash = embeddingClient.hashText(embeddingText);
-    try {
-      const lookupEffectiveDimension = configuredDimension || embeddingClient.configuredDimension || DEFAULT_EMBEDDING_DIMENSION;
-      let id = cacheId(textHash, providerKey, model, configuredDimension, lookupEffectiveDimension);
-      let cached = db.prepare('SELECT embedding, dimension FROM file_embedding_cache WHERE id = ?').get(id) as { embedding: Buffer; dimension: number } | undefined;
-      const vector = cached ? undefined : await embeddingClient.embed(embeddingText);
-      if (!cached && !vector?.length) return;
-      const dimension = cached?.dimension ?? vector!.length;
-      id = cacheId(textHash, providerKey, model, configuredDimension, dimension);
-      if (!cached) cached = db.prepare('SELECT embedding, dimension FROM file_embedding_cache WHERE id = ?').get(id) as { embedding: Buffer; dimension: number } | undefined;
-      const embedding = cached?.embedding ?? encodeEmbedding(vector!);
-      if (!cached) db.prepare('INSERT OR REPLACE INTO file_embedding_cache (id, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, cache_version, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, textHash, model, configuredDimension, embedding, dimension, providerKey, dimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, now);
+    const lookupEffectiveDimension = configuredDimension || embeddingClient.configuredDimension || DEFAULT_EMBEDDING_DIMENSION;
+    const id = cacheId(textHash, providerKey, model, configuredDimension, lookupEffectiveDimension);
+    return { row, embeddingText, textHash, lookupEffectiveDimension, id };
+  });
+  const missing: typeof pending = [];
+  for (const entry of pending) {
+    const cached = db.prepare('SELECT embedding, dimension FROM file_embedding_cache WHERE id = ?').get(entry.id) as { embedding: Buffer; dimension: number } | undefined;
+    if (!cached) missing.push(entry);
+    else {
+      const dimension = cached.dimension || entry.lookupEffectiveDimension || DEFAULT_EMBEDDING_DIMENSION;
       db.prepare(`INSERT OR REPLACE INTO indexed_chunk_embeddings (chunk_id, project_key, file_record_id, chunk_index, chunk_hash, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, identity_version, status, error, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', NULL, COALESCE((SELECT created_at FROM indexed_chunk_embeddings WHERE chunk_id = ?), ?), ?)`).run(row.id, row.project_key, row.file_record_id, row.chunk_index, row.chunk_hash, textHash, model, configuredDimension, embedding, dimension, providerKey, dimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, row.id, now, now);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      db.prepare(`INSERT OR REPLACE INTO indexed_chunk_embeddings (chunk_id, project_key, file_record_id, chunk_index, chunk_hash, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, identity_version, status, error, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, COALESCE((SELECT created_at FROM indexed_chunk_embeddings WHERE chunk_id = ?), ?), ?)`).run(row.id, row.project_key, row.file_record_id, row.chunk_index, row.chunk_hash, textHash, model, configuredDimension, Buffer.alloc(0), 0, providerKey, 0, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, message, row.id, now, now);
-      if (options.embeddingRequireRemote && !fatalError) fatalError = error;
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', NULL, COALESCE((SELECT created_at FROM indexed_chunk_embeddings WHERE chunk_id = ?), ?), ?)`).run(entry.row.id, entry.row.project_key, entry.row.file_record_id, entry.row.chunk_index, entry.row.chunk_hash, entry.textHash, model, configuredDimension, cached.embedding, dimension, providerKey, dimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, entry.row.id, now, now);
     }
-  }, () => Boolean(fatalError));
-  if (fatalError) throw fatalError instanceof Error ? fatalError : new Error(String(fatalError));
+  }
+  if (missing.length) {
+    const vectors = await embeddingClient.embedMany(missing.map((entry) => entry.embeddingText));
+    for (let index = 0; index < missing.length; index += 1) {
+      const entry = missing[index]!;
+      const vector = vectors[index];
+      if (!vector?.length) {
+        const message = options.embeddingRequireRemote ? `Remote embedding request returned no embedding for model ${model}` : 'Embedding request returned no vector';
+        db.prepare(`INSERT OR REPLACE INTO indexed_chunk_embeddings (chunk_id, project_key, file_record_id, chunk_index, chunk_hash, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, identity_version, status, error, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, COALESCE((SELECT created_at FROM indexed_chunk_embeddings WHERE chunk_id = ?), ?), ?)`).run(entry.row.id, entry.row.project_key, entry.row.file_record_id, entry.row.chunk_index, entry.row.chunk_hash, entry.textHash, model, configuredDimension, Buffer.alloc(0), 0, providerKey, 0, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, message, entry.row.id, now, now);
+        if (options.embeddingRequireRemote) throw new Error(message);
+        continue;
+      }
+      const embedding = encodeEmbedding(vector);
+      const dimension = vector.length;
+      const cacheIdValue = cacheId(entry.textHash, providerKey, model, configuredDimension, dimension);
+      db.prepare('INSERT OR REPLACE INTO file_embedding_cache (id, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, cache_version, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(cacheIdValue, entry.textHash, model, configuredDimension, embedding, dimension, providerKey, dimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, now);
+      db.prepare(`INSERT OR REPLACE INTO indexed_chunk_embeddings (chunk_id, project_key, file_record_id, chunk_index, chunk_hash, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, identity_version, status, error, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', NULL, COALESCE((SELECT created_at FROM indexed_chunk_embeddings WHERE chunk_id = ?), ?), ?)`).run(entry.row.id, entry.row.project_key, entry.row.file_record_id, entry.row.chunk_index, entry.row.chunk_hash, entry.textHash, model, configuredDimension, embedding, dimension, providerKey, dimension, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, entry.row.id, now, now);
+    }
+  }
   return embeddingDiagnostics(db, options);
 }
 
@@ -1095,9 +1137,9 @@ export function openFileSearchRegistryDb(options: Pick<FileSearchDbOptions, 'dbB
 export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHandle {
   const projectBaseDir = resolveProjectBaseDir(options);
   const path = resolveFileSearchDbPath(options, projectBaseDir);
-  mkdirSync(dirname(path), { recursive: true });
+  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
-  ensureFoundationSchema(db);
+  ensureFoundationSchema(db, options.storageMode ?? 'disk');
   ensureScannerIndexerSchema(db);
   ensureScannerStatusSchema(db);
   ensureFileSearchProjectRegistrySchema(db);
@@ -1199,7 +1241,7 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
   const embeddingClient = openEmbeddingClient({
     baseUrl: options.embeddingBaseUrl,
     model: options.embeddingModel,
-    dimension: options.embeddingDimension ?? DEFAULT_EMBEDDING_DIMENSION,
+    dimension: embeddingConfiguredDimension(options),
     timeoutMs: options.embeddingTimeoutMs,
     requireRemote: options.embeddingRequireRemote,
   });
@@ -1243,6 +1285,7 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
     },
     close(): void {
       scheduler?.close();
+      embeddingClient.close?.();
       assertFileSearchDbPath(handle.path);
       db.close();
     },

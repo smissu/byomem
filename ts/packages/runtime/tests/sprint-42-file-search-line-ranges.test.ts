@@ -118,10 +118,7 @@ describe('Sprint 42 file-search source line ranges', () => {
       ]));
       const rows = chunks(fileDb.db, resolveFileSearchProjectKey(dir));
       expect(rows.map((row) => ({ text: row.chunk_text, index: row.chunk_index, start: row.start_line, end: row.end_line }))).toEqual([
-        { text: 'alpha one', index: 0, start: 1, end: 1 },
-        { text: 'repeat line', index: 1, start: 3, end: 3 },
-        { text: 'repeat line', index: 2, start: 4, end: 4 },
-        { text: 'omega last', index: 3, start: 6, end: 6 },
+        { text: 'alpha one\n\nrepeat line\nrepeat line\n  \nomega last', index: 0, start: 1, end: 6 },
       ]);
     } finally {
       fileDb.close();
@@ -137,12 +134,11 @@ describe('Sprint 42 file-search source line ranges', () => {
     try {
       const projectKey = resolveFileSearchProjectKey(dir);
       const seeded = fileDb.scanAndIndex({ trigger: 'manual' });
-      expect(seeded.progress).toMatchObject({ indexedFiles: 1, changedFiles: 1, chunksWritten: 2 });
+      expect(seeded.progress).toMatchObject({ indexedFiles: 1, changedFiles: 1, chunksWritten: 1 });
 
       const firstRows = chunks(fileDb.db, projectKey);
       expect(firstRows.map((row) => ({ text: row.chunk_text, start: row.start_line, end: row.end_line }))).toEqual([
-        { text: 'first legacy line', start: 1, end: 1 },
-        { text: 'second legacy line', start: 3, end: 3 },
+        { text: 'first legacy line\n\nsecond legacy line', start: 1, end: 3 },
       ]);
       firstRows.forEach((row, index) => seedEmbedding(fileDb.db, row, [index + 1, 0, 0]));
       expect(fileDb.getEmbeddingDiagnostics()).toMatchObject({
@@ -159,10 +155,9 @@ describe('Sprint 42 file-search source line ranges', () => {
       expect(chunks(fileDb.db, projectKey).every((row) => row.start_line == null && row.end_line == null)).toBe(true);
 
       const backfilled = fileDb.scanAndIndex({ trigger: 'manual' });
-      expect(backfilled.progress).toMatchObject({ unchangedFiles: 0, indexedFiles: 1, changedFiles: 1, chunksWritten: 2 });
+      expect(backfilled.progress).toMatchObject({ unchangedFiles: 0, indexedFiles: 1, changedFiles: 1, chunksWritten: 1 });
       expect(chunks(fileDb.db, projectKey).map((row) => ({ text: row.chunk_text, start: row.start_line, end: row.end_line }))).toEqual([
-        { text: 'first legacy line', start: 1, end: 1 },
-        { text: 'second legacy line', start: 3, end: 3 },
+        { text: 'first legacy line\n\nsecond legacy line', start: 1, end: 3 },
       ]);
       expect(fileDb.db.prepare('SELECT chunk_id, status FROM indexed_chunk_embeddings WHERE project_key = ? ORDER BY chunk_index').all(projectKey) as Array<{ chunk_id: string; status: string }>).toEqual(
         firstRows.map((row) => ({ chunk_id: row.id, status: 'ready' })),
@@ -187,17 +182,17 @@ describe('Sprint 42 file-search source line ranges', () => {
     stores.push(store);
     const projectKey = resolveFileSearchProjectKey(dir);
     const rows = chunks(store.fileSearchDb!.db, projectKey);
-    seedEmbedding(store.fileSearchDb!.db, rows[1]!, [1, 0, 0]);
+    seedEmbedding(store.fileSearchDb!.db, rows[0]!, [1, 0, 0]);
     globalThis.fetch = (async () => new Response(JSON.stringify({ embedding: [1, 0, 0] }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
 
     const fts = await searchIndex(store, { query: 'semantic needle', mode: 'fts', limit: 5 });
-    expect(fts[0]?.file).toMatchObject({ chunkIndex: 1, startLine: 3, endLine: 3 });
+    expect(fts[0]?.file).toMatchObject({ chunkIndex: 0, startLine: 1, endLine: 3 });
 
     const semantic = await searchIndex(store, { query: 'semantic needle', mode: 'semantic', limit: 5 });
-    expect(semantic[0]?.file).toMatchObject({ chunkIndex: 1, startLine: 3, endLine: 3 });
+    expect(semantic[0]?.file).toMatchObject({ chunkIndex: 0, startLine: 1, endLine: 3 });
 
     const hybrid = await searchIndex(store, { query: 'semantic needle', mode: 'hybrid', limit: 5 });
-    expect(hybrid[0]?.file).toMatchObject({ chunkIndex: 1, startLine: 3, endLine: 3 });
+    expect(hybrid[0]?.file).toMatchObject({ chunkIndex: 0, startLine: 1, endLine: 3 });
 
     const now = new Date().toISOString();
     const fileRecordId = `file-record:${projectKey}:legacy.txt`;
@@ -227,16 +222,14 @@ describe('Sprint 42 file-search source line ranges', () => {
 
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     await main(['file-search', '--base-dir', projectDir, '--query', 'tool needle', '--mode', 'fts', '--limit', '1', '--json']);
-    const cliPayload = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}')) as { results?: Array<{ file?: Record<string, unknown> }> };
-    expect(cliPayload.results?.[0]?.file).toMatchObject({ chunkIndex: 1, startLine: 3, endLine: 3 });
+    const cliPayload = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}')) as { results?: Array<{ chunk?: Record<string, unknown> }> };
+    expect(cliPayload.results?.[0]?.chunk).toMatchObject({ filePath: join(projectDir, 'tool.txt'), startLine: 1, endLine: 3 });
 
     const mod = await loadExtension();
     const mock = makeMockPi();
     mod.default(mock.api as never);
     const tool = mock.tools.find((entry) => entry.name === 'byomem_file_search')!;
-    const directPayload = await tool.execute('1', { baseDir: projectDir, query: 'tool needle', mode: 'fts', limit: 1 }) as { results?: Array<{ file?: Record<string, unknown> }> };
-    expect(directPayload.results?.[0]?.file).toMatchObject({ chunk_index: 1, start_line: 3, end_line: 3 });
-    expect(directPayload.results?.[0]?.file).not.toHaveProperty('startLine');
-    expect(directPayload.results?.[0]?.file).not.toHaveProperty('endLine');
+    const directPayload = await tool.execute('1', { baseDir: projectDir, query: 'tool needle', mode: 'fts', limit: 1 }) as { results?: Array<{ chunk?: Record<string, unknown> }> };
+    expect(directPayload.results?.[0]?.chunk).toMatchObject({ filePath: join(projectDir, 'tool.txt'), startLine: 1, endLine: 3 });
   });
 });

@@ -159,7 +159,7 @@ describe('runtime cli', () => {
     globalThis.fetch = (async () => { throw new Error('file-search-scan must not request embeddings'); }) as typeof fetch;
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await main(['file-search-scan', '--base-dir', dir, '--json']);
+    await main(['file-search-scan', '--base-dir', dir, '--file-search-include-text-files', 'true', '--json']);
 
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
       scanner: {
@@ -178,7 +178,7 @@ describe('runtime cli', () => {
     writeFileSync(join(dir, 'async-cli.txt'), 'async cli body\n', 'utf8');
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    await main(['file-search-scan', '--base-dir', dir, '--async', '--json']);
+    await main(['file-search-scan', '--base-dir', dir, '--file-search-include-text-files', 'true', '--async', '--json']);
 
     expect(process.exitCode).toBe(1);
     expect(JSON.parse(String(errSpy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
@@ -196,7 +196,7 @@ describe('runtime cli', () => {
     writeFileSync(join(dir, 'binary.bin'), Buffer.from([0x00, 0x01, 0x02, 0x61, 0x62, 0x63]));
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await main(['file-search-scan', '--base-dir', dir, '--json']);
+    await main(['file-search-scan', '--base-dir', dir, '--file-search-include-text-files', 'true', '--json']);
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
       scanner: {
         progress: expect.objectContaining({ errorFiles: 0 }),
@@ -205,7 +205,7 @@ describe('runtime cli', () => {
     });
     expect(indexedPaths(dir)).toEqual([join(dir, 'keep.txt')]);
 
-    await main(['file-search-scan', '--base-dir', dir, '--file-search-excluded-extensions', 'txt', '--file-search-binary-detection', 'false', '--json']);
+    await main(['file-search-scan', '--base-dir', dir, '--file-search-include-text-files', 'true', '--file-search-excluded-extensions', 'txt', '--file-search-binary-detection', 'false', '--json']);
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
       scanner: {
         progress: expect.objectContaining({ errorFiles: 0, deletedFiles: expect.any(Number) }),
@@ -225,7 +225,7 @@ describe('runtime cli', () => {
     try {
       const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-      await main(['file-search-scan', '--base-dir', dir, '--json']);
+      await main(['file-search-scan', '--base-dir', dir, '--file-search-include-text-files', 'true', '--json']);
 
       expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
         scanner: {
@@ -249,10 +249,10 @@ describe('runtime cli', () => {
     writeFileSync(deletedPath, 'deleted v1\n', 'utf8');
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await main(['file-search-scan', '--base-dir', dir]);
+    await main(['file-search-scan', '--base-dir', dir, '--file-search-include-text-files', 'true']);
     writeFileSync(changedPath, 'changed v2\nchanged second line\n', 'utf8');
     unlinkSync(deletedPath);
-    await main(['file-search-scan', '--base-dir', dir]);
+    await main(['file-search-scan', '--base-dir', dir, '--file-search-include-text-files', 'true']);
 
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
       scanner: {
@@ -273,10 +273,10 @@ describe('runtime cli', () => {
     writeFileSync(join(dir, 'lexical.txt'), 'lexical only body\n', 'utf8');
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await main(['file-search', '--base-dir', dir, '--query', 'lexical']);
+    await main(['file-search', '--base-dir', dir, '--file-search-include-text-files', 'true', '--query', 'lexical']);
 
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
-      results: [expect.objectContaining({ file: expect.objectContaining({ path: expect.stringContaining('lexical.txt') }) })],
+      results: [expect.objectContaining({ chunk: expect.objectContaining({ filePath: expect.stringContaining('lexical.txt') }) })],
     });
   });
 
@@ -286,7 +286,7 @@ describe('runtime cli', () => {
     writeFileSync(join(dir, 'alpha.txt'), 'alpha target body\n', 'utf8');
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await main(['file-search', '--base-dir', dir, '--mode', 'semantic', '--query', 'alpha target body']);
+    await main(['file-search', '--base-dir', dir, '--file-search-include-text-files', 'true', '--mode', 'semantic', '--query', 'alpha target body']);
 
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
       results: [],
@@ -302,7 +302,7 @@ describe('runtime cli', () => {
     writeFileSync(join(dir, 'alpha-three.txt'), 'alpha shared term three\n', 'utf8');
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await main(['file-search', '--base-dir', dir, '--mode', 'fts', '--query', 'alpha', '--limit', '1']);
+    await main(['file-search', '--base-dir', dir, '--file-search-include-text-files', 'true', '--mode', 'fts', '--query', 'alpha', '--limit', '1']);
 
     const output = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'));
     expect(output.results).toHaveLength(1);
@@ -316,7 +316,7 @@ describe('runtime cli', () => {
       dirs.push(dir);
       writeFileSync(join(dir, 'alpha.txt'), 'alpha body\n', 'utf8');
 
-      await main(['file-search', '--base-dir', dir, '--mode', 'fts', '--query', 'alpha', '--limit', invalidLimit]);
+      await main(['file-search', '--base-dir', dir, '--file-search-include-text-files', 'true', '--mode', 'fts', '--query', 'alpha', '--limit', invalidLimit]);
 
       expect(JSON.parse(String(errSpy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
         error: '--limit must be a positive integer',
@@ -338,13 +338,43 @@ describe('runtime cli', () => {
     }) as typeof fetch;
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await main(['file-search-scan', '--base-dir', dir]);
+    await main(['file-search-scan', '--base-dir', dir, '--file-search-include-text-files', 'true']);
     await main(['file-search-semantic-refresh', '--base-dir', dir, '--embedding-base-url', 'http://localhost:11434', '--embedding-dimension', '3', '--file-search-embedding-concurrency', '2']);
-    await main(['file-search', '--base-dir', dir, '--mode', 'semantic', '--query', 'meaning query', '--embedding-base-url', 'http://localhost:11434', '--embedding-dimension', '3']);
+    await main(['file-search', '--base-dir', dir, '--file-search-include-text-files', 'true', '--mode', 'semantic', '--query', 'meaning query', '--embedding-base-url', 'http://localhost:11434', '--embedding-dimension', '3']);
 
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
-      results: [expect.objectContaining({ file: expect.objectContaining({ path: expect.stringContaining('alpha.txt') }) })],
+      results: [expect.objectContaining({ chunk: expect.objectContaining({ filePath: expect.stringContaining('alpha.txt') }) })],
     });
+  });
+
+  it('runs file-search-related through the public CLI surface', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    writeFileSync(join(dir, 'seed.txt'), 'seed alpha line\n\nseed beta line\n', 'utf8');
+    writeFileSync(join(dir, 'neighbor.txt'), 'seed alpha related neighbor line\n', 'utf8');
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await main(['file-search-related', '--base-dir', dir, '--file-search-include-text-files', 'true', '--file-path', join(dir, 'seed.txt'), '--line', '1']);
+
+    expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      results: [expect.objectContaining({ chunk: expect.objectContaining({ filePath: join(dir, 'neighbor.txt') }) })],
+    });
+  });
+
+  it('honors file-search index storage mode memory for explicit scans', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    writeFileSync(join(dir, 'memory.txt'), 'memory storage body\n', 'utf8');
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await main(['file-search-scan', '--base-dir', dir, '--file-search-include-text-files', 'true', '--file-search-index-storage-mode', 'memory', '--json']);
+
+    expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      scanner: {
+        state: 'completed',
+      },
+    });
+    expect(existsSync(join(dir, 'byomem-file-search.sqlite'))).toBe(false);
   });
 
   it('registers, unregisters, and lists file-search projects explicitly without requiring memories or embeddings', async () => {

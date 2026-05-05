@@ -8,7 +8,7 @@ import { listFileSearchProjects, markFileSearchProjectSeen, normalizeFileSearchP
 import { configureFileSearchPolling, disableFileSearchPolling, getFileSearchPollingStatus } from './file-search-active-poller.js';
 import { openQueueRuntime } from './queue-runtime.js';
 import { searchIndex } from './search-index.js';
-import { buildSearchSemanticMetadata, searchIndex as searchFileIndex } from './file-search-query.js';
+import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searchIndex as searchFileIndex } from './file-search-query.js';
 import { openGenerationClient } from './generation-client.js';
 import { observeQueue, renderQueueObserver } from './queue-observer.js';
 
@@ -29,6 +29,8 @@ type CliOptions = {
   fileSearchSemanticEnabled?: boolean;
   fileSearchScannerExcludedExtensions?: string[];
   fileSearchBinaryDetectionEnabled?: boolean;
+  fileSearchIncludeTextFiles?: boolean;
+  fileSearchIndexStorageMode?: 'disk' | 'memory';
   generationBaseUrl?: string;
   generationModel?: string;
   generationTimeoutMs?: number;
@@ -39,7 +41,7 @@ type CliOptions = {
 type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
 
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'file-search', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
@@ -75,6 +77,7 @@ function parseWatchMode(flags: { watch: boolean; watchInterval?: string }, json:
 }
 
 type FileSearchCliRequest = { query: string; mode: 'fts' | 'semantic' | 'hybrid'; limit: number };
+type FileSearchRelatedCliRequest = { filePath: string; line: number; limit: number };
 
 type CliFileSearchProject = {
   project_key: string;
@@ -127,6 +130,8 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     baseDir: mkdtempSync(join(tmpdir(), 'byomem-cli-')),
     fileSearchScannerExcludedExtensions: parseExtensionList(process.env.BYOMEM_FILE_SEARCH_EXCLUDED_EXTENSIONS),
     fileSearchBinaryDetectionEnabled: parseBooleanFlag(process.env.BYOMEM_FILE_SEARCH_BINARY_DETECTION, 'BYOMEM_FILE_SEARCH_BINARY_DETECTION'),
+    fileSearchIncludeTextFiles: parseBooleanFlag(process.env.BYOMEM_FILE_SEARCH_INCLUDE_TEXT_FILES, 'BYOMEM_FILE_SEARCH_INCLUDE_TEXT_FILES'),
+    fileSearchIndexStorageMode: parseStorageMode(process.env.BYOMEM_FILE_SEARCH_INDEX_STORAGE_MODE, 'BYOMEM_FILE_SEARCH_INDEX_STORAGE_MODE'),
     fileSearchEmbeddingBatchSize: (() => {
       const raw = process.env.BYOMEM_FILE_SEARCH_EMBEDDING_BATCH_SIZE?.trim();
       if (raw === undefined || raw === '') return undefined;
@@ -174,9 +179,13 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--scope') { payload.scope = requireValue(next, '--scope'); i += 1; }
     else if (arg === '--mode') { payload.mode = requireValue(next, '--mode'); i += 1; }
     else if (arg === '--limit') { payload.limit = requireValue(next, '--limit'); i += 1; }
+    else if (arg === '--file-path') { payload.filePath = requireValue(next, '--file-path'); i += 1; }
+    else if (arg === '--line') { payload.line = requireValue(next, '--line'); i += 1; }
     else if (arg === '--semantic-file-search') { options.fileSearchSemanticEnabled = true; }
     else if (arg === '--file-search-excluded-extensions') { if (next === undefined) throw new Error('Missing value for --file-search-excluded-extensions'); options.fileSearchScannerExcludedExtensions = parseExtensionList(next); i += 1; }
+    else if (arg === '--file-search-include-text-files') { options.fileSearchIncludeTextFiles = parseBooleanFlag(requireValue(next, '--file-search-include-text-files'), '--file-search-include-text-files'); i += 1; }
     else if (arg === '--file-search-binary-detection') { options.fileSearchBinaryDetectionEnabled = parseBooleanFlag(requireValue(next, '--file-search-binary-detection'), '--file-search-binary-detection'); i += 1; }
+    else if (arg === '--file-search-index-storage-mode') { options.fileSearchIndexStorageMode = parseStorageMode(requireValue(next, '--file-search-index-storage-mode'), '--file-search-index-storage-mode'); i += 1; }
     else if (arg === '--file-search-embedding-batch-size') {
       const raw = requireValue(next, '--file-search-embedding-batch-size');
       if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(Number(raw))) throw new Error('--file-search-embedding-batch-size must be a positive integer');
@@ -211,6 +220,13 @@ function parseBooleanFlag(value: string | undefined, flag: string): boolean | un
   throw new Error(`${flag} must be true or false`);
 }
 
+function parseStorageMode(value: string | undefined, flag: string): 'disk' | 'memory' | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'disk' || normalized === 'memory') return normalized;
+  throw new Error(`${flag} must be disk or memory`);
+}
+
 function parseExtensionList(value: string | undefined): string[] | undefined {
   if (value === undefined) return undefined;
   return value.split(',').map((part) => part.trim()).filter(Boolean);
@@ -230,6 +246,20 @@ function parseFileSearchRequest(payload: Record<string, string>): FileSearchCliR
   const limit = Number(limitRaw);
   if (!Number.isSafeInteger(limit)) throw new Error('--limit must be a positive integer');
   return { query, mode, limit };
+}
+
+function parseFileSearchRelatedRequest(payload: Record<string, string>): FileSearchRelatedCliRequest {
+  const filePath = payload.filePath?.trim();
+  if (!filePath) throw new Error('Missing --file-path for file-search-related');
+  const lineRaw = payload.line?.trim();
+  if (!lineRaw || !/^[1-9]\d*$/.test(lineRaw)) throw new Error('--line must be a positive integer');
+  const line = Number(lineRaw);
+  if (!Number.isSafeInteger(line)) throw new Error('--line must be a positive integer');
+  const limitRaw = payload.limit?.trim() || '5';
+  if (!/^[1-9]\d*$/.test(limitRaw)) throw new Error('--limit must be a positive integer');
+  const limit = Number(limitRaw);
+  if (!Number.isSafeInteger(limit)) throw new Error('--limit must be a positive integer');
+  return { filePath, line, limit };
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -255,7 +285,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   const isGenerationCommand = GENERATION_COMMANDS.has(command);
   const isObserverCommand = OBSERVER_COMMANDS.has(command);
-  const isFileSearchCommand = command === 'file-search' || command === 'file-search-scan' || command === 'file-search-status' || command === 'file-search-semantic-refresh';
+  const isFileSearchCommand = command === 'file-search' || command === 'file-search-related' || command === 'file-search-scan' || command === 'file-search-status' || command === 'file-search-semantic-refresh';
   const isFileSearchPollingCommand = command === 'file-search-polling-status' || command === 'file-search-polling-enable' || command === 'file-search-polling-disable';
   const isFileSearchRegistryCommand = command === 'file-search-project-register' || command === 'file-search-project-unregister' || command === 'file-search-project-list';
   const isFileSearchScanCommand = command === 'file-search-scan';
@@ -264,8 +294,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   let store: ReturnType<typeof openNativeStore> | undefined;
   let queueRuntime: ReturnType<typeof openQueueRuntime> | undefined;
   let fileSearchRequest: FileSearchCliRequest | undefined;
+  let fileSearchRelatedRequest: FileSearchRelatedCliRequest | undefined;
   try {
     fileSearchRequest = command === 'file-search' ? parseFileSearchRequest(payload) : undefined;
+    fileSearchRelatedRequest = command === 'file-search-related' ? parseFileSearchRelatedRequest(payload) : undefined;
     if (isFileSearchPollingCommand) {
       if (!flags.baseDirProvided) throw new Error(`Missing --base-dir for ${command}`);
       if (command === 'file-search-polling-status') {
@@ -364,6 +396,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const results = await searchFileIndex(store, request);
       const semantic = await buildSearchSemanticMetadata(store, request, results);
       console.log(JSON.stringify({ results, ...(semantic ? { semantic } : {}) }, null, 2));
+      return;
+    }
+    if (command === 'file-search-related') {
+      if (!store) throw new Error('Missing native store');
+      if (!fileSearchRelatedRequest) throw new Error('Missing file-search-related request');
+      const results = await findRelatedFileIndex(store, {
+        filePath: fileSearchRelatedRequest.filePath,
+        line: fileSearchRelatedRequest.line,
+        limit: fileSearchRelatedRequest.limit,
+      });
+      console.log(JSON.stringify({ results }, null, 2));
       return;
     }
     if (command === 'prune') {

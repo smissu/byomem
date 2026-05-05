@@ -184,8 +184,8 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     writeFileSync(join(projectA, 'mixed.txt'), 'ready compatible\nready wrong dimension\nfailed embedding\nmissing embedding\n', 'utf8');
     writeFileSync(join(projectB, 'other.txt'), 'other project compatible\n', 'utf8');
 
-    const storeA = openNativeStore({ baseDir: projectA, fileSearchDbBaseDir: runtimeDir, embeddingModel: 'contract-model', embeddingDimension: 3 });
-    const storeB = openNativeStore({ baseDir: projectB, fileSearchDbBaseDir: runtimeDir, embeddingModel: 'contract-model', embeddingDimension: 3 });
+    const storeA = openNativeStore({ fileSearchIncludeTextFiles: true, baseDir: projectA, fileSearchDbBaseDir: runtimeDir, embeddingModel: 'contract-model', embeddingDimension: 3 });
+    const storeB = openNativeStore({ fileSearchIncludeTextFiles: true, baseDir: projectB, fileSearchDbBaseDir: runtimeDir, embeddingModel: 'contract-model', embeddingDimension: 3 });
     stores.push(storeA, storeB);
     const projectKeyA = resolveFileSearchProjectKey(projectA);
     const projectKeyB = resolveFileSearchProjectKey(projectB);
@@ -199,11 +199,12 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     seedChunkEmbedding(storeA.fileSearchDb!.db, chunksA[2]!, { model: 'contract-model', configuredDimension: 3, dimension: 0, status: 'failed', error: 'remote boom' });
     seedChunkEmbedding(storeA.fileSearchDb!.db, chunksB[0]!, { model: 'contract-model', configuredDimension: 3, dimension: 3, vector: [0, 1, 0] });
 
-    const diagnostics = storeA.fileSearchDb!.getEmbeddingDiagnostics() as Record<string, unknown>;
+    const diagnostics = storeA.fileSearchDb!.getEmbeddingDiagnostics() as unknown as Record<string, unknown>;
 
     expect(Object.keys(diagnostics).sort()).toEqual([
       'actualDimensions',
       'baseDir',
+      'baseUrl',
       'configuredDimension',
       'embeddedChunks',
       'enabled',
@@ -216,7 +217,9 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
       'missingChunks',
       'model',
       'projectKey',
+      'providerKey',
       'refreshNeededChunks',
+      'requireRemote',
       'state',
     ].sort());
     expect(diagnostics).toEqual({
@@ -224,6 +227,9 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
       state: 'incompatible',
       projectKey: projectKeyA,
       baseDir: resolve(projectA),
+      baseUrl: undefined,
+      providerKey: 'remote:http://localhost:11434/api/embeddings',
+      requireRemote: false,
       model: 'contract-model',
       configuredDimension: 3,
       actualDimensions: [
@@ -256,8 +262,8 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ embedding: [1, 0, 0] }), { status: 200, headers: { 'content-type': 'application/json' } }));
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
-    const storeA = openNativeStore({ baseDir: projectA, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://localhost:11434', embeddingModel: 'same-model', embeddingDimension: 3 });
-    const storeB = openNativeStore({ baseDir: projectB, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://localhost:11434', embeddingModel: 'same-model', embeddingDimension: 3 });
+    const storeA = openNativeStore({ fileSearchIncludeTextFiles: true, baseDir: projectA, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://localhost:11434', embeddingModel: 'same-model', embeddingDimension: 3 });
+    const storeB = openNativeStore({ fileSearchIncludeTextFiles: true, baseDir: projectB, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://localhost:11434', embeddingModel: 'same-model', embeddingDimension: 3 });
     stores.push(storeA, storeB);
     const projectKeyA = resolveFileSearchProjectKey(projectA);
     const projectKeyB = resolveFileSearchProjectKey(projectB);
@@ -297,6 +303,7 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
     const store = openNativeStore({
+      fileSearchIncludeTextFiles: true,
       baseDir: projectDir,
       fileSearchDbBaseDir: runtimeDir,
       embeddingBaseUrl: 'http://localhost:11434',
@@ -305,7 +312,7 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
       fileSearchEmbeddingConcurrency: 2,
       fileSearchScanOnOpen: false,
     });
-    stores.push(store);
+
     store.fileSearchDb!.scanAndIndex();
 
     await store.fileSearchDb!.refreshSemanticIndex({ limit: 3 });
@@ -343,15 +350,15 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
     const store = openNativeStore({
+      fileSearchIncludeTextFiles: true,
       baseDir: projectDir,
       fileSearchDbBaseDir: runtimeDir,
-      embeddingBaseUrl: 'http://localhost:11434',
       embeddingModel: 'serial-model',
       embeddingDimension: 3,
       fileSearchEmbeddingConcurrency: 1,
       fileSearchScanOnOpen: false,
     });
-    stores.push(store);
+
     store.fileSearchDb!.scanAndIndex();
 
     await store.fileSearchDb!.refreshSemanticIndex({ limit: 3 });
@@ -374,6 +381,7 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     await main([
       'file-search',
       '--base-dir', projectDir,
+      '--file-search-include-text-files', 'true',
       '--mode', 'hybrid',
       '--query', 'lexical',
       '--limit', '5',
@@ -438,9 +446,9 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     mkdirSync(projectB, { recursive: true });
     writeFileSync(join(projectA, 'indexed.txt'), 'alpha indexed body\n', 'utf8');
     writeFileSync(join(projectB, 'indexed.txt'), 'beta indexed body\n', 'utf8');
-    const scanA = openFileSearchDb({ baseDir: projectA, dbBaseDir: runtimeDir, semanticSearchEnabled: false });
+    const scanA = openFileSearchDb({ scannerIncludeTextFiles: true, baseDir: projectA, dbBaseDir: runtimeDir, semanticSearchEnabled: false });
     scanA.close();
-    const scanB = openFileSearchDb({ baseDir: projectB, dbBaseDir: runtimeDir, semanticSearchEnabled: false });
+    const scanB = openFileSearchDb({ scannerIncludeTextFiles: true, baseDir: projectB, dbBaseDir: runtimeDir, semanticSearchEnabled: false });
     scanB.close();
     writeFileSync(join(projectA, 'not-scanned-by-refresh.txt'), 'refresh command must not scan this file\n', 'utf8');
     const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ embedding: [1, 0, 0] }), { status: 200, headers: { 'content-type': 'application/json' } }));
@@ -471,7 +479,7 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
       diagnostics: expect.objectContaining({ projectKey: projectKeyA, baseDir: resolve(projectA) }),
       embeddings: expect.objectContaining({ projectKey: projectKeyA, baseDir: resolve(projectA) }),
     });
-    const verifyDb = openFileSearchDb({ baseDir: projectA, dbBaseDir: runtimeDir, scanOnOpen: false, schedulerEnabled: false });
+    const verifyDb = openFileSearchDb({ scannerIncludeTextFiles: true, baseDir: projectA, dbBaseDir: runtimeDir, scanOnOpen: false, schedulerEnabled: false });
     try {
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       expect(embeddingCount(verifyDb.db, projectKeyA)).toBe(1);
@@ -495,7 +503,7 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
       '  request_timeout: 22',
     ].join('\n') + '\n', 'utf8');
     writeFileSync(join(projectDir, 'alpha.txt'), 'alpha direct body\n', 'utf8');
-    const scanDb = openFileSearchDb({ baseDir: projectDir, dbBaseDir: runtimeDir });
+    const scanDb = openFileSearchDb({ scannerIncludeTextFiles: true, baseDir: projectDir, dbBaseDir: runtimeDir });
     scanDb.close();
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', runtimeDir);
     vi.stubEnv('BYOMEM_CONFIG_PATH', configPath);
@@ -576,7 +584,7 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     writeFileSync(join(projectDir, 'wrong-dimension.txt'), 'wrong dimension body\n', 'utf8');
     writeFileSync(join(projectDir, 'legacy-unversioned.txt'), 'legacy unversioned body\n', 'utf8');
     const currentProvider = remoteProviderKey('http://localhost:11434');
-    const store = openNativeStore({ baseDir: projectDir, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://localhost:11434', embeddingModel: 'current-model', embeddingDimension: 3 });
+    const store = openNativeStore({ fileSearchIncludeTextFiles: true, baseDir: projectDir, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://localhost:11434', embeddingModel: 'current-model', embeddingDimension: 3 });
     stores.push(store);
     const projectKey = resolveFileSearchProjectKey(projectDir);
     const chunks = projectChunks(store.fileSearchDb!.db, projectKey);
@@ -646,7 +654,7 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     writeFileSync(join(projectDir, 'same.txt'), 'same cache-sensitive body\n', 'utf8');
     const fetchProviderA = vi.fn(async () => new Response(JSON.stringify({ embedding: [1, 0, 0] }), { status: 200, headers: { 'content-type': 'application/json' } }));
     globalThis.fetch = fetchProviderA as unknown as typeof fetch;
-    const storeA = openNativeStore({ baseDir: projectDir, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://provider-a.test/root', embeddingModel: 'cache-model', embeddingDimension: 3 });
+    const storeA = openNativeStore({ fileSearchIncludeTextFiles: true, baseDir: projectDir, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://provider-a.test/root', embeddingModel: 'cache-model', embeddingDimension: 3 });
     stores.push(storeA);
     await storeA.fileSearchDb!.refreshSemanticIndex();
     expect(fetchProviderA).toHaveBeenCalledTimes(1);
@@ -655,7 +663,7 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
 
     const fetchProviderB = vi.fn(async () => new Response(JSON.stringify({ embedding: [0, 1, 0] }), { status: 200, headers: { 'content-type': 'application/json' } }));
     globalThis.fetch = fetchProviderB as unknown as typeof fetch;
-    const storeB = openNativeStore({ baseDir: projectDir, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://provider-b.test/root', embeddingModel: 'cache-model', embeddingDimension: 3, fileSearchScanOnOpen: false });
+    const storeB = openNativeStore({ fileSearchIncludeTextFiles: true, baseDir: projectDir, fileSearchDbBaseDir: runtimeDir, embeddingBaseUrl: 'http://provider-b.test/root', embeddingModel: 'cache-model', embeddingDimension: 3, fileSearchScanOnOpen: false });
     stores.push(storeB);
     await storeB.fileSearchDb!.refreshSemanticIndex();
 

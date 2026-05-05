@@ -40,7 +40,7 @@ describe('Sprint 29 file search MVP', () => {
     writeFileSync(join(dir, 'project-a', 'alpha.md'), 'alpha lexical match\n', 'utf8');
     writeFileSync(join(dir, 'project-b', 'alpha.md'), 'alpha lexical match other project\n', 'utf8');
 
-    const store = openNativeStore({ baseDir: dir });
+    const store = openNativeStore({ fileSearchIncludeTextFiles: true, baseDir: dir });
     const fileDb = (store as unknown as { fileSearchDb?: FileSearchDbHandle }).fileSearchDb;
 
     expect(fileDb).toBeDefined();
@@ -59,7 +59,7 @@ describe('Sprint 29 file search MVP', () => {
     mkdirSync(join(dir, 'project-a'), { recursive: true });
     writeFileSync(join(dir, 'project-a', 'scoped.txt'), 'scoped result content\n', 'utf8');
 
-    const store = openNativeStore({ baseDir: dir });
+    const store = openNativeStore({ fileSearchIncludeTextFiles: true, baseDir: dir });
     const results = await searchIndex(store, { query: 'scoped result' });
 
     expect(results.length).toBeGreaterThan(0);
@@ -72,7 +72,7 @@ describe('Sprint 29 file search MVP', () => {
     mkdirSync(join(dir, 'project-a'), { recursive: true });
     writeFileSync(join(dir, 'project-a', 'grounded.txt'), 'grounded metadata content\n', 'utf8');
 
-    const store = openNativeStore({ baseDir: dir });
+    const store = openNativeStore({ fileSearchIncludeTextFiles: true, baseDir: dir });
     const results = await searchIndex(store, { query: 'grounded metadata' });
 
     expect(results).toEqual(
@@ -89,7 +89,7 @@ describe('Sprint 29 file search MVP', () => {
   it('filters stale indexed chunks that contain raw session support fields', async () => {
     const dir = tempDir();
     dirs.push(dir);
-    const store = openNativeStore({ baseDir: dir, fileSearchScanOnOpen: false });
+    const store = openNativeStore({ fileSearchIncludeTextFiles: true, baseDir: dir, fileSearchScanOnOpen: false });
     const fileDb = (store as unknown as { fileSearchDb?: FileSearchDbHandle }).fileSearchDb;
     const projectKey = resolveFileSearchProjectKey(dir);
     const now = new Date().toISOString();
@@ -111,7 +111,7 @@ describe('Sprint 29 file search MVP', () => {
     dirs.push(dir);
     writeFileSync(join(dir, 'isolation.txt'), 'isolation search content\n', 'utf8');
 
-    const store = openNativeStore({ baseDir: dir });
+    const store = openNativeStore({ fileSearchIncludeTextFiles: true, baseDir: dir });
     const fileDb = (store as unknown as { fileSearchDb?: FileSearchDbHandle }).fileSearchDb;
 
     expect(fileDb).toBeDefined();
@@ -128,7 +128,7 @@ describe('Sprint 29 file search MVP', () => {
     mkdirSync(join(dir, 'project-a'), { recursive: true });
     writeFileSync(join(dir, 'project-a', 'semantic.txt'), 'semantic grounding content\n', 'utf8');
 
-    const store = openNativeStore({ baseDir: dir });
+    const store = openNativeStore({ fileSearchIncludeTextFiles: true, baseDir: dir });
     const fileDb = (store as unknown as { fileSearchDb?: FileSearchDbHandle }).fileSearchDb;
 
     expect(fileDb).toBeDefined();

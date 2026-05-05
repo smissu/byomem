@@ -8,6 +8,6 @@
     "sourceMap": true,
     "rootDir": "."
   },
-  "include": ["ts/packages/**/*.ts"],
+  "include": ["ts/packages/**/*.ts", "ts/packages/**/*.d.ts"],
   "exclude": ["**/*.test.ts", "**/*.spec.ts", "dist", "node_modules"]
 }
