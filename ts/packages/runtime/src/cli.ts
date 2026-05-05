@@ -350,7 +350,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         ...options,
         embeddingRequireRemote: isFileSearchCommand ? options.embeddingRequireRemote : true,
         fileSearchSemanticEnabled: isFileSearchCommand ? options.fileSearchSemanticEnabled : undefined,
-        fileSearchScanOnOpen: isFileSearchStatusCommand || isFileSearchScanCommand || isFileSearchSemanticRefreshCommand ? false : undefined,
+        fileSearchScanOnOpen: isFileSearchCommand ? false : undefined,
       });
     queueRuntime = store ? openQueueRuntime(store, { baseDir: options.baseDir }) : undefined;
     if (command === 'store') {

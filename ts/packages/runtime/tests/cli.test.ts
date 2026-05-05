@@ -273,6 +273,7 @@ describe('runtime cli', () => {
     writeFileSync(join(dir, 'lexical.txt'), 'lexical only body\n', 'utf8');
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
+    await main(['file-search-scan', '--base-dir', dir, '--file-search-include-text-files', 'true']);
     await main(['file-search', '--base-dir', dir, '--file-search-include-text-files', 'true', '--query', 'lexical']);
 
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
@@ -280,18 +281,33 @@ describe('runtime cli', () => {
     });
   });
 
-  it('reports refresh-needed metadata for semantic file-search without compatible embeddings', async () => {
+  it('does not hidden-refresh semantic file-search before an explicit scan', async () => {
     const dir = tempDir();
     dirs.push(dir);
     writeFileSync(join(dir, 'alpha.txt'), 'alpha target body\n', 'utf8');
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ embedding: [1, 0, 0] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await main(['file-search', '--base-dir', dir, '--file-search-include-text-files', 'true', '--mode', 'semantic', '--query', 'alpha target body']);
+    await main([
+      'file-search',
+      '--base-dir', dir,
+      '--file-search-include-text-files', 'true',
+      '--mode', 'semantic',
+      '--query', 'alpha target body',
+      '--embedding-base-url', 'http://localhost:11434',
+      '--embedding-model', 'cli-model',
+      '--embedding-dimension', '3',
+    ]);
 
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
       results: [],
-      semantic: expect.objectContaining({ requested: true, used: false, state: 'refresh-needed', refreshNeeded: true }),
+      semantic: expect.objectContaining({ requested: true, used: false, state: 'ready', refreshNeeded: false }),
     });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('honors file-search --limit for bounded result output', async () => {
@@ -302,6 +318,7 @@ describe('runtime cli', () => {
     writeFileSync(join(dir, 'alpha-three.txt'), 'alpha shared term three\n', 'utf8');
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
+    await main(['file-search-scan', '--base-dir', dir, '--file-search-include-text-files', 'true']);
     await main(['file-search', '--base-dir', dir, '--file-search-include-text-files', 'true', '--mode', 'bm25', '--query', 'alpha', '--limit', '1']);
 
     const output = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'));
@@ -357,6 +374,7 @@ describe('runtime cli', () => {
     writeFileSync(join(dir, 'neighbor.txt'), 'seed alpha related neighbor line\n', 'utf8');
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
+    await main(['file-search-scan', '--base-dir', dir, '--file-search-include-text-files', 'true']);
     await main(['file-search-related', '--base-dir', dir, '--file-search-include-text-files', 'true', '--file-path', join(dir, 'seed.txt'), '--line', '1']);
 
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({

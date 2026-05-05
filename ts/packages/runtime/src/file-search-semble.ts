@@ -1,5 +1,6 @@
 /// <reference path="./chonkie-shims.d.ts" />
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { basename, extname, join } from 'node:path';
 import { CodeChunker } from '@chonkiejs/core';
 
@@ -12,6 +13,8 @@ export interface FileSearchChunk {
   startLine: number;
   endLine: number;
   language?: string;
+  source?: FileSearchChunkerSource;
+  fallbackReason?: FileSearchChunkerFallbackReason;
 }
 
 export interface FileSearchChunkRow extends FileSearchChunk {
@@ -62,6 +65,22 @@ export interface FileSearchSearchResult {
 interface ChunkBoundary {
   startLine: number;
   endLine: number;
+}
+
+export type FileSearchChunkerSource = 'chonkie' | 'line-fallback';
+export type FileSearchChunkerFallbackReason = 'not-ready' | 'unsupported-language' | 'missing-wasm' | 'chunker-error' | null;
+
+export interface FileSearchChunkerDiagnostics {
+  source: FileSearchChunkerSource;
+  fallbackReason: FileSearchChunkerFallbackReason;
+  ready: boolean;
+  waitedForReadiness: boolean;
+  language?: string;
+}
+
+export interface FileSearchChunkingResult {
+  chunks: FileSearchChunk[];
+  chunker: FileSearchChunkerDiagnostics;
 }
 
 const DEFAULT_CODE_CHUNK_LINES = 50;
@@ -121,6 +140,8 @@ const COMPAT_DIR_RE = /(?:^|\/)(?:compat|_compat|legacy)(?:\/|$)/;
 const EXAMPLES_DIR_RE = /(?:^|\/)(?:_?examples?|docs?_src)(?:\/|$)/;
 const DOCS_DIR_RE = /(?:^|\/)(?:docs?|documentation)(?:\/|$)/;
 const TYPE_DEFS_RE = /\.d\.ts$/;
+const NON_CODE_TEXT_EXTENSIONS = new Set(['.txt', '.md', '.markdown', '.json', '.yaml', '.yml', '.toml', '.csv', '.tsv', '.log', '.ini']);
+const requireFromRuntime = createRequire(import.meta.url);
 
 const CODE_LANGUAGE_EXTENSIONS = new Map<string, string>([
   ['.ts', 'typescript'],
@@ -183,28 +204,111 @@ type ChonkieChunk = {
 };
 
 type CodeChunkerInstance = Awaited<ReturnType<typeof CodeChunker.create>>;
+type ChunkerReadinessState = 'pending' | 'ready';
+type FileSearchChunkingKind = 'supported-code' | 'plain-text' | 'unsupported-language';
 
 const chonkieCodeChunkers = new Map<string, CodeChunkerInstance>();
+const chonkieChunkerAvailability = new Map<string, { wasmAvailable: boolean; initError?: string }>();
+let chonkieChunkersState: ChunkerReadinessState = 'pending';
 
 function resolveChonkieWasmPath(wasmId: string): string | undefined {
-  const wasmPath = join(process.cwd(), 'node_modules', 'tree-sitter-wasms', 'out', `tree-sitter-${wasmId}.wasm`);
-  return existsSync(wasmPath) ? wasmPath : undefined;
+  const modulePath = `tree-sitter-wasms/out/tree-sitter-${wasmId}.wasm`;
+  try {
+    return requireFromRuntime.resolve(modulePath);
+  } catch {
+    const cwdPath = join(process.cwd(), 'node_modules', 'tree-sitter-wasms', 'out', `tree-sitter-${wasmId}.wasm`);
+    return existsSync(cwdPath) ? cwdPath : undefined;
+  }
 }
 
-export const chonkieCodeChunkersReady = Promise.all([...CHONKIE_WASM_LANGUAGE_IDS.entries()].map(async ([language, wasmId]) => {
-  const wasmPath = resolveChonkieWasmPath(wasmId);
-  if (!wasmPath) return;
-  try {
-    const chunker = await CodeChunker.create({
-      language: wasmPath,
-      tokenizer: 'character',
-      chunkSize: DEFAULT_CHONKIE_CODE_CHUNK_SIZE,
-    });
-    chonkieCodeChunkers.set(language, chunker);
-  } catch {
-    // Keep falling back to the line chunker when Chonkie cannot initialise.
+export const chonkieCodeChunkersReady = (async () => {
+  for (const [language, wasmId] of CHONKIE_WASM_LANGUAGE_IDS.entries()) {
+    const wasmPath = resolveChonkieWasmPath(wasmId);
+    if (!wasmPath) {
+      chonkieChunkerAvailability.set(language, { wasmAvailable: false });
+      continue;
+    }
+    try {
+      const chunker = await CodeChunker.create({
+        language: wasmPath,
+        tokenizer: 'character',
+        chunkSize: DEFAULT_CHONKIE_CODE_CHUNK_SIZE,
+      });
+      chonkieCodeChunkers.set(language, chunker);
+      chonkieChunkerAvailability.set(language, { wasmAvailable: true });
+    } catch (error) {
+      chonkieChunkerAvailability.set(language, {
+        wasmAvailable: true,
+        initError: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
-})).then(() => undefined);
+  chonkieChunkersState = 'ready';
+})();
+
+function classifyFileSearchChunkingTarget(filePath: string): { kind: FileSearchChunkingKind; language?: string } {
+  const language = inferFileSearchLanguage(filePath);
+  if (language) {
+    if (!isCodeAwareLanguage(language)) return { kind: 'plain-text', language };
+    if (!CHONKIE_WASM_LANGUAGE_IDS.has(language)) return { kind: 'unsupported-language', language };
+    return { kind: 'supported-code', language };
+  }
+  const extension = extname(filePath).toLowerCase();
+  if (!extension || NON_CODE_TEXT_EXTENSIONS.has(extension)) return { kind: 'plain-text' };
+  return { kind: 'unsupported-language' };
+}
+
+function withChunkerMetadata(chunks: FileSearchChunk[], diagnostics: FileSearchChunkerDiagnostics): FileSearchChunk[] {
+  return chunks.map((chunk) => ({
+    ...chunk,
+    source: diagnostics.source,
+    fallbackReason: diagnostics.fallbackReason,
+  }));
+}
+
+function buildChunkingResult(chunks: FileSearchChunk[], chunker: FileSearchChunkerDiagnostics): FileSearchChunkingResult {
+  return {
+    chunks: withChunkerMetadata(chunks, chunker),
+    chunker,
+  };
+}
+
+function fallbackDiagnostics(language: string | undefined, fallbackReason: Exclude<FileSearchChunkerFallbackReason, null>, waitedForReadiness: boolean): FileSearchChunkerDiagnostics {
+  return {
+    source: 'line-fallback',
+    fallbackReason,
+    ready: false,
+    waitedForReadiness,
+    ...(language ? { language } : {}),
+  };
+}
+
+function plainTextDiagnostics(language?: string): FileSearchChunkerDiagnostics {
+  return {
+    source: 'line-fallback',
+    fallbackReason: null,
+    ready: false,
+    waitedForReadiness: false,
+    ...(language ? { language } : {}),
+  };
+}
+
+function resolveUnavailableChunkerDiagnostics(language: string, waitedForReadiness: boolean): FileSearchChunkerDiagnostics {
+  const availability = chonkieChunkerAvailability.get(language);
+  if (availability?.wasmAvailable === false) return fallbackDiagnostics(language, 'missing-wasm', waitedForReadiness);
+  if (availability?.initError) return fallbackDiagnostics(language, 'chunker-error', waitedForReadiness);
+  if (chonkieChunkersState !== 'ready') return fallbackDiagnostics(language, 'not-ready', waitedForReadiness);
+  return fallbackDiagnostics(language, 'chunker-error', waitedForReadiness);
+}
+
+export function shouldWaitForFileSearchChunker(filePath: string): boolean {
+  return classifyFileSearchChunkingTarget(filePath).kind === 'supported-code';
+}
+
+export async function ensureFileSearchCodeChunkersReady(): Promise<{ ready: true; languages: string[] }> {
+  await chonkieCodeChunkersReady;
+  return { ready: true, languages: [...chonkieCodeChunkers.keys()] };
+}
 
 
 function normalizePathForComparison(filePath: string): string {
@@ -255,7 +359,11 @@ function stemMatches(stem: string, name: string): boolean {
 }
 
 function naturalLanguageTokens(query: string): string[] {
-  return tokenizeSearchQuery(query).filter((token) => token.length > 1 && !STOPWORDS.has(token));
+  const embeddedSymbols = new Set(query.match(EMBEDDED_SYMBOL_RE) ?? []);
+  return (query.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? [])
+    .filter((token) => token.length > 1 && !STOPWORDS.has(token.toLowerCase()) && !embeddedSymbols.has(token))
+    .flatMap((token) => splitIdentifier(token))
+    .filter((token) => token.length > 1 && !STOPWORDS.has(token));
 }
 
 function filePathStemVariants(filePath: string): string[] {
@@ -270,6 +378,23 @@ function filePathStemVariants(filePath: string): string[] {
     ...splitIdentifier(parent),
   ].filter(Boolean));
   return [...variants];
+}
+
+function countKeywordMatches(keywords: Set<string>, parts: Set<string>): number {
+  const exact = [...keywords].filter((keyword) => parts.has(keyword)).length;
+  if (exact === keywords.size) return exact;
+  let matches = exact;
+  for (const keyword of keywords) {
+    if (parts.has(keyword)) continue;
+    for (const part of parts) {
+      const [shorter, longer] = keyword.length <= part.length ? [keyword, part] : [part, keyword];
+      if (shorter.length >= 3 && longer.startsWith(shorter)) {
+        matches += 1;
+        break;
+      }
+    }
+  }
+  return matches;
 }
 
 function hasBoundarySignal(line: string, language: string | undefined): boolean {
@@ -330,33 +455,77 @@ function lineNumberAt(text: string, index: number): number {
   return text.slice(0, Math.max(0, index)).split(/\r?\n/).length;
 }
 
-function chunkCodeAware(filePath: string, content: string, language: string): FileSearchChunk[] {
+function chunkPlainText(filePath: string, content: string, language?: string): FileSearchChunk[] {
+  if (/\r?\n\s*\r?\n/.test(content)) return chunkLines(filePath, content, language);
+  return chunkLines(filePath, content, language, 1, 0);
+}
+
+export function chunkFileContentLineFallback(
+  filePath: string,
+  content: string,
+  language?: string,
+  fallbackReason: FileSearchChunkerFallbackReason = null,
+): FileSearchChunk[] {
+  return withChunkerMetadata(chunkLines(filePath, content, language), {
+    source: 'line-fallback',
+    fallbackReason,
+    ready: false,
+    waitedForReadiness: false,
+    ...(language ? { language } : {}),
+  });
+}
+
+function chunkCodeAware(filePath: string, content: string, language: string, waitedForReadiness: boolean): FileSearchChunkingResult {
   const chunker = chonkieCodeChunkers.get(language);
-  if (!chunker) return chunkLines(filePath, content, language);
+  if (!chunker) return buildChunkingResult(chunkLines(filePath, content, language), resolveUnavailableChunkerDiagnostics(language, waitedForReadiness));
   try {
     const chunks = chunker.chunk(content) as ChonkieChunk[];
-    if (!chunks.length) return chunkLines(filePath, content, language);
-    return chunks.map((chunk) => ({
+    if (!chunks.length) {
+      return buildChunkingResult(chunkLines(filePath, content, language), {
+        source: 'line-fallback',
+        fallbackReason: null,
+        ready: true,
+        waitedForReadiness,
+        language,
+      });
+    }
+    return buildChunkingResult(chunks.map((chunk) => ({
       filePath,
       content: chunk.text,
       startLine: lineNumberAt(content, chunk.startIndex),
       endLine: lineNumberAt(content, chunk.endIndex),
       language,
-    }));
+    })), {
+      source: 'chonkie',
+      fallbackReason: null,
+      ready: true,
+      waitedForReadiness,
+      language,
+    });
   } catch {
-    return chunkLines(filePath, content, language);
+    return buildChunkingResult(chunkLines(filePath, content, language), fallbackDiagnostics(language, 'chunker-error', waitedForReadiness));
   }
 }
 
 export function chunkFileContent(filePath: string, content: string): FileSearchChunk[] {
-  const language = inferFileSearchLanguage(filePath);
-  if (!language || !isCodeAwareLanguage(language)) return chunkLines(filePath, content, language);
+  const target = classifyFileSearchChunkingTarget(filePath);
+  if (target.kind === 'plain-text') return withChunkerMetadata(chunkPlainText(filePath, content, target.language), plainTextDiagnostics(target.language));
+  if (target.kind === 'unsupported-language') return withChunkerMetadata(chunkLines(filePath, content, target.language), fallbackDiagnostics(target.language, 'unsupported-language', false));
   try {
-    const chunks = chunkCodeAware(filePath, content, language);
-    return chunks.length ? chunks : chunkLines(filePath, content, language);
+    return chunkCodeAware(filePath, content, target.language!, false).chunks;
   } catch {
-    return chunkLines(filePath, content, language);
+    return chunkFileContentLineFallback(filePath, content, target.language, 'chunker-error');
   }
+}
+
+export async function chunkFileContentReady(filePath: string, content: string): Promise<FileSearchChunkingResult> {
+  const target = classifyFileSearchChunkingTarget(filePath);
+  if (target.kind === 'plain-text') return buildChunkingResult(chunkPlainText(filePath, content, target.language), plainTextDiagnostics(target.language));
+  if (target.kind === 'unsupported-language') {
+    return buildChunkingResult(chunkLines(filePath, content, target.language), fallbackDiagnostics(target.language, 'unsupported-language', false));
+  }
+  await ensureFileSearchCodeChunkersReady();
+  return chunkCodeAware(filePath, content, target.language!, true);
 }
 
 export function chunkKey(chunk: Pick<FileSearchChunkRow, 'projectKey' | 'filePath' | 'chunkIndex'>): string {
@@ -443,7 +612,13 @@ function definitionTier(chunk: FileSearchChunkRow, names: Set<string>, boostUnit
   return boostUnit * (fileStemMatchesChunk(chunk, names) ? 1.5 : 1);
 }
 
-function boostSymbolDefinitions(boosted: Map<string, number>, query: string, maxScore: number, chunks: Map<string, FileSearchChunkRow>): void {
+function boostSymbolDefinitions(
+  boosted: Map<string, number>,
+  query: string,
+  maxScore: number,
+  chunks: Map<string, FileSearchChunkRow>,
+  allChunks: Map<string, FileSearchChunkRow>,
+): void {
   const symbolName = extractSymbolName(query);
   const names = new Set([symbolName]);
   if (symbolName !== query.trim()) names.add(query.trim());
@@ -456,60 +631,84 @@ function boostSymbolDefinitions(boosted: Map<string, number>, query: string, max
     if (tier > 0) boosted.set(key, score + tier);
   }
 
-  for (const [key, chunk] of chunks.entries()) {
+  for (const [key, chunk] of allChunks.entries()) {
     if (boosted.has(key)) continue;
     if (!fileStemMatchesChunk(chunk, new Set([symbolName.toLowerCase()]))) continue;
     const tier = definitionTier(chunk, names, boostUnit);
-    if (tier > 0) boosted.set(key, tier);
+    if (tier > 0) {
+      chunks.set(key, chunk);
+      boosted.set(key, tier);
+    }
   }
 }
 
 function boostStemMatches(boosted: Map<string, number>, query: string, maxScore: number, chunks: Map<string, FileSearchChunkRow>): void {
-  const names = new Set(naturalLanguageTokens(query));
-  if (!names.size) return;
+  const keywords = new Set(naturalLanguageTokens(query));
+  if (!keywords.size) return;
   const boostUnit = maxScore * STEM_BOOST_MULTIPLIER;
-  for (const [key, chunk] of chunks.entries()) {
-    if (boosted.has(key)) continue;
-    const variants = filePathStemVariants(chunk.filePath);
-    if ([...names].some((name) => variants.some((variant) => stemMatches(variant, name)))) boosted.set(key, boostUnit);
+  const pathCache = new Map<string, Set<string>>();
+  for (const [key, score] of [...boosted.entries()]) {
+    const chunk = chunks.get(key);
+    if (!chunk) continue;
+    if (!pathCache.has(chunk.filePath)) pathCache.set(chunk.filePath, new Set(filePathStemVariants(chunk.filePath)));
+    const matches = countKeywordMatches(keywords, pathCache.get(chunk.filePath)!);
+    if (matches <= 0) continue;
+    const matchRatio = matches / keywords.size;
+    if (matchRatio >= 0.10) boosted.set(key, score + (boostUnit * matchRatio));
   }
 }
 
-function boostEmbeddedSymbols(boosted: Map<string, number>, query: string, maxScore: number, chunks: Map<string, FileSearchChunkRow>): void {
-  const names = new Set((query.match(EMBEDDED_SYMBOL_RE) ?? []).filter(Boolean).map((name) => name.toLowerCase()));
+function embeddedSymbolStemMatches(filePath: string, names: Set<string>, minLength: number): boolean {
+  const variants = filePathStemVariants(filePath);
+  return [...names].some((name) => name.length >= minLength && variants.some((variant) => {
+    const variantNorm = variant.toLowerCase();
+    return variantNorm === name || variantNorm.startsWith(name) || name.startsWith(variantNorm);
+  }));
+}
+
+function boostEmbeddedSymbols(
+  boosted: Map<string, number>,
+  query: string,
+  maxScore: number,
+  chunks: Map<string, FileSearchChunkRow>,
+  allChunks: Map<string, FileSearchChunkRow>,
+): void {
+  const names = new Set((query.match(EMBEDDED_SYMBOL_RE) ?? []).filter(Boolean));
   if (!names.size) return;
+  const loweredNames = new Set([...names].map((name) => name.toLowerCase()));
   const boostUnit = maxScore * DEFINITION_BOOST_MULTIPLIER * EMBEDDED_SYMBOL_BOOST_SCALE;
   const minLength = 4;
   for (const [key, score] of boosted.entries()) {
     const chunk = chunks.get(key);
     if (!chunk) continue;
-    const variants = filePathStemVariants(chunk.filePath);
-    const matches = [...names].some((name) => name.length >= minLength && variants.some((variant) => {
-      const variantNorm = variant.toLowerCase();
-      return variantNorm === name || variantNorm.startsWith(name) || name.startsWith(variantNorm);
-    }));
-    if (matches) boosted.set(key, score + boostUnit);
+    const tier = definitionTier(chunk, names, boostUnit);
+    if (tier > 0) boosted.set(key, score + tier);
   }
-  for (const [key, chunk] of chunks.entries()) {
+  for (const [key, chunk] of allChunks.entries()) {
     if (boosted.has(key)) continue;
-    const variants = filePathStemVariants(chunk.filePath);
-    if (![...names].some((name) => name.length >= minLength && variants.some((variant) => {
-      const variantNorm = variant.toLowerCase();
-      return variantNorm === name || variantNorm.startsWith(name) || name.startsWith(variantNorm);
-    }))) continue;
-    boosted.set(key, boostUnit);
+    if (!embeddedSymbolStemMatches(chunk.filePath, loweredNames, minLength)) continue;
+    const tier = definitionTier(chunk, names, boostUnit);
+    if (tier > 0) {
+      chunks.set(key, chunk);
+      boosted.set(key, tier);
+    }
   }
 }
 
-export function applyQueryBoost(scores: Map<string, number>, query: string, chunks: Map<string, FileSearchChunkRow>): Map<string, number> {
+export function applyQueryBoost(
+  scores: Map<string, number>,
+  query: string,
+  chunks: Map<string, FileSearchChunkRow>,
+  allChunks: Map<string, FileSearchChunkRow> = chunks,
+): Map<string, number> {
   if (!scores.size) return scores;
   const maxScore = Math.max(...scores.values());
   if (!Number.isFinite(maxScore) || maxScore === 0) return scores;
   const boosted = new Map(scores);
-  if (isSymbolQuery(query)) boostSymbolDefinitions(boosted, query, maxScore, chunks);
+  if (isSymbolQuery(query)) boostSymbolDefinitions(boosted, query, maxScore, chunks, allChunks);
   else {
     boostStemMatches(boosted, query, maxScore, chunks);
-    boostEmbeddedSymbols(boosted, query, maxScore, chunks);
+    boostEmbeddedSymbols(boosted, query, maxScore, chunks, allChunks);
   }
   return boosted;
 }
@@ -542,7 +741,21 @@ export function rerankTopK(scores: Map<string, number>, chunks: Map<string, File
     penalised.set(key, score * (penaltyCache.get(chunk.filePath) ?? 1));
   }
 
-  const ranked = [...penalised.entries()].sort((a, b) => b[1] - a[1]);
+  const compareEntries = (a: readonly [string, number], b: readonly [string, number]): number => {
+    const scoreDelta = b[1] - a[1];
+    if (scoreDelta !== 0) return scoreDelta;
+    const aChunk = chunks.get(a[0]);
+    const bChunk = chunks.get(b[0]);
+    if (aChunk && bChunk) {
+      const pathDelta = aChunk.filePath.localeCompare(bChunk.filePath);
+      if (pathDelta !== 0) return pathDelta;
+      const chunkIndexDelta = aChunk.chunkIndex - bChunk.chunkIndex;
+      if (chunkIndexDelta !== 0) return chunkIndexDelta;
+    }
+    return a[0].localeCompare(b[0]);
+  };
+
+  const ranked = [...penalised.entries()].sort(compareEntries);
   const fileSelected = new Map<string, number>();
   const selected: Array<{ key: string; score: number }> = [];
   let minSelected = Number.POSITIVE_INFINITY;
@@ -562,7 +775,7 @@ export function rerankTopK(scores: Map<string, number>, chunks: Map<string, File
     if (selected.length >= topK) minSelected = Math.min(...selected.map((entry) => entry.score));
   }
 
-  selected.sort((a, b) => b.score - a.score);
+  selected.sort((a, b) => compareEntries([a.key, a.score], [b.key, b.score]));
   return selected.slice(0, topK).map(({ key, score }) => ({ chunk: chunks.get(key)!, score }));
 }
 

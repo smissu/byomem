@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export interface EmbeddingClientOptions {
   baseUrl?: string;
@@ -53,8 +54,10 @@ function resolveModel2VecPythonExecutable(): string | undefined {
   return undefined;
 }
 
-function resolveModel2VecScriptPath(): string {
-  return resolve(process.cwd(), 'ts', 'packages', 'runtime', 'scripts', 'model2vec_embed_server.py');
+export function resolveModel2VecScriptPath(): string {
+  const explicit = process.env.BYOMEM_MODEL2VEC_SCRIPT?.trim();
+  if (explicit) return explicit;
+  return fileURLToPath(new URL('../scripts/model2vec_embed_server.py', import.meta.url));
 }
 
 type Model2VecResponse = {

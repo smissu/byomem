@@ -231,6 +231,15 @@ function ensureFileSearchProject(db: BetterSqliteDatabase, baseDir: string, sour
 export function markFileSearchProjectSeen(db: BetterSqliteDatabase, baseDir: string, source: Extract<FileSearchProjectSource, 'manual-scan' | 'manual-search' | 'manual-status'>): FileSearchProjectEntry {
   const current = ensureFileSearchProject(db, baseDir, source);
   const identity = resolveFileSearchProjectRegistryIdentity(baseDir);
+  if (
+    source === 'manual-search'
+    && current.baseDir === identity.baseDir
+    && current.displayName === identity.displayName
+    && current.source === source
+    && !current.lastError
+  ) {
+    return current;
+  }
   const now = nowIso();
   const lastScanAt = source === 'manual-scan' ? now : (current.lastScanAt ?? null);
   db.prepare(`UPDATE file_search_projects SET

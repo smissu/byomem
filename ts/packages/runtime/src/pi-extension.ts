@@ -328,7 +328,8 @@ function getRuntimeFileSearchScanManager(): FileSearchScanManager {
     scanRunner: async (request) => {
       return withDirectFileSearchStore(request.baseDir, async (store) => {
         const fileDb = store.fileSearchDb;
-        fileDb.scanAndIndex({ trigger: request.trigger });
+        if (fileDb.scanAndIndexAsync) await fileDb.scanAndIndexAsync({ trigger: request.trigger });
+        else fileDb.scanAndIndex({ trigger: request.trigger });
         await refreshSemanticIndexAfterManualScan(fileDb, {
           concurrency: fileSearchConfig.embeddingConcurrency,
         });

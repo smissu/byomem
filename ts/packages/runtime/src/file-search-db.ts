@@ -9,7 +9,16 @@ import { FileIndexScheduler } from './file-index-scheduler.js';
 import { FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, openEmbeddingClient, resolveEmbeddingProviderKey, SEMBLE_EMBEDDING_MODEL, type EmbeddingClient } from './embedding-client.js';
 import { DEFAULT_EMBEDDING_DIMENSION, encodeEmbedding, truncateEmbeddingText } from './embedding-vector.js';
 import { ensureFileSearchProjectRegistrySchema, getFileSearchProject, markFileSearchProjectSeen, serializeFileSearchPollingStatus } from './file-search-project-registry.js';
-import { chunkFileContent, inferFileSearchLanguage, type FileSearchChunk, type FileSearchIndexStorageMode } from './file-search-semble.js';
+import {
+  chonkieCodeChunkersReady,
+  chunkFileContent,
+  chunkFileContentLineFallback,
+  inferFileSearchLanguage,
+  shouldWaitForFileSearchChunker,
+  type FileSearchChunk,
+  type FileSearchChunkerFallbackReason,
+  type FileSearchIndexStorageMode,
+} from './file-search-semble.js';
 
 export interface FileSearchDbOptions {
   /** Project root to scan and use for project_key/status identity. */
@@ -87,6 +96,21 @@ export interface FileSearchScannerDatabaseCounts {
   reconciledRows: number;
 }
 
+export interface FileSearchScannerChunkerDiagnostics {
+  source: 'chonkie' | 'line-fallback' | 'mixed';
+  fallbackReason: FileSearchChunkerFallbackReason | 'multiple';
+  ready: boolean;
+  waitedForReadiness: boolean;
+  scannedFiles: number;
+  codeFiles: number;
+  textFiles: number;
+  sourceCounts: {
+    chonkie: number;
+    lineFallback: number;
+  };
+  fallbackReasons: Record<string, number>;
+}
+
 export interface FileSearchScannerStatus {
   state: FileSearchScannerState;
   projectKey: string;
@@ -111,6 +135,7 @@ export interface FileSearchScannerStatus {
   progress: FileSearchScannerProgress;
   database: FileSearchScannerDatabaseCounts;
   embeddings?: FileSearchEmbeddingDiagnostics;
+  chunker?: FileSearchScannerChunkerDiagnostics;
 }
 
 type FileSearchPersistedScannerStatus = Omit<FileSearchScannerStatus,
@@ -138,6 +163,7 @@ export interface FileSearchDbHandle {
   readonly indexRevision: number;
   close(): void;
   scanAndIndex(options?: { trigger?: FileSearchScannerTrigger }): FileSearchScannerStatus;
+  scanAndIndexAsync?(options?: { trigger?: FileSearchScannerTrigger }): Promise<FileSearchScannerStatus>;
   getScannerStatus(): FileSearchScannerStatus;
   refreshSemanticIndex(options?: { limit?: number; concurrency?: number }): Promise<FileSearchEmbeddingDiagnostics>;
   getEmbeddingDiagnostics(): FileSearchEmbeddingDiagnostics;
@@ -150,6 +176,19 @@ export interface FileSearchDbHandle {
   flushScheduledRefreshes(): void;
   refreshMetrics: { runs: number; failures: number; skips: number; retries: number; lastRunAt?: string; lastFailureAt?: string };
 }
+
+type FileSearchScannerChunkerAccumulator = {
+  scannedFiles: number;
+  codeFiles: number;
+  textFiles: number;
+  sourceCounts: {
+    chonkie: number;
+    lineFallback: number;
+  };
+  fallbackReasons: Map<string, number>;
+  waitedForReadiness: boolean;
+  ready: boolean;
+};
 
 const DEFAULT_FILE_SEARCH_DB_FILE = 'byomem-file-search.sqlite';
 const IGNORED_DIRS = new Set(['node_modules', '.git']);
@@ -541,6 +580,7 @@ function ensureScannerStatusSchema(db: BetterSqliteDatabase): void {
       updated_at TEXT NOT NULL
     );
   `);
+  ensureColumn(db, 'file_search_scanner_status', 'chunker_json', 'TEXT');
 }
 
 function hashContent(content: string): string {
@@ -671,11 +711,114 @@ function normalizeProgress(value: string | null | undefined): FileSearchScannerP
   }
 }
 
+function normalizeChunkerDiagnostics(value: string | null | undefined): FileSearchScannerChunkerDiagnostics | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as Partial<FileSearchScannerChunkerDiagnostics>;
+    if (!parsed || typeof parsed !== 'object') return undefined;
+    const source = parsed.source === 'chonkie' || parsed.source === 'line-fallback' || parsed.source === 'mixed' ? parsed.source : undefined;
+    if (!source) return undefined;
+    return {
+      source,
+      fallbackReason: parsed.fallbackReason === undefined ? null : parsed.fallbackReason,
+      ready: Boolean(parsed.ready),
+      waitedForReadiness: Boolean(parsed.waitedForReadiness),
+      scannedFiles: typeof parsed.scannedFiles === 'number' ? parsed.scannedFiles : 0,
+      codeFiles: typeof parsed.codeFiles === 'number' ? parsed.codeFiles : 0,
+      textFiles: typeof parsed.textFiles === 'number' ? parsed.textFiles : 0,
+      sourceCounts: {
+        chonkie: typeof parsed.sourceCounts?.chonkie === 'number' ? parsed.sourceCounts.chonkie : 0,
+        lineFallback: typeof parsed.sourceCounts?.lineFallback === 'number' ? parsed.sourceCounts.lineFallback : 0,
+      },
+      fallbackReasons: parsed.fallbackReasons && typeof parsed.fallbackReasons === 'object'
+        ? Object.fromEntries(
+            Object.entries(parsed.fallbackReasons).filter(([, count]) => typeof count === 'number'),
+          )
+        : {},
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function createChunkerAccumulator(): FileSearchScannerChunkerAccumulator {
+  return {
+    scannedFiles: 0,
+    codeFiles: 0,
+    textFiles: 0,
+    sourceCounts: {
+      chonkie: 0,
+      lineFallback: 0,
+    },
+    fallbackReasons: new Map<string, number>(),
+    waitedForReadiness: false,
+    ready: false,
+  };
+}
+
+function inferChunkerDiagnosticsFromChunks(chunks: FileSearchChunk[], waitedForReadiness = false): FileSearchScannerChunkerDiagnostics | undefined {
+  const first = chunks.find((chunk) => chunk.source !== undefined || chunk.fallbackReason !== undefined);
+  if (!first || !first.source) return undefined;
+  const fallbackReasons = first.fallbackReason ? { [first.fallbackReason]: 1 } : {};
+  return {
+    source: first.source,
+    fallbackReason: first.fallbackReason ?? null,
+    ready: first.source === 'chonkie',
+    waitedForReadiness,
+    scannedFiles: 1,
+    codeFiles: first.language ? 1 : 0,
+    textFiles: first.language ? 0 : 1,
+    sourceCounts: {
+      chonkie: first.source === 'chonkie' ? 1 : 0,
+      lineFallback: first.source === 'line-fallback' ? 1 : 0,
+    },
+    fallbackReasons,
+  };
+}
+
+function recordChunkerDiagnostics(
+  accumulator: FileSearchScannerChunkerAccumulator,
+  diagnostics: FileSearchScannerChunkerDiagnostics | undefined,
+  filePath: string,
+): void {
+  if (!diagnostics) return;
+  accumulator.scannedFiles += 1;
+  if (inferFileSearchLanguage(filePath)) accumulator.codeFiles += 1;
+  else accumulator.textFiles += 1;
+  accumulator.sourceCounts.chonkie += diagnostics.sourceCounts.chonkie;
+  accumulator.sourceCounts.lineFallback += diagnostics.sourceCounts.lineFallback;
+  accumulator.waitedForReadiness = accumulator.waitedForReadiness || diagnostics.waitedForReadiness;
+  accumulator.ready = accumulator.ready || diagnostics.ready;
+  for (const [reason, count] of Object.entries(diagnostics.fallbackReasons)) {
+    accumulator.fallbackReasons.set(reason, (accumulator.fallbackReasons.get(reason) ?? 0) + count);
+  }
+}
+
+function finalizeChunkerDiagnostics(accumulator: FileSearchScannerChunkerAccumulator): FileSearchScannerChunkerDiagnostics | undefined {
+  if (accumulator.scannedFiles === 0) return undefined;
+  let source: FileSearchScannerChunkerDiagnostics['source'] = 'mixed';
+  if (accumulator.sourceCounts.chonkie > 0 && accumulator.sourceCounts.lineFallback === 0) source = 'chonkie';
+  else if (accumulator.sourceCounts.lineFallback > 0 && accumulator.sourceCounts.chonkie === 0) source = 'line-fallback';
+  const fallbackReasons = Object.fromEntries([...accumulator.fallbackReasons.entries()].sort(([a], [b]) => a.localeCompare(b)));
+  const reasonKeys = Object.keys(fallbackReasons);
+  return {
+    source,
+    fallbackReason: reasonKeys.length === 0 ? null : (reasonKeys.length === 1 ? (reasonKeys[0] as FileSearchChunkerFallbackReason) : 'multiple'),
+    ready: accumulator.ready,
+    waitedForReadiness: accumulator.waitedForReadiness,
+    scannedFiles: accumulator.scannedFiles,
+    codeFiles: accumulator.codeFiles,
+    textFiles: accumulator.textFiles,
+    sourceCounts: { ...accumulator.sourceCounts },
+    fallbackReasons,
+  };
+}
+
 function persistScannerStatus(db: BetterSqliteDatabase, projectKey: string, status: FileSearchPersistedScannerStatus): void {
   const updatedAt = new Date().toISOString();
   db.prepare(`INSERT OR REPLACE INTO file_search_scanner_status
-    (project_key, state, run_id, trigger, base_dir, started_at, completed_at, duration_ms, current_path, last_path, last_error, progress_json, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    (project_key, state, run_id, trigger, base_dir, started_at, completed_at, duration_ms, current_path, last_path, last_error, progress_json, chunker_json, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       projectKey,
       status.state,
@@ -689,6 +832,7 @@ function persistScannerStatus(db: BetterSqliteDatabase, projectKey: string, stat
       status.lastPath ?? null,
       status.lastError ?? null,
       JSON.stringify(status.progress),
+      status.chunker ? JSON.stringify(status.chunker) : null,
       updatedAt,
     );
 }
@@ -707,6 +851,7 @@ function readPersistedScannerStatus(db: BetterSqliteDatabase, projectKey: string
     last_path?: string | null;
     last_error?: string | null;
     progress_json?: string | null;
+    chunker_json?: string | null;
     updated_at?: string | null;
   } | undefined;
   if (!row) return undefined;
@@ -724,6 +869,7 @@ function readPersistedScannerStatus(db: BetterSqliteDatabase, projectKey: string
     lastError: row.last_error ?? undefined,
     updatedAt: row.updated_at ?? undefined,
     progress: normalizeProgress(row.progress_json),
+    chunker: normalizeChunkerDiagnostics(row.chunker_json),
   };
 }
 
@@ -731,7 +877,16 @@ function upsertRow(db: BetterSqliteDatabase, sql: string, params: unknown[]): vo
   db.prepare(sql).run(...params.map((value) => (typeof value === 'boolean' ? (value ? 1 : 0) : value)));
 }
 
-function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel: string, filePath: string, contentHash: string, stats: { mtimeMs: number; size: number }, content: string, now: string): { changed: boolean; chunksWritten: number } {
+function ensureIndexedSnapshot(
+  db: BetterSqliteDatabase,
+  projectKey: string,
+  rel: string,
+  filePath: string,
+  contentHash: string,
+  stats: { mtimeMs: number; size: number },
+  content: string,
+  now: string,
+): { changed: boolean; chunksWritten: number; chunker?: FileSearchScannerChunkerDiagnostics } {
   const recordId = `file-record:${projectKey}:${rel}`;
   const current = db.prepare('SELECT * FROM file_records WHERE id = ?').get(recordId) as { content_hash?: string | null; mtime_ms?: number | null; size_bytes?: number | null; created_at?: string | null } | undefined;
   const isNew = !current;
@@ -739,6 +894,7 @@ function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel
   const hashConfirmed = !current || current.content_hash !== contentHash || metadataChanged;
   const contentAndMetadataMatch = Boolean(current && current.content_hash === contentHash && current.mtime_ms === stats.mtimeMs && current.size_bytes === stats.size);
   const chunks = chunkFileContent(filePath, content);
+  const chunker = inferChunkerDiagnosticsFromChunks(chunks);
   const missingLineMetadata = contentAndMetadataMatch
     ? ((db.prepare('SELECT COUNT(*) AS count FROM indexed_chunks WHERE file_record_id = ? AND (start_line IS NULL OR end_line IS NULL)').get(recordId) as { count: number }).count > 0)
     : false;
@@ -749,7 +905,7 @@ function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel
     ? existingChunks.some((row, index) => row.search_text !== buildFileSearchLexicalText(rel, chunks[index]?.content ?? row.chunk_text))
     : false;
 
-  if (contentAndMetadataMatch && !missingLineMetadata && !missingSearchText) return { changed: false, chunksWritten: 0 };
+  if (contentAndMetadataMatch && !missingLineMetadata && !missingSearchText) return { changed: false, chunksWritten: 0, chunker };
 
   if (contentAndMetadataMatch && (missingLineMetadata || missingSearchText)) {
     if (canBackfillIndexedChunkLineMetadata(existingChunks, chunks, rel)) {
@@ -793,7 +949,7 @@ function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel
           updateChunkSearchText.run(buildFileSearchLexicalText(rel, chunk.content), now, row.id);
         });
       }
-      return { changed: true, chunksWritten: chunks.length };
+      return { changed: true, chunksWritten: chunks.length, chunker };
     }
   }
 
@@ -845,18 +1001,160 @@ function ensureIndexedSnapshot(db: BetterSqliteDatabase, projectKey: string, rel
       now,
     ]);
   });
-  return { changed: true, chunksWritten: chunks.length };
+  return { changed: true, chunksWritten: chunks.length, chunker };
 }
 
-function scanAndIndexFiles(db: BetterSqliteDatabase, baseDir: string, progress: FileSearchScannerProgress, options: FileSearchDbOptions, onProgress?: (currentPath?: string, lastPath?: string) => void): { lastPath?: string } {
+async function ensureIndexedSnapshotAsync(
+  db: BetterSqliteDatabase,
+  projectKey: string,
+  rel: string,
+  filePath: string,
+  contentHash: string,
+  stats: { mtimeMs: number; size: number },
+  content: string,
+  now: string,
+): Promise<{ changed: boolean; chunksWritten: number; chunker?: FileSearchScannerChunkerDiagnostics }> {
+  const recordId = `file-record:${projectKey}:${rel}`;
+  const current = db.prepare('SELECT * FROM file_records WHERE id = ?').get(recordId) as { content_hash?: string | null; mtime_ms?: number | null; size_bytes?: number | null; created_at?: string | null } | undefined;
+  const isNew = !current;
+  const metadataChanged = Boolean(current && (current.mtime_ms !== stats.mtimeMs || current.size_bytes !== stats.size));
+  const hashConfirmed = !current || current.content_hash !== contentHash || metadataChanged;
+  const contentAndMetadataMatch = Boolean(current && current.content_hash === contentHash && current.mtime_ms === stats.mtimeMs && current.size_bytes === stats.size);
+  const language = inferFileSearchLanguage(filePath);
+  const waitedForReadiness = shouldWaitForFileSearchChunker(filePath);
+  if (waitedForReadiness) await chonkieCodeChunkersReady;
+  let chunks: FileSearchChunk[];
+  try {
+    chunks = chunkFileContent(filePath, content);
+  } catch {
+    chunks = chunkFileContentLineFallback(filePath, content, language, 'chunker-error');
+  }
+  const chunker = inferChunkerDiagnosticsFromChunks(chunks, waitedForReadiness);
+  const missingLineMetadata = contentAndMetadataMatch
+    ? ((db.prepare('SELECT COUNT(*) AS count FROM indexed_chunks WHERE file_record_id = ? AND (start_line IS NULL OR end_line IS NULL)').get(recordId) as { count: number }).count > 0)
+    : false;
+  const existingChunks = contentAndMetadataMatch
+    ? db.prepare('SELECT id, chunk_index, chunk_text, search_text, chunk_hash FROM indexed_chunks WHERE file_record_id = ? ORDER BY chunk_index').all(recordId) as IndexedChunkSnapshotRow[]
+    : [];
+  const missingSearchText = contentAndMetadataMatch
+    ? existingChunks.some((row, index) => row.search_text !== buildFileSearchLexicalText(rel, chunks[index]?.content ?? row.chunk_text))
+    : false;
+
+  if (contentAndMetadataMatch && !missingLineMetadata && !missingSearchText) return { changed: false, chunksWritten: 0, chunker };
+
+  if (contentAndMetadataMatch && (missingLineMetadata || missingSearchText)) {
+    if (canBackfillIndexedChunkLineMetadata(existingChunks, chunks, rel)) {
+      db.prepare('UPDATE file_records SET path = ?, content_hash = ?, mtime_ms = ?, size_bytes = ?, updated_at = ? WHERE id = ?').run(
+        filePath,
+        contentHash,
+        stats.mtimeMs,
+        stats.size,
+        now,
+        recordId,
+      );
+      db.prepare('UPDATE indexed_files SET path = ?, file_record_id = ?, updated_at = ? WHERE id = ?').run(
+        filePath,
+        recordId,
+        now,
+        `indexed-file:${projectKey}:${rel}`,
+      );
+      upsertRow(db, 'INSERT OR REPLACE INTO changed_files (id, project_key, file_path, change_state, created_at) VALUES (?, ?, ?, ?, ?)', [
+        `changed:${projectKey}:${rel}`,
+        projectKey,
+        filePath,
+        hashConfirmed ? 'confirmed-by-hash' : 'new',
+        now,
+      ]);
+      upsertRow(db, 'INSERT OR REPLACE INTO reconciled_files (id, project_key, file_path, reconciliation_state, created_at) VALUES (?, ?, ?, ?, ?)', [
+        `reconciled:${projectKey}:${rel}`,
+        projectKey,
+        filePath,
+        isNew ? 'new' : 'changed',
+        now,
+      ]);
+      const updateChunkLineMetadata = db.prepare('UPDATE indexed_chunks SET start_line = ?, end_line = ?, updated_at = ? WHERE id = ?');
+      existingChunks.forEach((row, chunkIndex) => {
+        const chunk = chunks[chunkIndex]!;
+        updateChunkLineMetadata.run(chunk.startLine, chunk.endLine, now, row.id);
+      });
+      if (missingSearchText) {
+        const updateChunkSearchText = db.prepare('UPDATE indexed_chunks SET search_text = ?, updated_at = ? WHERE id = ?');
+        existingChunks.forEach((row, chunkIndex) => {
+          const chunk = chunks[chunkIndex]!;
+          updateChunkSearchText.run(buildFileSearchLexicalText(rel, chunk.content), now, row.id);
+        });
+      }
+      return { changed: true, chunksWritten: chunks.length, chunker };
+    }
+  }
+
+  upsertRow(db, 'INSERT OR REPLACE INTO file_records (id, project_key, path, content_hash, mtime_ms, size_bytes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [
+    recordId,
+    projectKey,
+    filePath,
+    contentHash,
+    stats.mtimeMs,
+    stats.size,
+    current?.created_at ?? now,
+    now,
+  ]);
+  upsertRow(db, 'INSERT OR REPLACE INTO indexed_files (id, project_key, path, file_record_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', [
+    `indexed-file:${projectKey}:${rel}`,
+    projectKey,
+    filePath,
+    recordId,
+    current?.created_at ?? now,
+    now,
+  ]);
+  upsertRow(db, 'INSERT OR REPLACE INTO changed_files (id, project_key, file_path, change_state, created_at) VALUES (?, ?, ?, ?, ?)', [
+    `changed:${projectKey}:${rel}`,
+    projectKey,
+    filePath,
+    hashConfirmed ? 'confirmed-by-hash' : 'new',
+    now,
+  ]);
+  upsertRow(db, 'INSERT OR REPLACE INTO reconciled_files (id, project_key, file_path, reconciliation_state, created_at) VALUES (?, ?, ?, ?, ?)', [
+    `reconciled:${projectKey}:${rel}`,
+    projectKey,
+    filePath,
+    isNew ? 'new' : 'changed',
+    now,
+  ]);
+  db.prepare('DELETE FROM indexed_chunks WHERE file_record_id = ?').run(recordId);
+  chunks.forEach((chunk, chunkIndex) => {
+    upsertRow(db, 'INSERT OR REPLACE INTO indexed_chunks (id, project_key, file_record_id, chunk_index, chunk_text, search_text, chunk_hash, start_line, end_line, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+      `indexed-chunk:${projectKey}:${rel}:${chunkIndex}`,
+      projectKey,
+      recordId,
+      chunkIndex,
+      chunk.content,
+      buildFileSearchLexicalText(rel, chunk.content),
+      hashContent(chunk.content),
+      chunk.startLine,
+      chunk.endLine,
+      now,
+      now,
+    ]);
+  });
+  return { changed: true, chunksWritten: chunks.length, chunker };
+}
+
+function scanAndIndexFiles(
+  db: BetterSqliteDatabase,
+  baseDir: string,
+  progress: FileSearchScannerProgress,
+  options: FileSearchDbOptions,
+  onProgress?: (currentPath?: string, lastPath?: string) => void,
+): { lastPath?: string; chunker?: FileSearchScannerChunkerDiagnostics } {
   const projectKey = deriveProjectKey(baseDir);
   const now = new Date().toISOString();
   const walked = walkFiles(baseDir);
   const files = walked.files.filter((filePath) => !isIgnoredInternalFile(filePath, baseDir));
   const seen = new Set<string>();
+  const chunker = createChunkerAccumulator();
   const excludedExtensions = resolveScannerExcludedExtensions(options);
   const binaryDetectionEnabled = options.scannerBinaryDetectionEnabled ?? true;
-  const includeTextFiles = Boolean(options.scannerIncludeTextFiles);
+  const includeTextFiles = options.scannerIncludeTextFiles ?? true;
   let lastPath: string | undefined;
   progress.discoveredFiles = files.length;
   progress.ignoredFiles = walked.ignoredFiles;
@@ -918,6 +1216,7 @@ function scanAndIndexFiles(db: BetterSqliteDatabase, baseDir: string, progress: 
         now,
       ]);
       const result = ensureIndexedSnapshot(db, projectKey, rel, filePath, contentHash, { mtimeMs: stats.mtimeMs, size: stats.size }, content, now);
+      recordChunkerDiagnostics(chunker, result.chunker, filePath);
       progress.scannedFiles += 1;
       progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
       if (!result.changed) progress.unchangedFiles += 1;
@@ -952,7 +1251,122 @@ function scanAndIndexFiles(db: BetterSqliteDatabase, baseDir: string, progress: 
     db.prepare('INSERT OR REPLACE INTO changed_files (id, project_key, file_path, change_state, created_at) VALUES (?, ?, ?, ?, ?)').run(`changed:${projectKey}:${relativePath}:deleted`, projectKey, row.path, 'deleted', now);
     progress.deletedFiles += 1;
   }
-  return { lastPath };
+  return { lastPath, chunker: finalizeChunkerDiagnostics(chunker) };
+}
+
+async function scanAndIndexFilesAsync(
+  db: BetterSqliteDatabase,
+  baseDir: string,
+  progress: FileSearchScannerProgress,
+  options: FileSearchDbOptions,
+  onProgress?: (currentPath?: string, lastPath?: string) => void,
+): Promise<{ lastPath?: string; chunker?: FileSearchScannerChunkerDiagnostics }> {
+  const projectKey = deriveProjectKey(baseDir);
+  const now = new Date().toISOString();
+  const walked = walkFiles(baseDir);
+  const files = walked.files.filter((filePath) => !isIgnoredInternalFile(filePath, baseDir));
+  const seen = new Set<string>();
+  const chunker = createChunkerAccumulator();
+  const excludedExtensions = resolveScannerExcludedExtensions(options);
+  const binaryDetectionEnabled = options.scannerBinaryDetectionEnabled ?? true;
+  const includeTextFiles = options.scannerIncludeTextFiles ?? true;
+  let lastPath: string | undefined;
+  progress.discoveredFiles = files.length;
+  progress.ignoredFiles = walked.ignoredFiles;
+  progress.filesRemaining = files.length;
+  onProgress?.();
+
+  for (const filePath of files) {
+    const rel = relPath(baseDir, filePath);
+    try {
+      lastPath = rel;
+      onProgress?.(rel, lastPath);
+      const stats = statSync(filePath);
+      const prefilterId = `prefilter:${projectKey}:${rel}`;
+      if (matchesScannerExcludedExtension(filePath, excludedExtensions)) {
+        progress.ignoredFiles += 1;
+        progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
+        onProgress?.(rel, lastPath);
+        continue;
+      }
+      if (!includeTextFiles && inferFileSearchLanguage(filePath) === undefined) {
+        progress.ignoredFiles += 1;
+        progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
+        onProgress?.(rel, lastPath);
+        continue;
+      }
+      if (binaryDetectionEnabled && isLikelyBinaryFile(filePath)) {
+        progress.ignoredFiles += 1;
+        progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
+        onProgress?.(rel, lastPath);
+        continue;
+      }
+      const content = readFileSync(filePath, 'utf8');
+      progress.bytesRead = (progress.bytesRead ?? 0) + Buffer.byteLength(content, 'utf8');
+      if (containsSensitiveFileSearchContent(content)) {
+        progress.ignoredFiles += 1;
+        progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
+        onProgress?.(rel, lastPath);
+        continue;
+      }
+      seen.add(rel);
+      const contentHash = hashContent(content);
+      const current = db.prepare('SELECT * FROM file_records WHERE id = ?').get(`file-record:${projectKey}:${rel}`) as { mtime_ms?: number | null; size_bytes?: number | null } | undefined;
+      const prefilterMatches = Boolean(current && current.mtime_ms === stats.mtimeMs && current.size_bytes === stats.size);
+
+      upsertRow(db, 'INSERT OR REPLACE INTO scan_prefilter_events (id, project_key, file_path, reason, confirmed, created_at) VALUES (?, ?, ?, ?, ?, ?)', [
+        prefilterId,
+        projectKey,
+        filePath,
+        'mtime-size',
+        prefilterMatches,
+        now,
+      ]);
+      upsertRow(db, 'INSERT OR REPLACE INTO content_hash_checks (id, project_key, file_path, content_hash, confirmed, created_at) VALUES (?, ?, ?, ?, ?, ?)', [
+        `hash:${projectKey}:${rel}`,
+        projectKey,
+        filePath,
+        contentHash,
+        true,
+        now,
+      ]);
+      const result = await ensureIndexedSnapshotAsync(db, projectKey, rel, filePath, contentHash, { mtimeMs: stats.mtimeMs, size: stats.size }, content, now);
+      recordChunkerDiagnostics(chunker, result.chunker, filePath);
+      progress.scannedFiles += 1;
+      progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
+      if (!result.changed) progress.unchangedFiles += 1;
+      else {
+        progress.indexedFiles += 1;
+        progress.changedFiles += 1;
+        progress.chunksWritten += result.chunksWritten;
+      }
+      if (progress.scannedFiles === 1 || progress.scannedFiles % 25 === 0 || progress.filesRemaining === 0) onProgress?.(rel, lastPath);
+    } catch (error) {
+      progress.errorFiles += 1;
+      progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
+      onProgress?.(rel, lastPath);
+      throw error;
+    }
+  }
+
+  const existing = db.prepare('SELECT id, path, file_record_id, project_key FROM indexed_files WHERE project_key = ?').all(projectKey) as Array<{ id: string; path: string; file_record_id: string; project_key: string }>;
+  for (const row of existing) {
+    const relativePath = relPath(baseDir, row.path);
+    if (seen.has(relativePath)) continue;
+    upsertRow(db, 'INSERT OR REPLACE INTO reconciled_files (id, project_key, file_path, reconciliation_state, created_at) VALUES (?, ?, ?, ?, ?)', [
+      `reconciled:${projectKey}:${relativePath}:deleted`,
+      projectKey,
+      row.path,
+      'deleted',
+      now,
+    ]);
+    db.prepare('DELETE FROM indexed_chunks WHERE file_record_id = ?').run(row.file_record_id);
+    db.prepare('DELETE FROM indexed_files WHERE id = ?').run(row.id);
+    db.prepare('DELETE FROM file_records WHERE id = ?').run(row.file_record_id);
+    db.prepare('INSERT OR REPLACE INTO changed_files (id, project_key, file_path, change_state, created_at) VALUES (?, ?, ?, ?, ?)').run(`changed:${projectKey}:${relativePath}:deleted`, projectKey, row.path, 'deleted', now);
+    progress.deletedFiles += 1;
+  }
+  return { lastPath, chunker: finalizeChunkerDiagnostics(chunker) };
 }
 
 function embeddingModel(options: FileSearchDbOptions): string {
@@ -1228,12 +1642,14 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
     const startedAt = new Date().toISOString();
     const progress = emptyScannerProgress();
     activeRunId = runId;
+    let activeChunker: FileSearchScannerChunkerDiagnostics | undefined;
     const persistRunning = (currentPath?: string, lastPath?: string): void => {
-      persistScannerStatus(db, projectKey, { state: 'running', projectKey, baseDir: projectBaseDir, runId, trigger, startedAt, currentPath, lastPath, progress: { ...progress } });
+      persistScannerStatus(db, projectKey, { state: 'running', projectKey, baseDir: projectBaseDir, runId, trigger, startedAt, currentPath, lastPath, progress: { ...progress }, chunker: activeChunker });
     };
     persistRunning();
     try {
       const result = scanAndIndexFiles(db, projectBaseDir, progress, options, persistRunning);
+      activeChunker = result.chunker;
       const completedAt = new Date().toISOString();
       persistScannerStatus(db, projectKey, {
         state: 'completed',
@@ -1246,6 +1662,7 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
         durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
         lastPath: result.lastPath,
         progress: { ...progress, filesRemaining: 0 },
+        chunker: result.chunker,
       });
       return buildScannerStatus();
     } catch (error) {
@@ -1262,6 +1679,56 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
         durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
         lastError: message,
         progress,
+        chunker: activeChunker,
+      });
+      throw error;
+    } finally {
+      activeRunId = undefined;
+    }
+  };
+  const runScanAsync = async (trigger: FileSearchScannerTrigger): Promise<FileSearchScannerStatus> => {
+    const runId = randomUUID();
+    const startedAt = new Date().toISOString();
+    const progress = emptyScannerProgress();
+    activeRunId = runId;
+    let activeChunker: FileSearchScannerChunkerDiagnostics | undefined;
+    const persistRunning = (currentPath?: string, lastPath?: string): void => {
+      persistScannerStatus(db, projectKey, { state: 'running', projectKey, baseDir: projectBaseDir, runId, trigger, startedAt, currentPath, lastPath, progress: { ...progress }, chunker: activeChunker });
+    };
+    persistRunning();
+    try {
+      const result = await scanAndIndexFilesAsync(db, projectBaseDir, progress, options, persistRunning);
+      activeChunker = result.chunker;
+      const completedAt = new Date().toISOString();
+      persistScannerStatus(db, projectKey, {
+        state: 'completed',
+        projectKey,
+        baseDir: projectBaseDir,
+        runId,
+        trigger,
+        startedAt,
+        completedAt,
+        durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
+        lastPath: result.lastPath,
+        progress: { ...progress, filesRemaining: 0 },
+        chunker: result.chunker,
+      });
+      return buildScannerStatus();
+    } catch (error) {
+      const completedAt = new Date().toISOString();
+      const message = error instanceof Error ? error.message : String(error);
+      persistScannerStatus(db, projectKey, {
+        state: 'failed',
+        projectKey,
+        baseDir: projectBaseDir,
+        runId,
+        trigger,
+        startedAt,
+        completedAt,
+        durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
+        lastError: message,
+        progress,
+        chunker: activeChunker,
       });
       throw error;
     } finally {
@@ -1271,6 +1738,13 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
   const runScanAndBumpRevision = (trigger: FileSearchScannerTrigger): FileSearchScannerStatus => {
     try {
       return runScan(trigger);
+    } finally {
+      bumpFileSearchIndexRevision(db, projectKey);
+    }
+  };
+  const runScanAndBumpRevisionAsync = async (trigger: FileSearchScannerTrigger): Promise<FileSearchScannerStatus> => {
+    try {
+      return await runScanAsync(trigger);
     } finally {
       bumpFileSearchIndexRevision(db, projectKey);
     }
@@ -1304,6 +1778,12 @@ export function openFileSearchDb(options: FileSearchDbOptions): FileSearchDbHand
       runScanAndBumpRevision(trigger);
       if (trigger === 'manual') markFileSearchProjectSeen(db, projectBaseDir, 'manual-scan');
       return buildScannerStatus();
+    },
+    async scanAndIndexAsync(scanOptions?: { trigger?: FileSearchScannerTrigger }): Promise<FileSearchScannerStatus> {
+      const trigger = scanOptions?.trigger ?? 'manual';
+      const status = await runScanAndBumpRevisionAsync(trigger);
+      if (trigger === 'manual') markFileSearchProjectSeen(db, projectBaseDir, 'manual-scan');
+      return status;
     },
     getScannerStatus(): FileSearchScannerStatus {
       return buildScannerStatus();

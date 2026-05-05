@@ -16,7 +16,7 @@ import {
   type FileSearchSearchMode,
   type FileSearchSearchResult,
 } from './file-search-semble.js';
-import { cosineSimilarity, decodeEmbedding } from './embedding-vector.js';
+import { decodeEmbedding } from './embedding-vector.js';
 import { FILE_SEARCH_EMBEDDING_IDENTITY_VERSION } from './embedding-client.js';
 import { containsSensitiveFileSearchContent, isIgnoredFileSearchArtifact, resolveFileSearchProjectKey } from './file-search-db.js';
 import { markFileSearchProjectSeen } from './file-search-project-registry.js';
@@ -111,11 +111,38 @@ export type FileSearchIndexSeed =
 
 type FileSearchIndexedRow = FileSearchChunkRow & { searchText: string };
 
-type HotFileSearchVector = { vector: number[]; dimension: number };
+type HotFileSearchVector = { vector: ArrayLike<number>; dimension: number; rowIndex?: number };
+
+interface HotFileSearchBm25Row {
+  row: FileSearchIndexedRow;
+  rowIndex: number;
+  key: string;
+  docTokens: string[];
+  docLength: number;
+}
+
+interface HotFileSearchBm25Index {
+  sourceRows: FileSearchIndexedRow[];
+  rows: HotFileSearchBm25Row[];
+  rowByKey: Map<string, number>;
+  postings: Map<string, number[]>;
+  totalDocLength: number;
+  docFrequencies: Map<string, number>;
+}
+
+interface HotFileSearchVectorEntry {
+  row: FileSearchIndexedRow;
+  rowIndex: number;
+  key: string;
+  vector: ArrayLike<number>;
+  dimension: number;
+}
 
 interface HotFileSearchIndexSnapshot {
   rows: FileSearchIndexedRow[];
   vectors: Map<string, HotFileSearchVector>;
+  bm25?: HotFileSearchBm25Index;
+  vectorEntries?: HotFileSearchVectorEntry[];
   perLanguageCounts: Record<string, number>;
   indexedFiles: number;
   revision: number;
@@ -192,6 +219,7 @@ function loadAllChunks(db: NonNullable<NativeStore['fileSearchDb']>['db'], proje
 function loadReadyEmbeddingVectors(
   fileDb: NonNullable<NativeStore['fileSearchDb']>,
   projectKey: string,
+  rowByKey?: Map<string, number>,
 ): Map<string, HotFileSearchVector> {
   const vectors = new Map<string, HotFileSearchVector>();
   const rows = fileDb.db.prepare(`
@@ -216,16 +244,132 @@ function loadReadyEmbeddingVectors(
     dimension: number;
   }>;
   for (const row of rows) {
-    vectors.set(chunkKey({
+    const key = chunkKey({
       projectKey: row.project_key,
       filePath: row.path,
       chunkIndex: row.chunk_index,
-    }), {
-      vector: decodeEmbedding(row.embedding, row.dimension),
+    });
+    vectors.set(key, {
+      vector: Float32Array.from(decodeEmbedding(row.embedding, row.dimension)),
       dimension: row.dimension,
+      rowIndex: rowByKey?.get(key),
     });
   }
   return vectors;
+}
+
+function buildBm25Index(rows: FileSearchIndexedRow[]): HotFileSearchBm25Index {
+  const indexedRows: HotFileSearchBm25Row[] = [];
+  const rowByKey = new Map<string, number>();
+  const postings = new Map<string, number[]>();
+  const docFrequencies = new Map<string, number>();
+  let totalDocLength = 0;
+
+  rows.forEach((row, rowIndex) => {
+    const key = chunkKey(row);
+    const docTokens = tokenizeSearchQuery(row.searchText);
+    const contentTokenCount = tokenizeSearchQuery(row.content).length;
+    const docLength = contentTokenCount || docTokens.length;
+    indexedRows.push({ row, rowIndex, key, docTokens, docLength });
+    rowByKey.set(key, rowIndex);
+    totalDocLength += docLength;
+
+    const seen = new Set<string>();
+    for (const token of docTokens) {
+      let posting = postings.get(token);
+      if (!posting) {
+        posting = [];
+        postings.set(token, posting);
+      }
+      if (posting[posting.length - 1] !== rowIndex) posting.push(rowIndex);
+      if (!seen.has(token)) {
+        seen.add(token);
+        docFrequencies.set(token, (docFrequencies.get(token) ?? 0) + 1);
+      }
+    }
+  });
+
+  return {
+    sourceRows: rows,
+    rows: indexedRows,
+    rowByKey,
+    postings,
+    totalDocLength,
+    docFrequencies,
+  };
+}
+
+function ensureBm25Index(snapshot: HotFileSearchIndexSnapshot): HotFileSearchBm25Index {
+  if (!snapshot.bm25 || snapshot.bm25.sourceRows !== snapshot.rows) snapshot.bm25 = buildBm25Index(snapshot.rows);
+  return snapshot.bm25;
+}
+
+function buildVectorEntries(snapshot: HotFileSearchIndexSnapshot): HotFileSearchVectorEntry[] {
+  const bm25 = ensureBm25Index(snapshot);
+  const entries: HotFileSearchVectorEntry[] = [];
+  for (const [key, vector] of snapshot.vectors.entries()) {
+    const rowIndex = bm25.rowByKey.get(key) ?? vector.rowIndex;
+    if (rowIndex === undefined) continue;
+    const row = snapshot.rows[rowIndex];
+    if (!row) continue;
+    vector.rowIndex = rowIndex;
+    entries.push({ row, rowIndex, key, vector: vector.vector, dimension: vector.dimension });
+  }
+  entries.sort((a, b) => a.rowIndex - b.rowIndex);
+  return entries;
+}
+
+function ensureVectorEntries(snapshot: HotFileSearchIndexSnapshot): HotFileSearchVectorEntry[] {
+  if (!snapshot.vectorEntries || snapshot.vectorEntries.some((entry) => entry.row !== snapshot.rows[entry.rowIndex])) snapshot.vectorEntries = buildVectorEntries(snapshot);
+  return snapshot.vectorEntries;
+}
+
+function filterSnapshotRows(
+  snapshot: HotFileSearchIndexSnapshot,
+  options: FileSearchIndexSearchOptions | FileSearchIndexFindRelatedOptions,
+): FileSearchIndexedRow[] {
+  if (!options.filterLanguages?.length && !options.filterPaths?.length) return snapshot.rows;
+  return snapshot.rows.filter((row) => shouldIncludeRow(row, options));
+}
+
+function cosineSimilarityArrayLike(a: ArrayLike<number>, b: ArrayLike<number>): number {
+  const length = Math.min(a.length, b.length);
+  let dot = 0;
+  let magA = 0;
+  let magB = 0;
+  for (let i = 0; i < length; i += 1) {
+    const av = a[i] ?? 0;
+    const bv = b[i] ?? 0;
+    dot += av * bv;
+    magA += av * av;
+    magB += bv * bv;
+  }
+  if (!magA || !magB) return 0;
+  return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+}
+
+function toChunkRow(row: FileSearchIndexedRow): FileSearchChunkRow {
+  return {
+    projectKey: row.projectKey,
+    filePath: row.filePath,
+    content: row.content,
+    startLine: row.startLine,
+    endLine: row.endLine,
+    hasLineMetadata: row.hasLineMetadata,
+    chunkIndex: row.chunkIndex,
+    chunkHash: row.chunkHash,
+    language: row.language,
+    lexicalScore: row.lexicalScore,
+    semanticScore: row.semanticScore,
+    score: row.score,
+  };
+}
+
+function withScores(row: FileSearchIndexedRow, scores: Pick<FileSearchChunkRow, 'lexicalScore' | 'semanticScore' | 'score'>): FileSearchChunkRow {
+  return {
+    ...toChunkRow(row),
+    ...scores,
+  };
 }
 
 function queryLexicalBm25Rows(
@@ -234,39 +378,60 @@ function queryLexicalBm25Rows(
   limit: number,
   options: FileSearchIndexSearchOptions | FileSearchIndexFindRelatedOptions = {},
 ): FileSearchChunkRow[] {
+  return queryLexicalBm25Prepared(buildBm25Index(rows), query, limit, rows.filter((row) => shouldIncludeRow(row, options)));
+}
+
+function queryLexicalBm25Prepared(
+  bm25: HotFileSearchBm25Index,
+  query: string,
+  limit: number,
+  filteredRows: FileSearchIndexedRow[],
+): FileSearchChunkRow[] {
   const queryTokens = Array.from(new Set(tokenize(query)));
   if (!queryTokens.length) return [];
   const queryTerms = new Set(queryTokens);
-  const filteredRows = rows.filter((row) => shouldIncludeRow(row, options));
   if (!filteredRows.length) return [];
 
-  const candidates: Array<{ row: FileSearchIndexedRow; docLength: number; termFrequency: Map<string, number> }> = [];
-  const docFrequencies = new Map<string, number>();
-  let totalDocLength = 0;
+  const allRowsSelected = filteredRows === bm25.sourceRows;
+  const filteredIndexes = new Set<number>();
+  const docFrequencies = allRowsSelected ? bm25.docFrequencies : new Map<string, number>();
+  let totalDocLength = allRowsSelected ? bm25.totalDocLength : 0;
 
-  for (const row of filteredRows) {
-    const docTokens = tokenizeSearchQuery(row.searchText);
-    const contentTokenCount = tokenizeSearchQuery(row.content).length;
-    const docLength = contentTokenCount || docTokens.length;
-    totalDocLength += docLength;
-    const termFrequency = new Map<string, number>();
-    const seen = new Set<string>();
-    for (const token of docTokens) {
-      if (!queryTerms.has(token)) continue;
-      termFrequency.set(token, (termFrequency.get(token) ?? 0) + 1);
-      if (!seen.has(token)) {
-        seen.add(token);
-        docFrequencies.set(token, (docFrequencies.get(token) ?? 0) + 1);
+  if (!allRowsSelected) {
+    for (const row of filteredRows) {
+      const rowIndex = bm25.rowByKey.get(chunkKey(row));
+      if (rowIndex === undefined) continue;
+      filteredIndexes.add(rowIndex);
+      const bm25Row = bm25.rows[rowIndex];
+      if (!bm25Row) continue;
+      totalDocLength += bm25Row.docLength;
+      const seen = new Set<string>();
+      for (const token of bm25Row.docTokens) {
+        if (!queryTerms.has(token)) continue;
+        if (!seen.has(token)) {
+          seen.add(token);
+          docFrequencies.set(token, (docFrequencies.get(token) ?? 0) + 1);
+        }
       }
     }
-    if (termFrequency.size) candidates.push({ row, docLength, termFrequency });
   }
 
+  const candidateIndexes = new Set<number>();
+  for (const token of queryTokens) {
+    for (const rowIndex of bm25.postings.get(token) ?? []) {
+      if (allRowsSelected || filteredIndexes.has(rowIndex)) candidateIndexes.add(rowIndex);
+    }
+  }
+  const candidates = Array.from(candidateIndexes, (rowIndex) => bm25.rows[rowIndex]).filter((row): row is HotFileSearchBm25Row => Boolean(row));
   if (!candidates.length) return [];
   const averageDocLength = totalDocLength / filteredRows.length || 1;
   const totalDocs = filteredRows.length;
   const scored = candidates
-    .map(({ row, docLength, termFrequency }) => {
+    .map(({ row, docLength, docTokens }) => {
+      const termFrequency = new Map<string, number>();
+      for (const token of docTokens) {
+        if (queryTerms.has(token)) termFrequency.set(token, (termFrequency.get(token) ?? 0) + 1);
+      }
       let score = 0;
       for (const token of queryTokens) {
         const tf = termFrequency.get(token) ?? 0;
@@ -282,7 +447,7 @@ function queryLexicalBm25Rows(
     .filter((entry) => entry.score > 0)
     .sort((a, b) => b.score - a.score || a.row.filePath.localeCompare(b.row.filePath) || a.row.chunkIndex - b.row.chunkIndex)
     .slice(0, limit)
-    .map(({ row, score }) => ({ ...row, lexicalScore: score, score }));
+    .map(({ row, score }) => withScores(row, { lexicalScore: score, score }));
 
   return scored;
 }
@@ -302,23 +467,24 @@ async function querySemanticSnapshot(
   snapshot: HotFileSearchIndexSnapshot,
   query: string,
   limit: number,
-  options: FileSearchIndexSearchOptions | FileSearchIndexFindRelatedOptions = {},
+  filteredRows: FileSearchIndexedRow[],
 ): Promise<FileSearchChunkRow[]> {
   if (!fileDb.semanticSearchEnabled || snapshot.vectors.size <= 0) return [];
   const queryVector = await fileDb.embedQuery(query);
   if (!queryVector?.length) return [];
   const queryDimension = queryVector.length;
+  const includedIndexes = new Set<number>();
+  const bm25 = ensureBm25Index(snapshot);
+  for (const row of filteredRows) {
+    const rowIndex = bm25.rowByKey.get(chunkKey(row));
+    if (rowIndex !== undefined) includedIndexes.add(rowIndex);
+  }
   const scored: FileSearchChunkRow[] = [];
-  for (const row of snapshot.rows.filter((entry) => shouldIncludeRow(entry, options))) {
-      const vector = snapshot.vectors.get(chunkKey(row));
-      if (!vector || vector.dimension !== queryDimension) continue;
-      const semanticScore = cosineSimilarity(queryVector, vector.vector);
-      scored.push({
-        ...row,
-        semanticScore,
-        score: semanticScore,
-      });
-    }
+  for (const entry of ensureVectorEntries(snapshot)) {
+    if (!includedIndexes.has(entry.rowIndex) || entry.dimension !== queryDimension) continue;
+    const semanticScore = cosineSimilarityArrayLike(queryVector, entry.vector);
+    scored.push(withScores(entry.row, { semanticScore, score: semanticScore }));
+  }
   return scored
     .sort((a, b) => (b.semanticScore ?? 0) - (a.semanticScore ?? 0) || a.filePath.localeCompare(b.filePath) || a.chunkIndex - b.chunkIndex)
     .slice(0, limit);
@@ -341,10 +507,11 @@ function blendHits(
   semanticRows: FileSearchChunkRow[],
   limit: number,
   query: string,
-  allRows: FileSearchChunkRow[],
   alpha: number,
+  allRows: FileSearchChunkRow[],
 ): FileSearchChunkRow[] {
-  const candidateRows = candidateScoreMap([...bm25Rows, ...semanticRows, ...allRows]);
+  const candidateRows = candidateScoreMap([...bm25Rows, ...semanticRows]);
+  const allChunkRows = candidateScoreMap(allRows);
   const bm25Scores = normalizeRrf(new Map(bm25Rows.map((row) => [chunkKey(row), row.lexicalScore ?? row.score ?? 0])));
   const semanticScores = normalizeRrf(new Map(semanticRows.map((row) => [chunkKey(row), row.semanticScore ?? row.score ?? 0])));
   const combinedScores = new Map<string, number>();
@@ -354,7 +521,7 @@ function blendHits(
   }
 
   boostMultiChunkFiles(combinedScores, candidateRows);
-  const boostedScores = applyQueryBoost(combinedScores, query, candidateRows);
+  const boostedScores = applyQueryBoost(combinedScores, query, candidateRows, allChunkRows);
   const ranked = rerankTopK(boostedScores, candidateRows, limit, alpha < 1.0, query);
   return ranked.map((entry) => ({ ...entry.chunk, score: entry.score }));
 }
@@ -579,12 +746,15 @@ export class FileSearchIndex {
     this.hotState = 'hydrating';
     try {
       const rows = loadAllChunks(fileDb.db, this.projectKey);
-      const vectors = loadReadyEmbeddingVectors(fileDb, this.projectKey);
+      const bm25 = buildBm25Index(rows);
+      const vectors = loadReadyEmbeddingVectors(fileDb, this.projectKey, bm25.rowByKey);
       const hydrateMs = performance.now() - startedAt;
       const hydratedAt = new Date().toISOString();
-      this.snapshot = {
+      const snapshot: HotFileSearchIndexSnapshot = {
         rows,
         vectors,
+        bm25,
+        vectorEntries: [],
         perLanguageCounts: projectLanguageCounts(rows),
         indexedFiles: (fileDb.db.prepare('SELECT COUNT(*) AS count FROM indexed_files WHERE project_key = ?').get(this.projectKey) as { count: number }).count,
         revision: fileDb.indexRevision,
@@ -593,6 +763,8 @@ export class FileSearchIndex {
         hydratedAt,
         hydrateMs,
       };
+      snapshot.vectorEntries = buildVectorEntries(snapshot);
+      this.snapshot = snapshot;
       this.hydrateCount += 1;
       this.buildCount += 1;
       this.lastHydratedAt = hydratedAt;
@@ -656,21 +828,21 @@ export class FileSearchIndex {
     const snapshot = this.hydrate();
     if (!snapshot) return [];
     const overFetch = mode === 'hybrid' ? limit * 5 : limit;
-    const lexicalRows = queryLexicalBm25Rows(snapshot.rows, query, overFetch, options);
+    const filteredRows = filterSnapshotRows(snapshot, options);
+    const lexicalRows = queryLexicalBm25Prepared(ensureBm25Index(snapshot), query, overFetch, filteredRows);
     const safeLexicalRows = lexicalRows.filter(isSafeFileSearchRow);
     if (mode === 'bm25') return safeLexicalRows.slice(0, limit).map((row) => buildHit(row, 'bm25'));
     if (mode === 'semantic') {
-      const semanticRows = await querySemanticSnapshot(fileDb, snapshot, query, overFetch, options);
+      const semanticRows = await querySemanticSnapshot(fileDb, snapshot, query, overFetch, filteredRows);
       return semanticRows.filter(isSafeFileSearchRow).slice(0, limit).map((row) => buildHit(row, 'semantic'));
     }
 
-    const semanticRows = await querySemanticSnapshot(fileDb, snapshot, query, overFetch, options);
+    const semanticRows = await querySemanticSnapshot(fileDb, snapshot, query, overFetch, filteredRows);
     const safeSemanticRows = semanticRows.filter(isSafeFileSearchRow);
     if (!safeSemanticRows.length) return safeLexicalRows.slice(0, limit).map((row) => buildHit(row, 'bm25'));
 
-    const allRows = snapshot.rows.filter((row) => shouldIncludeRow(row, options));
     const alpha = resolveAlpha(query, options.alpha);
-    const blended = blendHits(safeLexicalRows, safeSemanticRows, limit, query, allRows, alpha);
+    const blended = blendHits(safeLexicalRows, safeSemanticRows, limit, query, alpha, filteredRows);
     return (blended.length ? blended : safeSemanticRows.slice(0, limit)).map((row) => buildHit(row, 'hybrid'));
   }
 
@@ -681,16 +853,17 @@ export class FileSearchIndex {
     markFileSearchProjectSeen(fileDb.db, this.projectBaseDir, 'manual-search');
     const snapshot = this.hydrate();
     if (!snapshot) return [];
-    const allRows = snapshot.rows.filter((row) => shouldIncludeRow(row, options));
+    const allRows = filterSnapshotRows(snapshot, options);
     const seed = findSourceChunk(allRows, source);
     if (!seed) return [];
 
     const seedLanguage = seed.language ?? inferFileSearchLanguage(seed.filePath);
     const candidateCount = Math.max(2, topK * 5);
-    const semanticRows = await querySemanticSnapshot(fileDb, snapshot, seed.content, candidateCount, {
+    const semanticFilteredRows = filterSnapshotRows(snapshot, {
       ...options,
       ...(seedLanguage ? { filterLanguages: [...new Set([...(options.filterLanguages ?? []), seedLanguage])] } : {}),
     });
+    const semanticRows = await querySemanticSnapshot(fileDb, snapshot, seed.content, candidateCount, semanticFilteredRows);
     const safeSemanticRows = semanticRows
       .filter(isSafeFileSearchRow)
       .filter((row) => row.filePath !== seed.filePath || row.chunkIndex !== seed.chunkIndex);

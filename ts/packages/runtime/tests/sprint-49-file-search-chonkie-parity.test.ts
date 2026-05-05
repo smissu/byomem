@@ -1,6 +1,9 @@
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 const runtimeSourcePath = fileURLToPath(new URL('../src/file-search-semble.ts', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -52,12 +55,45 @@ function runParityProbe(filePath: string, content: string): { expected: ChunkSum
   return JSON.parse(stdout) as { expected: ChunkSummary[]; actual: ChunkSummary[] };
 }
 
+function runProjectCwdProbe(projectDir: string, filePath: string, content: string): { source?: string; fallbackReason?: string | null; count: number } {
+  const payload = JSON.stringify({ projectDir, filePath, content });
+  const command = `node <<'NODE'\nconst payload = ${payload};\nprocess.chdir(payload.projectDir);\nconst { chunkFileContentReady } = await import(${JSON.stringify(runtimeSourcePath)});\nconst result = await chunkFileContentReady(payload.filePath, payload.content);\nprocess.stdout.write(JSON.stringify({\n  source: result.chunker.source,\n  fallbackReason: result.chunker.fallbackReason,\n  count: result.chunks.length,\n}));\nNODE`;
+  const stdout = execFileSync('/bin/bash', ['-lc', command], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PWD: repoRoot,
+    },
+  });
+  return JSON.parse(stdout) as { source?: string; fallbackReason?: string | null; count: number };
+}
+
 describe('Sprint 49 chunking parity', () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+  });
+
   it('matches Chonkie CodeChunker output for code-aware TypeScript files', () => {
     const content = buildFixture();
     const { expected, actual } = runParityProbe('fixture.ts', content);
 
     expect(expected.length).toBeGreaterThan(1);
     expect(actual).toEqual(expected);
+  });
+
+  it('uses runtime-local Chonkie WASM when imported from another active project cwd', () => {
+    const projectDir = mkdtempSync(join(tmpdir(), 'byomem-s49-project-cwd-'));
+    dirs.push(projectDir);
+
+    const result = runProjectCwdProbe(projectDir, 'fixture.ts', buildFixture());
+
+    expect(result).toEqual({
+      source: 'chonkie',
+      fallbackReason: null,
+      count: 2,
+    });
   });
 });
