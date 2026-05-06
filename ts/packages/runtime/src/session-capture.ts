@@ -81,6 +81,24 @@ const ROLLUP_SYSTEM_PROMPT = [
   'Keep concrete facts: files, functions, models, errors, decisions, and next steps.',
   'Do not add markdown headings or code fences.',
 ].join(' ');
+const RAW_TOOL_TRACE_MARKER_PATTERN = /["']?(?:tool_call|tool_result|toolCall|toolResult)["']?\s*:\s*/;
+const SENSITIVE_CAPTURE_FIELD_PATTERN = /\b(?:thinkingSignature|textSignature|encrypted_content|encryptedContent)\b/g;
+const SENSITIVE_CAPTURE_JSON_FIELD_PATTERN = /["'](?:thinkingSignature|textSignature|encrypted_content|encryptedContent)["']\s*:\s*(?:"[^"]*"|'[^']*'|[{[][\s\S]*?[}\]]|true\b|false\b|null\b|-?\d+(?:\.\d+)?)/g;
+
+function stripRawToolTraceText(value: string): string {
+  return value.split(/\r?\n/).map((line) => {
+    const markerIndex = line.search(RAW_TOOL_TRACE_MARKER_PATTERN);
+    if (markerIndex < 0) return line;
+    const prefix = line.slice(0, markerIndex).trimEnd();
+    return prefix ? `${prefix} [REDACTED TOOL TRACE]` : '[REDACTED TOOL TRACE]';
+  }).join('\n');
+}
+
+function sanitizeCaptureText(value: string): string {
+  return stripRawToolTraceText(value)
+    .replace(SENSITIVE_CAPTURE_JSON_FIELD_PATTERN, '[REDACTED]')
+    .replace(SENSITIVE_CAPTURE_FIELD_PATTERN, '[REDACTED]');
+}
 
 function statePath(baseDir: string): string {
   return resolve(baseDir, 'queue', SESSION_CAPTURE_STATE_FILE);
@@ -154,12 +172,12 @@ function eventMessageTimestamp(msg: Record<string, unknown>): string {
 function eventText(msg: Record<string, unknown>): string {
   const message = eventMessage(msg);
   const content = message.content;
-  if (typeof content === 'string') return content;
+  if (typeof content === 'string') return sanitizeCaptureText(content);
   if (Array.isArray(content)) {
-    return content
+    return sanitizeCaptureText(content
       .filter((item) => item && typeof item === 'object' && (item as Record<string, unknown>).type === 'text')
       .map((item) => String((item as Record<string, unknown>).text ?? ''))
-      .join(' ');
+      .join(' '));
   }
   return '';
 }
@@ -249,11 +267,11 @@ function parseSimpleTranscriptTurns(text: string): SessionTurn[] {
   for (const line of lines) {
     if (line.startsWith('user:')) {
       flush();
-      activeUser = line.slice('user:'.length).trim();
+      activeUser = sanitizeCaptureText(line.slice('user:'.length).trim());
       continue;
     }
     if (line.startsWith('assistant:')) {
-      assistantParts.push(line.slice('assistant:'.length).trim());
+      assistantParts.push(sanitizeCaptureText(line.slice('assistant:'.length).trim()));
     }
   }
   flush();
@@ -291,8 +309,8 @@ function isLargeTurn(turn: SessionTurn, threshold: number): boolean {
 function summarizeTurnsPrompt(request: SessionCaptureSummaryRequest): string {
   const body = request.turns.map((turn, index) => [
     `Turn ${index + 1} (${turn.id}):`,
-    `User: ${turn.user}`,
-    `Assistant: ${turn.assistant}`,
+    `User: ${sanitizeCaptureText(turn.user)}`,
+    `Assistant: ${sanitizeCaptureText(turn.assistant)}`,
   ].join('\n')).join('\n\n');
 
   return [
@@ -316,7 +334,7 @@ async function generateRollupSummary(options: SessionCaptureOptions, request: Se
 }
 
 function summarizeFallback(turns: SessionTurn[]): string {
-  return turns.map((turn, index) => `- ${index + 1}. ${turn.user} => ${turn.assistant}`).join('\n').slice(0, 1600);
+  return sanitizeCaptureText(turns.map((turn, index) => `- ${index + 1}. ${turn.user} => ${turn.assistant}`).join('\n')).slice(0, 1600);
 }
 
 function determineFlushReason(input: SessionCaptureInput, pendingTurns: SessionTurn[], options: SessionCaptureOptions): SessionCaptureReason | undefined {
@@ -410,13 +428,13 @@ export async function captureSessionCheckpoint(store: NativeStore, options: Sess
     return { checkpoint: [], record: undefined as never, rollup: undefined, pendingTurns: pendingTurns.length, checkpointOffset: endOffset, reason: 'checkpointed' };
   }
 
-  const summary = (await generateRollupSummary(options, {
+  const summary = sanitizeCaptureText((await generateRollupSummary(options, {
     sessionId: input.sessionId,
     turns: pendingTurns,
     agent: input.agent,
     model: input.model,
     event: input.event,
-  }).catch(() => summarizeFallback(pendingTurns))) || summarizeFallback(pendingTurns);
+  }).catch(() => summarizeFallback(pendingTurns))) || summarizeFallback(pendingTurns));
 
   const rollupIntent = buildSessionRollupIntent(input, summary, pendingTurns, reason);
   const rollup = await queueRuntime.write(rollupIntent);

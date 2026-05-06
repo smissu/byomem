@@ -5,9 +5,12 @@ import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import type { MemoryRecord, MemoryScope, WriteIntent } from './contracts.js';
 import { normalizeIdentity, normalizeStableKey } from './identity.js';
 import { normalizeRecord, normalizeWriteIntent } from './normalizers.js';
-import { openEmbeddingClient, type EmbeddingClient } from './embedding-client.js';
+import { MEMORY_SEARCH_EMBEDDING_IDENTITY_VERSION, SEMBLE_EMBEDDING_MODEL, openEmbeddingClient, type EmbeddingClient } from './embedding-client.js';
 import { DEFAULT_EMBEDDING_DIMENSION, cosineSimilarity, decodeEmbedding, encodeEmbedding, truncateEmbeddingText } from './embedding-vector.js';
+import { buildMemorySearchIndexForSidecar } from './memory-search-index.js';
 
+
+export type MemorySearchMode = 'bm25' | 'semantic' | 'hybrid';
 
 export interface SqliteSidecarOptions {
   baseDir: string;
@@ -23,11 +26,46 @@ export interface SqliteSidecarOwner {
   readonly kind: 'native-store';
 }
 
+export interface MemoryEmbeddingDiagnostics {
+  enabled: boolean;
+  state: 'ready' | 'refresh-needed' | 'failed';
+  refreshNeeded: boolean;
+  providerKey: string;
+  model: string;
+  configuredDimension: number;
+  identityVersion: typeof MEMORY_SEARCH_EMBEDDING_IDENTITY_VERSION;
+  actualDimensions: Array<{ dimension: number; records: number }>;
+  totalRecords: number;
+  readyRecords: number;
+  missingRecords: number;
+  incompatibleRecords: number;
+  staleRecords: number;
+  failedRecords: number;
+  failures: number;
+}
+
+export interface MemorySemanticRefreshResult {
+  attempted: boolean;
+  reason?: 'already-ready';
+  limit?: number;
+  refreshedRecords: number;
+  failedRecords: number;
+  diagnostics: MemoryEmbeddingDiagnostics;
+}
+
 
 export interface SqliteSidecarReader {
   read(id: string): MemoryRecord | undefined;
   list(): MemoryRecord[];
-  search(query: string, scope?: MemoryScope, limit?: number): Promise<MemoryRecord[]>;
+  search(query: string, scope?: MemoryScope, limit?: number, mode?: MemorySearchMode): Promise<MemoryRecord[]>;
+  readonly indexRevision: number;
+  readonly semanticSearchEnabled: boolean;
+  readonly embeddingModel: string;
+  readonly embeddingConfiguredDimension: number;
+  readonly embeddingProviderKey: string;
+  embedQuery(text: string): Promise<number[] | undefined>;
+  getEmbeddingDiagnostics(): MemoryEmbeddingDiagnostics;
+  refreshSemanticIndex(options?: { limit?: number; concurrency?: number }): Promise<MemorySemanticRefreshResult>;
   close(): void;
   path: string;
   db: BetterSqliteDatabase;
@@ -35,6 +73,7 @@ export interface SqliteSidecarReader {
 
 export interface SqliteSidecarMutator {
   syncWrite(intent: WriteIntent, owner: SqliteSidecarOwner): Promise<MemoryRecord>;
+  syncImport(records: MemoryRecord[], owner: SqliteSidecarOwner): void;
   syncPrune(id: string, owner: SqliteSidecarOwner): MemoryRecord | undefined;
 }
 
@@ -53,6 +92,11 @@ function assertOwner(owner: SqliteSidecarOwner | undefined): asserts owner is Sq
 
 function resolveDbPath(options: SqliteSidecarOptions): string {
   return resolve(options.baseDir, options.dbFile ?? 'byomem-index.sqlite');
+}
+
+function ensureColumn(db: BetterSqliteDatabase, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!columns.some((entry) => entry.name === column)) db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
 }
 
 function ensureSchema(db: BetterSqliteDatabase): void {
@@ -75,13 +119,72 @@ function ensureSchema(db: BetterSqliteDatabase): void {
       updated_at TEXT NOT NULL
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(id UNINDEXED, scope UNINDEXED, namespace, leaf_name, parent_context, content_text, content_structured, tokenize = 'unicode61');
-    CREATE TABLE IF NOT EXISTS embedding_cache (text_hash TEXT PRIMARY KEY, embedding BLOB NOT NULL, model TEXT NOT NULL, dimension INTEGER NOT NULL, updated_at TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS record_embeddings (record_id TEXT PRIMARY KEY, text_hash TEXT NOT NULL, embedding BLOB NOT NULL, model TEXT NOT NULL, dimension INTEGER NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(record_id) REFERENCES records(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS embedding_cache (
+      text_hash TEXT PRIMARY KEY,
+      embedding BLOB NOT NULL,
+      model TEXT NOT NULL,
+      dimension INTEGER NOT NULL,
+      updated_at TEXT NOT NULL,
+      provider_key TEXT NOT NULL DEFAULT '',
+      configured_dimension INTEGER NOT NULL DEFAULT 0,
+      identity_version TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'ready'
+    );
+    CREATE TABLE IF NOT EXISTS record_embeddings (
+      record_id TEXT PRIMARY KEY,
+      text_hash TEXT NOT NULL,
+      content_hash TEXT NOT NULL DEFAULT '',
+      embedding BLOB NOT NULL,
+      model TEXT NOT NULL,
+      configured_dimension INTEGER NOT NULL DEFAULT 0,
+      dimension INTEGER NOT NULL,
+      provider_key TEXT NOT NULL DEFAULT '',
+      identity_version TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'ready',
+      error TEXT,
+      failed_at TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(record_id) REFERENCES records(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS memory_search_index_revisions (
+      key TEXT PRIMARY KEY CHECK (key = 'memory'),
+      revision INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    INSERT OR IGNORE INTO memory_search_index_revisions (key, revision, updated_at) VALUES ('memory', 0, datetime('now'));
   `);
+  ensureColumn(db, 'embedding_cache', 'provider_key', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'embedding_cache', 'configured_dimension', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'embedding_cache', 'identity_version', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'embedding_cache', 'status', "TEXT NOT NULL DEFAULT 'ready'");
+  ensureColumn(db, 'record_embeddings', 'content_hash', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'record_embeddings', 'provider_key', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'record_embeddings', 'configured_dimension', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'record_embeddings', 'identity_version', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'record_embeddings', 'status', "TEXT NOT NULL DEFAULT 'ready'");
+  ensureColumn(db, 'record_embeddings', 'error', 'TEXT');
+  ensureColumn(db, 'record_embeddings', 'failed_at', 'TEXT');
 }
 
 function recordText(record: MemoryRecord): string {
   return [record.id, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? '', record.content.text ?? '', JSON.stringify(record.content.structured ?? {})].join(' ');
+}
+
+function embeddingModel(options: SqliteSidecarOptions): string {
+  return options.embeddingModel ?? SEMBLE_EMBEDDING_MODEL;
+}
+
+function embeddingConfiguredDimension(options: SqliteSidecarOptions): number {
+  return options.embeddingDimension ?? 0;
+}
+
+function embeddingClientDimension(options: SqliteSidecarOptions): number {
+  if (options.embeddingDimension !== undefined) return options.embeddingDimension;
+  return embeddingModel(options) === SEMBLE_EMBEDDING_MODEL ? 256 : DEFAULT_DIMENSION;
+}
+
+function compatibleDimension(rowDimension: number, configuredDimension: number): boolean {
+  return configuredDimension === 0 || rowDimension === configuredDimension;
 }
 
 function normalizeFtsQuery(query: string): string {
@@ -105,10 +208,12 @@ export function openSqliteSidecarBundle(options: SqliteSidecarOptions): { sideca
   const filePath = resolveDbPath(options);
   mkdirSync(dirname(filePath), { recursive: true });
   const db = new Database(filePath);
+  const model = embeddingModel(options);
+  const configuredDimension = embeddingConfiguredDimension(options);
   const embeddingClient: EmbeddingClient = openEmbeddingClient({
     baseUrl: options.embeddingBaseUrl,
-    model: options.embeddingModel,
-    dimension: options.embeddingDimension ?? DEFAULT_DIMENSION,
+    model,
+    dimension: embeddingClientDimension(options),
     timeoutMs: options.embeddingTimeoutMs,
     requireRemote: options.embeddingRequireRemote,
   });
@@ -116,20 +221,22 @@ export function openSqliteSidecarBundle(options: SqliteSidecarOptions): { sideca
   const selectRecord = db.prepare(`SELECT * FROM records WHERE id = ?`);
   const listRecordsStmt = db.prepare(`SELECT * FROM records ORDER BY id`);
   const searchStmt = db.prepare(`SELECT r.* FROM records_fts f JOIN records r ON r.id = f.id WHERE records_fts MATCH ? AND (? IS NULL OR r.scope = ?) ORDER BY bm25(records_fts) LIMIT ?`);
-  const semanticCandidatesStmt = db.prepare(`SELECT r.*, re.embedding, re.dimension FROM record_embeddings re JOIN records r ON r.id = re.record_id WHERE (? IS NULL OR r.scope = ?)`);
+  const semanticCandidatesStmt = db.prepare(`SELECT r.*, re.embedding, re.dimension FROM record_embeddings re JOIN records r ON r.id = re.record_id WHERE (? IS NULL OR r.scope = ?) AND re.provider_key = ? AND re.model = ? AND re.configured_dimension = ? AND re.status = 'ready' AND re.identity_version = ? AND re.content_hash = re.text_hash`);
   const upsertRecordStmt = db.prepare(`INSERT INTO records (id, scope, namespace, leaf_name, parent_context, provenance_source, provenance_timestamp, provenance_adapter, provenance_origin, content_text, content_structured, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET scope = excluded.scope, namespace = excluded.namespace, leaf_name = excluded.leaf_name, parent_context = excluded.parent_context, provenance_source = excluded.provenance_source, provenance_timestamp = excluded.provenance_timestamp, provenance_adapter = excluded.provenance_adapter, provenance_origin = excluded.provenance_origin, content_text = excluded.content_text, content_structured = excluded.content_structured, updated_at = excluded.updated_at`);
   const deleteFtsStmt = db.prepare(`DELETE FROM records_fts WHERE id = ?`);
   const deleteEmbeddingStmt = db.prepare(`DELETE FROM record_embeddings WHERE record_id = ?`);
   const deleteRecordStmt = db.prepare(`DELETE FROM records WHERE id = ?`);
-  const cacheSelectStmt = db.prepare(`SELECT embedding, model, dimension FROM embedding_cache WHERE text_hash = ?`);
-  const cacheUpsertStmt = db.prepare(`INSERT OR REPLACE INTO embedding_cache (text_hash, embedding, model, dimension, updated_at) VALUES (?, ?, ?, ?, ?) `);
-  const recordEmbeddingUpsertStmt = db.prepare(`INSERT OR REPLACE INTO record_embeddings (record_id, text_hash, embedding, model, dimension, updated_at) VALUES (?, ?, ?, ?, ?, ?) `);
+  const cacheSelectStmt = db.prepare(`SELECT embedding, model, dimension FROM embedding_cache WHERE text_hash = ? AND provider_key = ? AND model = ? AND configured_dimension = ? AND identity_version = ? AND status = 'ready'`);
+  const cacheUpsertStmt = db.prepare(`INSERT OR REPLACE INTO embedding_cache (text_hash, embedding, model, configured_dimension, dimension, provider_key, identity_version, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?) `);
+  const recordEmbeddingUpsertStmt = db.prepare(`INSERT OR REPLACE INTO record_embeddings (record_id, text_hash, content_hash, embedding, model, configured_dimension, dimension, provider_key, identity_version, status, error, failed_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', NULL, NULL, ?) `);
+  const recordEmbeddingFailedUpsertStmt = db.prepare(`INSERT OR REPLACE INTO record_embeddings (record_id, text_hash, content_hash, embedding, model, configured_dimension, dimension, provider_key, identity_version, status, error, failed_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 'failed', ?, ?, ?) `);
   const upsertFtsStmt = db.prepare(`INSERT INTO records_fts (id, scope, namespace, leaf_name, parent_context, content_text, content_structured) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  const revisionStmt = db.prepare(`SELECT revision FROM memory_search_index_revisions WHERE key = 'memory'`);
 
   async function resolveEmbeddingData(text: string): Promise<{ textHash: string; embedding: Buffer; model: string; dimension: number; updatedAt: string; cacheMiss: boolean } | undefined> {
     const embeddingText = truncateEmbeddingText(text);
     const textHash = embeddingClient.hashText(embeddingText);
-    const cached = cacheSelectStmt.get(textHash) as { embedding: Buffer; model: string; dimension: number } | undefined;
+    const cached = cacheSelectStmt.get(textHash, embeddingClient.providerKey, model, configuredDimension, MEMORY_SEARCH_EMBEDDING_IDENTITY_VERSION) as { embedding: Buffer; model: string; dimension: number } | undefined;
     const now = new Date().toISOString();
     if (cached) {
       const vector = decodeEmbedding(cached.embedding, cached.dimension);
@@ -141,11 +248,26 @@ export function openSqliteSidecarBundle(options: SqliteSidecarOptions): { sideca
     return {
       textHash,
       embedding: encodeEmbedding(vector),
-      model: options.embeddingModel ?? 'nomic-embed-text',
+      model,
       dimension: vector.length,
       updatedAt: now,
       cacheMiss: true,
     };
+  }
+
+  function readIndexRevision(): number {
+    const row = revisionStmt.get() as { revision?: number } | undefined;
+    return typeof row?.revision === 'number' ? row.revision : 0;
+  }
+
+  function bumpIndexRevision(): number {
+    const next = readIndexRevision() + 1;
+    db.prepare(`
+      INSERT INTO memory_search_index_revisions (key, revision, updated_at)
+      VALUES ('memory', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET revision = excluded.revision, updated_at = excluded.updated_at
+    `).run(next, new Date().toISOString());
+    return next;
   }
 
   function semanticQueryVector(query: string): Promise<number[] | undefined> {
@@ -167,8 +289,9 @@ export function openSqliteSidecarBundle(options: SqliteSidecarOptions): { sideca
   async function semanticSearch(query: string, scope: MemoryScope, limit: number): Promise<Array<{ record: MemoryRecord; score: number }>> {
     const queryVector = await semanticQueryVector(query);
     if (!queryVector?.length) return [];
-    const rows = semanticCandidatesStmt.all(scope ?? null, scope ?? null) as Array<{ id: string; scope: string; namespace: string; leaf_name: string; parent_context: string; provenance_source: string; provenance_timestamp: string | null; provenance_adapter: string | null; provenance_origin: string | null; content_text: string | null; content_structured: string | null; created_at: string; updated_at: string; embedding: Buffer; dimension: number }>;
+    const rows = semanticCandidatesStmt.all(scope ?? null, scope ?? null, embeddingClient.providerKey, model, configuredDimension, MEMORY_SEARCH_EMBEDDING_IDENTITY_VERSION) as Array<{ id: string; scope: string; namespace: string; leaf_name: string; parent_context: string; provenance_source: string; provenance_timestamp: string | null; provenance_adapter: string | null; provenance_origin: string | null; content_text: string | null; content_structured: string | null; created_at: string; updated_at: string; embedding: Buffer; dimension: number }>;
     return rows
+      .filter((row) => compatibleDimension(row.dimension, configuredDimension) && row.dimension === queryVector.length)
       .map((row) => ({ record: loadRecord(row), score: cosineSimilarity(queryVector, decodeEmbedding(row.embedding, row.dimension)) }))
       .filter((entry) => entry.score >= 0.35)
       .sort((a, b) => b.score - a.score || a.record.id.localeCompare(b.record.id))
@@ -213,9 +336,147 @@ export function openSqliteSidecarBundle(options: SqliteSidecarOptions): { sideca
     return semantic.filter((entry) => entry.score >= 0.5).slice(0, limit).map((entry) => entry.record);
   }
 
+  function classifyEmbeddingRecords(): {
+    diagnostics: MemoryEmbeddingDiagnostics;
+    refreshRecords: MemoryRecord[];
+  } {
+    const records = (listRecordsStmt.all() as ReturnType<typeof loadRecord>[]).map((row) => loadRecord(row as never));
+    const dimensionCounts = new Map<number, number>();
+    const refreshRecords: MemoryRecord[] = [];
+    let readyRecords = 0;
+    let missingRecords = 0;
+    let incompatibleRecords = 0;
+    let staleRecords = 0;
+    let failedRecords = 0;
+    let failures = 0;
+
+    for (const record of records) {
+      const currentTextHash = embeddingClient.hashText(truncateEmbeddingText(recordText(record)));
+      const rows = db.prepare('SELECT text_hash, content_hash, model, configured_dimension, dimension, provider_key, identity_version, status FROM record_embeddings WHERE record_id = ?').all(record.id) as Array<{
+        text_hash: string;
+        content_hash?: string;
+        model: string;
+        configured_dimension?: number;
+        dimension: number;
+        provider_key?: string;
+        identity_version?: string;
+        status: string;
+      }>;
+      if (!rows.length) {
+        missingRecords += 1;
+        refreshRecords.push(record);
+        continue;
+      }
+      const ready = rows.find((row) => row.status === 'ready'
+        && row.provider_key === embeddingClient.providerKey
+        && row.model === model
+        && row.configured_dimension === configuredDimension
+        && row.identity_version === MEMORY_SEARCH_EMBEDDING_IDENTITY_VERSION
+        && compatibleDimension(row.dimension, configuredDimension)
+        && row.text_hash === currentTextHash
+        && (row.content_hash || row.text_hash) === currentTextHash);
+      if (ready) {
+        readyRecords += 1;
+        dimensionCounts.set(ready.dimension, (dimensionCounts.get(ready.dimension) ?? 0) + 1);
+        continue;
+      }
+      const currentIdentityRows = rows.filter((row) => row.provider_key === embeddingClient.providerKey
+        && row.model === model
+        && row.configured_dimension === configuredDimension
+        && row.identity_version === MEMORY_SEARCH_EMBEDDING_IDENTITY_VERSION);
+      if (currentIdentityRows.some((row) => row.status === 'failed')) {
+        failedRecords += 1;
+        failures += 1;
+      } else if (currentIdentityRows.some((row) => row.text_hash !== currentTextHash || (row.content_hash || row.text_hash) !== currentTextHash)) {
+        staleRecords += 1;
+      } else {
+        incompatibleRecords += 1;
+      }
+      refreshRecords.push(record);
+    }
+
+    const refreshNeeded = refreshRecords.length > 0;
+    return {
+      refreshRecords,
+      diagnostics: {
+        enabled: true,
+        state: failures > 0 ? 'failed' : refreshNeeded ? 'refresh-needed' : 'ready',
+        refreshNeeded,
+        providerKey: embeddingClient.providerKey,
+        model,
+        configuredDimension,
+        identityVersion: MEMORY_SEARCH_EMBEDDING_IDENTITY_VERSION,
+        actualDimensions: [...dimensionCounts.entries()].sort((a, b) => a[0] - b[0]).map(([dimension, records]) => ({ dimension, records })),
+        totalRecords: records.length,
+        readyRecords,
+        missingRecords,
+        incompatibleRecords,
+        staleRecords,
+        failedRecords,
+        failures,
+      },
+    };
+  }
+
+  async function refreshSemanticIndex(options: { limit?: number; concurrency?: number } = {}): Promise<MemorySemanticRefreshResult> {
+    void options.concurrency;
+    const before = classifyEmbeddingRecords();
+    if (!before.refreshRecords.length) {
+      return { attempted: false, reason: 'already-ready', refreshedRecords: 0, failedRecords: 0, diagnostics: before.diagnostics };
+    }
+    const limit = Math.max(1, options.limit ?? before.refreshRecords.length);
+    let refreshedRecords = 0;
+    let failedRecords = 0;
+    for (const record of before.refreshRecords.slice(0, limit)) {
+      const text = recordText(record);
+      const contentHash = embeddingClient.hashText(truncateEmbeddingText(text));
+      try {
+        const embedding = await resolveEmbeddingData(text);
+        if (!embedding) throw new Error('No embedding returned for memory record');
+        db.transaction(() => {
+          if (embedding.cacheMiss) cacheUpsertStmt.run(embedding.textHash, embedding.embedding, embedding.model, configuredDimension, embedding.dimension, embeddingClient.providerKey, MEMORY_SEARCH_EMBEDDING_IDENTITY_VERSION, embedding.updatedAt);
+          recordEmbeddingUpsertStmt.run(record.id, embedding.textHash, contentHash, embedding.embedding, embedding.model, configuredDimension, embedding.dimension, embeddingClient.providerKey, MEMORY_SEARCH_EMBEDDING_IDENTITY_VERSION, embedding.updatedAt);
+          bumpIndexRevision();
+        })();
+        refreshedRecords += 1;
+      } catch (error) {
+        const now = new Date().toISOString();
+        const message = error instanceof Error ? error.message : String(error);
+        db.transaction(() => {
+          recordEmbeddingFailedUpsertStmt.run(record.id, contentHash, contentHash, Buffer.alloc(0), model, configuredDimension, embeddingClient.providerKey, MEMORY_SEARCH_EMBEDDING_IDENTITY_VERSION, message, now, now);
+          bumpIndexRevision();
+        })();
+        failedRecords += 1;
+      }
+    }
+    return { attempted: true, limit, refreshedRecords, failedRecords, diagnostics: classifyEmbeddingRecords().diagnostics };
+  }
+
   const sidecar: SqliteSidecar = {
     path: filePath,
     db,
+    get indexRevision(): number {
+      return readIndexRevision();
+    },
+    get semanticSearchEnabled(): boolean {
+      return true;
+    },
+    get embeddingModel(): string {
+      return model;
+    },
+    get embeddingConfiguredDimension(): number {
+      return configuredDimension;
+    },
+    get embeddingProviderKey(): string {
+      return embeddingClient.providerKey;
+    },
+    embedQuery(text: string): Promise<number[] | undefined> {
+      return semanticQueryVector(text);
+    },
+    getEmbeddingDiagnostics(): MemoryEmbeddingDiagnostics {
+      return classifyEmbeddingRecords().diagnostics;
+    },
+    refreshSemanticIndex,
     read(id: string): MemoryRecord | undefined {
       const row = selectRecord.get(id) as ReturnType<typeof loadRecord> | undefined;
       return row ? loadRecord(row as never) : undefined;
@@ -223,20 +484,29 @@ export function openSqliteSidecarBundle(options: SqliteSidecarOptions): { sideca
     list(): MemoryRecord[] {
       return (listRecordsStmt.all() as ReturnType<typeof loadRecord>[]).map((row) => loadRecord(row as never));
     },
-    async search(query: string, scope?: MemoryScope, limit = 10): Promise<MemoryRecord[]> {
-      const narrowedScope = scope ?? 'project';
-      const hybridResults = await hybridSearch(query, narrowedScope, limit);
-      if (hybridResults.length) return hybridResults;
-      const ftsQuery = normalizeFtsQuery(query);
-      if (!ftsQuery) return [];
-      return (searchStmt.all(ftsQuery, narrowedScope ?? null, narrowedScope ?? null, limit) as ReturnType<typeof loadRecord>[]).map((row) => loadRecord(row as never));
+    async search(query: string, scope?: MemoryScope, limit = 10, mode: MemorySearchMode = 'hybrid'): Promise<MemoryRecord[]> {
+      return buildMemorySearchIndexForSidecar(sidecar).search(query, { scope: scope ?? 'project', limit, mode });
     },
     close(): void {
+      embeddingClient.close?.();
       db.close();
     },
   };
 
   const mutator: SqliteSidecarMutator = {
+    syncImport(records: MemoryRecord[], owner: SqliteSidecarOwner): void {
+      assertOwner(owner);
+      const now = new Date().toISOString();
+      const normalizedRecords = records.map((record) => normalizeRecord(record));
+      db.transaction(() => {
+        for (const record of normalizedRecords) {
+          upsertRecordStmt.run(record.id, record.scope, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? 'root', record.provenance.source, record.provenance.timestamp ?? null, record.provenance.adapter ?? null, record.provenance.origin ?? null, record.content.text ?? null, JSON.stringify(record.content.structured ?? {}), record.metadata?.createdAt ?? now, record.metadata?.updatedAt ?? now);
+          deleteFtsStmt.run(record.id);
+          upsertFtsStmt.run(record.id, record.scope, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? 'root', record.content.text ?? '', JSON.stringify(record.content.structured ?? {}));
+        }
+        if (normalizedRecords.length) bumpIndexRevision();
+      })();
+    },
     async syncWrite(intent: WriteIntent, owner: SqliteSidecarOwner): Promise<MemoryRecord> {
       assertOwner(owner);
       const normalized = normalizeWriteIntent(intent);
@@ -250,15 +520,26 @@ export function openSqliteSidecarBundle(options: SqliteSidecarOptions): { sideca
         metadata: { createdAt: (selectRecord.get(id) as { created_at: string } | undefined)?.created_at ?? new Date().toISOString(), updatedAt: new Date().toISOString() },
       });
       const text = recordText(record);
-      const embedding = await resolveEmbeddingData(text);
-      db.transaction(() => {
+      const contentHash = embeddingClient.hashText(truncateEmbeddingText(text));
+      const writeRecordRows = () => {
         upsertRecordStmt.run(record.id, record.scope, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? 'root', record.provenance.source, record.provenance.timestamp ?? null, record.provenance.adapter ?? null, record.provenance.origin ?? null, record.content.text ?? null, JSON.stringify(record.content.structured ?? {}), record.metadata?.createdAt ?? new Date().toISOString(), record.metadata?.updatedAt ?? new Date().toISOString());
         deleteFtsStmt.run(record.id);
         upsertFtsStmt.run(record.id, record.scope, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? 'root', record.content.text ?? '', JSON.stringify(record.content.structured ?? {}));
+      };
+      if (!options.embeddingRequireRemote) {
+        db.transaction(() => {
+          writeRecordRows();
+          bumpIndexRevision();
+        })();
+      }
+      const embedding = await resolveEmbeddingData(text);
+      db.transaction(() => {
+        if (options.embeddingRequireRemote) writeRecordRows();
         if (embedding) {
-          if (embedding.cacheMiss) cacheUpsertStmt.run(embedding.textHash, embedding.embedding, embedding.model, embedding.dimension, embedding.updatedAt);
-          recordEmbeddingUpsertStmt.run(record.id, embedding.textHash, embedding.embedding, embedding.model, embedding.dimension, embedding.updatedAt);
+          if (embedding.cacheMiss) cacheUpsertStmt.run(embedding.textHash, embedding.embedding, embedding.model, configuredDimension, embedding.dimension, embeddingClient.providerKey, MEMORY_SEARCH_EMBEDDING_IDENTITY_VERSION, embedding.updatedAt);
+          recordEmbeddingUpsertStmt.run(record.id, embedding.textHash, contentHash, embedding.embedding, embedding.model, configuredDimension, embedding.dimension, embeddingClient.providerKey, MEMORY_SEARCH_EMBEDDING_IDENTITY_VERSION, embedding.updatedAt);
         }
+        bumpIndexRevision();
       })();
       return record;
     },
@@ -270,6 +551,7 @@ export function openSqliteSidecarBundle(options: SqliteSidecarOptions): { sideca
         deleteEmbeddingStmt.run(id);
         deleteFtsStmt.run(id);
         deleteRecordStmt.run(id);
+        bumpIndexRevision();
       })();
       return removed;
     },

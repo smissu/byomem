@@ -65,6 +65,6 @@ describe('Sprint 20 write path', () => {
 
     const record = result.record!;
     expect(openReadPath(store).retrieve({ id: record.id, scope: 'project' })[0]?.record.id).toBe(record.id);
-    expect((await searchIndex(store, { query: 'integrated path baseline', mode: 'lexical' }))[0]?.id).toBe(record.id);
+    expect((await searchIndex(store, { query: 'integrated path baseline', mode: 'bm25' }))[0]?.id).toBe(record.id);
   });
 });

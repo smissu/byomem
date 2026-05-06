@@ -8,7 +8,6 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { assertNoPythonDefaultPath as noPythonDefaultPath } from './no-python-default-path.js';
 import { openQueueRuntime } from './queue-runtime.js';
-import { openReadPath } from './read.js';
 import { resolveRuntimeMode } from './runtime-mode.js';
 import { searchIndex } from './search-index.js';
 import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searchIndex as searchFileIndexForTool } from './file-search-query.js';
@@ -16,7 +15,7 @@ import { refreshSemanticIndexAfterManualScan } from './file-search-semantic-refr
 import { buildFileSearchIndex } from './file-search-index.js';
 import { captureSessionCheckpoint, type SessionCaptureInput } from './session-capture.js';
 import { openNativeStore } from './store.js';
-import { resolveActiveProjectContext } from './identity.js';
+import { normalizeStableKey, resolveActiveProjectContext } from './identity.js';
 import { listFileSearchProjects, markFileSearchProjectSeen, normalizeFileSearchPollingDisabledReason, registerFileSearchProject, unregisterFileSearchProject, type FileSearchPollingDisabledReason } from './file-search-project-registry.js';
 import { openFileSearchDb, openFileSearchRegistryDb, resolveFileSearchProjectKey } from './file-search-db.js';
 import { FileSearchActivePoller, disableFileSearchPolling, getFileSearchPollingStatus } from './file-search-active-poller.js';
@@ -26,31 +25,106 @@ function resolveDefaultRuntimeBaseDir(): string {
   return resolve(homedir(), '.byomem', 'runtime');
 }
 
-const runtimeBaseDir = process.env.BYOMEM_RUNTIME_BASE_DIR ?? resolveDefaultRuntimeBaseDir();
-const embeddingConfig = resolveEmbeddingConfig();
-const sessionCaptureConfig = resolveSessionCaptureConfig();
-const summarizerConfig = resolveSummarizerConfig();
-const fileSearchConfig = resolveFileSearchConfig();
-const nativeStore = openNativeStore({
-  baseDir: runtimeBaseDir,
-  embeddingBaseUrl: embeddingConfig.embeddingBaseUrl,
-  embeddingModel: embeddingConfig.embeddingModel,
-  embeddingDimension: embeddingConfig.embeddingDimension,
-  embeddingTimeoutMs: embeddingConfig.embeddingTimeoutMs,
-  embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
-  fileSearchEmbeddingBatchSize: fileSearchConfig.embeddingBatchSize,
-  fileSearchEmbeddingConcurrency: fileSearchConfig.embeddingConcurrency,
-  fileSearchScanOnOpen: false,
-  fileSearchSchedulerEnabled: false,
-  fileSearchScannerExcludedExtensions: fileSearchConfig.excludedExtensions,
-  fileSearchBinaryDetectionEnabled: fileSearchConfig.binaryDetectionEnabled,
-  fileSearchIncludeTextFiles: fileSearchConfig.includeTextFiles,
-  fileSearchIndexStorageMode: fileSearchConfig.indexStorageMode,
-});
-const readPath = openReadPath(nativeStore);
+let runtimeBaseDir = process.env.BYOMEM_RUNTIME_BASE_DIR ?? resolveDefaultRuntimeBaseDir();
+let embeddingConfig = resolveEmbeddingConfig();
+let sessionCaptureConfig = resolveSessionCaptureConfig();
+let summarizerConfig = resolveSummarizerConfig();
+let fileSearchConfig = resolveFileSearchConfig();
+let nativeStoreOptions = buildNativeStoreOptions();
 
-const queueRuntime = openQueueRuntime(nativeStore, { baseDir: runtimeBaseDir });
-const debugLogPath = join(runtimeBaseDir, 'queue', 'debug', 'byomem-turn-end.jsonl');
+function buildNativeStoreOptions() {
+  return {
+    baseDir: runtimeBaseDir,
+    embeddingBaseUrl: embeddingConfig.embeddingBaseUrl,
+    embeddingModel: embeddingConfig.embeddingModel ?? (embeddingConfig.embeddingBaseUrl ? undefined : 'fallback-deterministic-v1'),
+    embeddingDimension: embeddingConfig.embeddingDimension,
+    embeddingTimeoutMs: embeddingConfig.embeddingTimeoutMs,
+    embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
+    fileSearchEmbeddingBatchSize: fileSearchConfig.embeddingBatchSize,
+    fileSearchEmbeddingConcurrency: fileSearchConfig.embeddingConcurrency,
+    fileSearchScanOnOpen: false,
+    fileSearchSchedulerEnabled: false,
+    fileSearchScannerExcludedExtensions: fileSearchConfig.excludedExtensions,
+    fileSearchBinaryDetectionEnabled: fileSearchConfig.binaryDetectionEnabled,
+    fileSearchIncludeTextFiles: fileSearchConfig.includeTextFiles,
+    fileSearchIndexStorageMode: fileSearchConfig.indexStorageMode,
+  };
+}
+
+function refreshRuntimeConfigFromEnv(): void {
+  runtimeBaseDir = process.env.BYOMEM_RUNTIME_BASE_DIR ?? resolveDefaultRuntimeBaseDir();
+  embeddingConfig = resolveEmbeddingConfig();
+  sessionCaptureConfig = resolveSessionCaptureConfig();
+  summarizerConfig = resolveSummarizerConfig();
+  fileSearchConfig = resolveFileSearchConfig();
+  nativeStoreOptions = buildNativeStoreOptions();
+  debugLogPath = join(runtimeBaseDir, 'queue', 'debug', 'byomem-turn-end.jsonl');
+}
+
+const RUNTIME_CLEANUP_REGISTRY_KEY = Symbol.for('byomem.runtime.piExtensionCleanupRegistry');
+type RuntimeNativeStore = ReturnType<typeof openNativeStore>;
+type RuntimeQueueRuntime = ReturnType<typeof openQueueRuntime>;
+type RuntimeCleanupRegistry = { stores: Set<RuntimeNativeStore>; cleaners: Set<() => void> };
+function runtimeCleanupRegistry(): RuntimeCleanupRegistry {
+  const globalWithRegistry = globalThis as typeof globalThis & { [RUNTIME_CLEANUP_REGISTRY_KEY]?: RuntimeCleanupRegistry };
+  globalWithRegistry[RUNTIME_CLEANUP_REGISTRY_KEY] ??= { stores: new Set(), cleaners: new Set() };
+  return globalWithRegistry[RUNTIME_CLEANUP_REGISTRY_KEY];
+}
+
+let nativeStoreInstance: RuntimeNativeStore | undefined;
+let queueRuntimeInstance: RuntimeQueueRuntime | undefined;
+
+function getNativeStore(): RuntimeNativeStore {
+  if (!nativeStoreInstance) {
+    nativeStoreInstance = openNativeStore(nativeStoreOptions);
+    runtimeCleanupRegistry().stores.add(nativeStoreInstance);
+  }
+  return nativeStoreInstance;
+}
+
+function getQueueRuntime(): RuntimeQueueRuntime {
+  queueRuntimeInstance ??= openQueueRuntime(getNativeStore(), { baseDir: runtimeBaseDir });
+  return queueRuntimeInstance;
+}
+
+function cleanupLocalRuntimeState(): void {
+  if (nativeStoreInstance) {
+    try {
+      nativeStoreInstance.close();
+    } catch {
+      // best-effort test/runtime cleanup
+    }
+  }
+  nativeStoreInstance = undefined;
+  queueRuntimeInstance = undefined;
+  if (activeFileSearchPoller) {
+    activeFileSearchPoller.close();
+    activeFileSearchPoller = undefined;
+    activeFileSearchPollingBaseDir = undefined;
+  }
+  closeDirectFileSearchStores();
+}
+
+runtimeCleanupRegistry().cleaners.add(cleanupLocalRuntimeState);
+
+export function byomem_runtime_test_cleanup(): void {
+  const registry = runtimeCleanupRegistry();
+  for (const cleaner of registry.cleaners) cleaner();
+  for (const store of registry.stores) {
+    try {
+      store.close();
+    } catch {
+      // best-effort test/runtime cleanup
+    }
+  }
+  registry.stores.clear();
+}
+
+export function byomem_runtime_test_reload_env(): void {
+  byomem_runtime_test_cleanup();
+  refreshRuntimeConfigFromEnv();
+}
+let debugLogPath = join(runtimeBaseDir, 'queue', 'debug', 'byomem-turn-end.jsonl');
 let shouldInjectInitialContext = true;
 let activeFileSearchPoller: FileSearchActivePoller | undefined;
 let activeFileSearchPollingBaseDir: string | undefined;
@@ -479,14 +553,14 @@ function resolveSessionCaptureConfig(): ByomemSessionCaptureConfig {
     return {
       source: 'config',
       configPath,
-      enabled: parsed.session_capture?.enabled ?? true,
+      enabled: parsed.session_capture?.enabled ?? false,
       thresholdTurns: parsed.session_capture?.threshold_turns,
       largeTurnChars: parsed.session_capture?.large_turn_chars,
       idleFlushSeconds: parsed.session_capture?.idle_flush_seconds,
       minTurns: parsed.session_capture?.min_turns,
     };
   }
-  return { source: 'default', enabled: true };
+  return { source: 'default', enabled: false };
 }
 
 function parsePositiveSafeIntegerConfig(value: string | undefined, name: string): number | undefined {
@@ -705,7 +779,7 @@ async function captureSessionFromHook(eventName: string, ctx: Record<string, unk
   }
   try {
     if (!sessionCaptureConfig.enabled) return;
-    await captureSessionCheckpoint(nativeStore, {
+    await captureSessionCheckpoint(getNativeStore(), {
       baseDir: runtimeBaseDir,
       thresholdTurns: sessionCaptureConfig.thresholdTurns,
       largeTurnChars: sessionCaptureConfig.largeTurnChars,
@@ -789,12 +863,12 @@ function formatContextLines(records: Array<{ content?: { text?: string }; identi
 }
 
 async function buildInitialByomemContext(prompt: string): Promise<{ visible?: string; systemPrompt?: string } | null> {
-  const userResults = await Promise.resolve(searchIndex(nativeStore, {
+  const userResults = await Promise.resolve(searchIndex(getNativeStore(), {
     query: 'working preferences repeated working style communication coding workflow progress updates subagents',
     scope: 'user',
     limit: 6,
   }));
-  const projectResults = (await Promise.resolve(searchIndex(nativeStore, {
+  const projectResults = (await Promise.resolve(searchIndex(getNativeStore(), {
     query: `${prompt || 'current project'} architecture decisions conventions project context current repo`,
     scope: 'project',
     limit: 8,
@@ -830,7 +904,8 @@ export function byomem_runtime_status() {
     })(),
     packageSurface: 'ts/packages/runtime',
     storeBaseDir: runtimeBaseDir,
-    nativeStorePath: nativeStore.baseDir,
+    nativeStorePath: runtimeBaseDir,
+    memoryDbPath: join(runtimeBaseDir, 'byomem-index.sqlite'),
     activeProject,
     projectKey: activeProject.projectKey,
     embeddingConfigSource: embeddingConfig.source,
@@ -923,18 +998,22 @@ export default function (pi: ExtensionAPI) {
       properties: {
         query: { type: 'string' },
         scope: { type: 'string', enum: ['project', 'dir', 'user', 'agent'] },
+        mode: { type: 'string', enum: ['bm25', 'semantic', 'hybrid'] },
         limit: { type: 'number' },
       },
       required: ['query'],
       additionalProperties: false,
     },
     async execute(_toolCallId: string, params: unknown) {
-      const intent = params as { query?: unknown; scope?: unknown; limit?: unknown };
+      const intent = params as { query?: unknown; scope?: unknown; mode?: unknown; limit?: unknown };
       const query = normalizeText(intent?.query);
       const scope = normalizeScope(intent?.scope);
-      const limit = typeof intent?.limit === 'number' && Number.isFinite(intent.limit) ? intent.limit : undefined;
+      const mode = intent?.mode === undefined ? 'hybrid' : intent.mode;
+      if (mode !== 'bm25' && mode !== 'semantic' && mode !== 'hybrid') throw new Error('Invalid byomem_search intent: invalid mode');
+      const limit = intent?.limit === undefined ? undefined : intent.limit;
+      if (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1)) throw new Error('Invalid byomem_search intent: limit must be a positive integer');
       if (!query) throw new Error('Invalid byomem_search intent');
-      const results = (await Promise.resolve(searchIndex(nativeStore, { query, scope, limit }))).map((result) => shapeByomemSearchResult(result));
+      const results = (await Promise.resolve(searchIndex(getNativeStore(), { query, scope, mode, limit }))).map((result) => shapeByomemSearchResult(result));
       return { content: [{ type: 'text', text: safeJson({ results }) }], details: { results } };
     },
   });
@@ -977,7 +1056,7 @@ export default function (pi: ExtensionAPI) {
     },
     async execute(_toolCallId: string, params: unknown) {
       const intent = normalizeStoreIntent(params);
-      const result = await queueRuntime.write(intent as never);
+      const result = await getQueueRuntime().write(intent as never);
       if (!result?.record) throw new Error('Failed to persist byomem_store intent');
       return { content: [{ type: 'text', text: safeJson(result) }], details: result };
     },
@@ -1008,13 +1087,9 @@ export default function (pi: ExtensionAPI) {
     },
     async execute(_toolCallId: string, params: unknown) {
       const intent = normalizePruneIntent(params);
-      const result = await queueRuntime.write({
-        scope: intent.scope,
-        identity: intent.identity,
-        content: { text: `Prune ${intent.identity.leafName}` },
-        provenance: { source: 'byomem-prune', adapter: 'native-store', origin: 'write' },
-      } as never);
-      if (!result?.record) throw new Error('Failed to persist byomem_prune intent');
+      const id = intent.identity.stableKey ?? normalizeStableKey(intent.scope, intent.identity);
+      const removed = getNativeStore().prune(id) ?? null;
+      const result = { tool: 'byomem_prune', id, deleted: Boolean(removed), removed };
       return { content: [{ type: 'text', text: safeJson(result) }], details: result };
     },
   });

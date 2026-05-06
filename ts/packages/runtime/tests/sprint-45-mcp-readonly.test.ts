@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { openNativeStore } from '../src/store.js';
 
 function makeTempRuntime(): string {
   return mkdtempSync(join(tmpdir(), 'byomem-readonly-mcp-'));
@@ -21,31 +22,20 @@ describe('Sprint 45 read-only MCP server', () => {
 
   it('speaks real MCP over stdio and keeps tool calls read-only', async () => {
     const runtimeDir = makeTempRuntime();
-    const snapshotPath = join(runtimeDir, 'native-store.json');
-    const seed = {
-      version: 1,
-      records: [
-        {
-          id: 'project:notes:root:read-only-search-target',
-          scope: 'project',
-          provenance: { source: 'fixture' },
-          identity: {
-            namespace: 'notes',
-            leafName: 'read-only-search-target',
-            parentContext: 'root',
-          },
-          content: {
-            text: 'Read-only MCP search target for Sprint 45',
-          },
-          metadata: {
-            createdAt: '2026-04-30T00:00:00.000Z',
-            updatedAt: '2026-04-30T00:00:00.000Z',
-          },
-        },
-      ],
-    };
-    writeFileSync(snapshotPath, `${JSON.stringify(seed, null, 2)}\n`, 'utf8');
-    const before = readFileSync(snapshotPath, 'utf8');
+    const seedStore = openNativeStore({ baseDir: runtimeDir, embeddingModel: 'fallback-deterministic-v1' });
+    await seedStore.write({
+      scope: 'project',
+      provenance: { source: 'fixture' },
+      identity: {
+        namespace: 'notes',
+        leafName: 'read-only-search-target',
+        parentContext: 'root',
+      },
+      content: {
+        text: 'Read-only MCP search target for Sprint 45',
+      },
+    });
+    seedStore.close();
 
     const readonlyPath = join(process.cwd(), 'ts/packages/runtime/dist/mcp/readonly.js');
     const transport = new StdioClientTransport({
@@ -72,6 +62,7 @@ describe('Sprint 45 read-only MCP server', () => {
       runtimeMode: expect.any(String),
       storeBaseDir: runtimeDir,
       nativeStorePath: runtimeDir,
+      memoryDbPath: join(runtimeDir, 'byomem-index.sqlite'),
       activeProject: expect.any(Object),
     });
 
@@ -86,7 +77,13 @@ describe('Sprint 45 read-only MCP server', () => {
 
     await client.close();
 
-    expect(readFileSync(snapshotPath, 'utf8')).toBe(before);
-    expect(existsSync(join(runtimeDir, 'byomem-index.sqlite'))).toBe(false);
+    const verifyStore = openNativeStore({ baseDir: runtimeDir, embeddingModel: 'fallback-deterministic-v1' });
+    try {
+      expect(verifyStore.list().map((record) => record.id)).toEqual(['project:notes:root:read-only-search-target']);
+    } finally {
+      verifyStore.close();
+    }
+    expect(existsSync(join(runtimeDir, 'native-store.json'))).toBe(false);
+    expect(existsSync(join(runtimeDir, 'byomem-index.sqlite'))).toBe(true);
   });
 });

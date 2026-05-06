@@ -3,8 +3,8 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import type { MemoryRecord, MemoryScope } from './contracts.js';
 import type { NativeStore } from './store.js';
-import { normalizeRecord } from './normalizers.js';
 import type { ProjectContext } from './project-context.js';
+import { openSqliteSidecar } from './sqlite-sidecar.js';
 
 export interface ByomemSummarizerConfig {
   source: 'config' | 'env' | 'default';
@@ -204,14 +204,14 @@ export function resolveSessionCaptureConfig(env: NodeJS.ProcessEnv = process.env
     return {
       source: 'config',
       configPath,
-      enabled: parsed.session_capture?.enabled ?? true,
+      enabled: parsed.session_capture?.enabled ?? false,
       thresholdTurns: parsed.session_capture?.threshold_turns,
       largeTurnChars: parsed.session_capture?.large_turn_chars,
       idleFlushSeconds: parsed.session_capture?.idle_flush_seconds,
       minTurns: parsed.session_capture?.min_turns,
     };
   }
-  return { source: 'default', enabled: true };
+  return { source: 'default', enabled: false };
 }
 
 export function resolveFileSearchConfig(env: NodeJS.ProcessEnv = process.env): ByomemFileSearchConfig {
@@ -294,41 +294,33 @@ export function inferSummarizerTransport(baseUrl: string | undefined): ByomemSum
   return undefined;
 }
 
-interface StoreSnapshot {
-  version: 1;
-  records: MemoryRecord[];
-}
-
-function loadSnapshot(filePath: string): StoreSnapshot {
-  if (!existsSync(filePath)) return { version: 1, records: [] };
-  const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as unknown;
-  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { records?: unknown }).records)) {
-    throw new Error('Invalid native store snapshot');
-  }
-  return parsed as StoreSnapshot;
-}
-
-export function openReadOnlyNativeStore(baseDir: string): NativeStore {
+export function openReadOnlyNativeStore(baseDir: string, embeddingConfig: ByomemEmbeddingConfig = { source: 'default' }): NativeStore {
   const resolvedBaseDir = resolve(baseDir);
-  const filePath = resolve(resolvedBaseDir, 'native-store.json');
-  const snapshot = loadSnapshot(filePath);
-  const recordsById = new Map<string, MemoryRecord>(snapshot.records.map((record) => [record.id, normalizeRecord(record)]));
+  const sidecar = openSqliteSidecar({
+    baseDir: resolvedBaseDir,
+    embeddingBaseUrl: embeddingConfig.embeddingBaseUrl,
+    embeddingModel: embeddingConfig.embeddingModel,
+    embeddingDimension: embeddingConfig.embeddingDimension,
+    embeddingTimeoutMs: embeddingConfig.embeddingTimeoutMs,
+    embeddingRequireRemote: Boolean(embeddingConfig.embeddingBaseUrl),
+  });
   return {
     baseDir: resolvedBaseDir,
+    sidecar,
     async write(): Promise<MemoryRecord> {
       throw new Error('read-only native store does not support write');
     },
     read(id: string): MemoryRecord | undefined {
-      return recordsById.get(id);
+      return sidecar.read(id);
     },
     list(): MemoryRecord[] {
-      return Array.from(recordsById.values());
+      return sidecar.list();
     },
     prune(): MemoryRecord | undefined {
       throw new Error('read-only native store does not support prune');
     },
     close(): void {
-      // no-op: read-only store never mutates backing storage
+      sidecar.close();
     },
   };
 }
@@ -340,7 +332,7 @@ export function openReadOnlyRuntimeContext(options: { env?: NodeJS.ProcessEnv; r
   const sessionCaptureConfig = resolveSessionCaptureConfig(env);
   const summarizerConfig = resolveSummarizerConfig(env);
   const fileSearchConfig = resolveFileSearchConfig(env);
-  const nativeStore = openReadOnlyNativeStore(runtimeBaseDir);
+  const nativeStore = openReadOnlyNativeStore(runtimeBaseDir, embeddingConfig);
   return { runtimeBaseDir, embeddingConfig, sessionCaptureConfig, summarizerConfig, fileSearchConfig, nativeStore };
 }
 
@@ -352,6 +344,7 @@ export function buildByomemRuntimeStatus(input: ByomemRuntimeStatusInput) {
     packageSurface: 'ts/packages/runtime',
     storeBaseDir: input.runtimeBaseDir,
     nativeStorePath: input.nativeStoreBaseDir,
+    memoryDbPath: resolve(input.nativeStoreBaseDir, 'byomem-index.sqlite'),
     activeProject: input.activeProject,
     projectKey: input.activeProject.projectKey,
     embeddingConfigSource: input.embeddingConfig.source,

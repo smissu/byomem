@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { main } from '../src/cli.js';
 import { openFileSearchDb } from '../src/file-search-db.js';
 import { listFileSearchProjects } from '../src/file-search-project-registry.js';
+import { openNativeStore } from '../src/store.js';
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'byomem-cli-'));
@@ -16,6 +17,15 @@ function indexedPaths(dir: string): string[] {
     return (fileDb.db.prepare('SELECT path FROM indexed_files ORDER BY path').all() as Array<{ path: string }>).map((row) => row.path);
   } finally {
     fileDb.close();
+  }
+}
+
+function storedMemoryIds(dir: string): string[] {
+  const store = openNativeStore({ baseDir: dir, embeddingModel: 'fallback-deterministic-v1' });
+  try {
+    return store.list().map((record) => record.id);
+  } finally {
+    store.close();
   }
 }
 
@@ -68,9 +78,9 @@ describe('runtime cli', () => {
       error: 'Remote embedding provider is required but no embedding base URL is configured',
       command: 'store',
     });
-    expect(existsSync(join(dir, 'native-store.json'))).toBe(true);
-    expect(JSON.parse(readFileSync(join(dir, 'native-store.json'), 'utf8'))).toMatchObject({ version: 1, records: [] });
+    expect(existsSync(join(dir, 'native-store.json'))).toBe(false);
     expect(existsSync(join(dir, 'byomem-index.sqlite'))).toBe(true);
+    expect(storedMemoryIds(dir)).toEqual([]);
   });
 
   it('fails closed for store when remote embeddings return no usable vector', async () => {
@@ -88,8 +98,9 @@ describe('runtime cli', () => {
       error: 'Remote embedding request returned no embedding for model nomic-embed-text',
       command: 'store',
     });
-    expect(existsSync(join(dir, 'native-store.json'))).toBe(true);
-    expect(JSON.parse(readFileSync(join(dir, 'native-store.json'), 'utf8'))).toMatchObject({ version: 1, records: [] });
+    expect(existsSync(join(dir, 'native-store.json'))).toBe(false);
+    expect(existsSync(join(dir, 'byomem-index.sqlite'))).toBe(true);
+    expect(storedMemoryIds(dir)).toEqual([]);
   });
 
   it('store succeeds with a usable remote embedding response', async () => {
@@ -112,8 +123,9 @@ describe('runtime cli', () => {
         },
       },
     });
-    expect(existsSync(join(dir, 'native-store.json'))).toBe(true);
+    expect(existsSync(join(dir, 'native-store.json'))).toBe(false);
     expect(existsSync(join(dir, 'byomem-index.sqlite'))).toBe(true);
+    expect(storedMemoryIds(dir)).toContain('project:byomem:root:cli-gamma');
   });
 
   it('prints file-search scanner status without requiring a search query or starting a scan', async () => {

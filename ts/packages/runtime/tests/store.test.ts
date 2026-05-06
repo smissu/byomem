@@ -39,7 +39,7 @@ describe('native store', () => {
     });
   });
 
-  it('reopens snapshot-backed records from disk', async () => {
+  it('reopens sqlite-backed records from disk', async () => {
     const dir = tempDir();
     dirs.push(dir);
 

@@ -16,12 +16,14 @@ export interface EmbeddingClient {
   embed(text: string): Promise<number[] | undefined>;
   embedMany(texts: string[]): Promise<Array<number[] | undefined>>;
   hashText(text: string): string;
+  model: string;
   providerKey: string;
   configuredDimension: number;
   close?: () => void;
 }
 
 export const FILE_SEARCH_EMBEDDING_IDENTITY_VERSION = 'file-search-embedding-v1';
+export const MEMORY_SEARCH_EMBEDDING_IDENTITY_VERSION = 'memory-search-embedding-v1';
 export const FALLBACK_EMBEDDING_PROVIDER_KEY = 'fallback:deterministic-v1';
 export const SEMBLE_EMBEDDING_MODEL = 'minishlab/potion-code-16M';
 
@@ -212,6 +214,7 @@ export function openEmbeddingClient(options: EmbeddingClientOptions = {}): Embed
   const model2VecPython = !options.baseUrl && (model === SEMBLE_EMBEDDING_MODEL || model === 'potion-code-16M') ? resolveModel2VecPythonExecutable() : undefined;
   const model2VecServer = model2VecPython ? new Model2VecEmbeddingServer(model2VecPython, resolveModel2VecScriptPath(), model) : undefined;
   return {
+    model,
     providerKey: resolveEmbeddingProviderKey(options.baseUrl, model),
     configuredDimension: options.dimension ?? 0,
     hashText(text: string): string {
@@ -240,7 +243,14 @@ export function openEmbeddingClient(options: EmbeddingClientOptions = {}): Embed
         return results;
       }
       const url = new URL('/api/embeddings', options.baseUrl).toString();
-      const vectors = await Promise.all(originalIndexes.map(async (entry) => remoteEmbedding(url, model, entry.text, options.timeoutMs)));
+      const vectors = await Promise.all(originalIndexes.map(async (entry) => {
+        try {
+          return await remoteEmbedding(url, model, entry.text, options.timeoutMs);
+        } catch (error) {
+          if (options.requireRemote) throw error;
+          return undefined;
+        }
+      }));
       vectors.forEach((vector, index) => {
         results[originalIndexes[index]!.index] = vector;
       });

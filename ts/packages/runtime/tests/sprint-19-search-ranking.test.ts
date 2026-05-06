@@ -39,8 +39,8 @@ describe('Sprint 19 search/ranking parity slice', () => {
   });
 
   it('keeps scope isolation across search slices', async () => {
-    expect((await searchIndex(createStore(), { query: 'alpha lexical only', scope: 'project', mode: 'lexical' })).every((record) => record.scope === 'project')).toBe(true);
-    expect((await searchIndex(createStore(), { query: 'alpha lexical only', scope: 'dir', mode: 'lexical' })).every((record) => record.scope === 'dir')).toBe(true);
+    expect((await searchIndex(createStore(), { query: 'alpha lexical only', scope: 'project', mode: 'bm25' })).every((record) => record.scope === 'project')).toBe(true);
+    expect((await searchIndex(createStore(), { query: 'alpha lexical only', scope: 'dir', mode: 'bm25' })).every((record) => record.scope === 'dir')).toBe(true);
   });
 
   it('compares observable fields for parity without overfitting internal metadata', async () => {

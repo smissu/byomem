@@ -70,11 +70,14 @@ describe('Sprint 31 file search refinement and cleanup', () => {
 
     const canonicalMemoriesPath = join(dir, 'byomem-index.sqlite');
     const canonicalSnapshotPath = join(dir, 'native-store.json');
+    const migratedSnapshotPath = join(dir, 'native-store.json.migrated');
     expect(() => openFileSearchDb({ baseDir: dir, dbFile: canonicalMemoriesPath })).toThrow(/memories DB path/i);
     expect(() => openFileSearchDb({ baseDir: dir, dbFile: canonicalSnapshotPath })).toThrow(/memories DB path/i);
+    expect(() => openFileSearchDb({ baseDir: dir, dbFile: migratedSnapshotPath })).not.toThrow();
     const fileDb = openFileDb(dir);
     expect(fileDb.db?.prepare('SELECT * FROM indexed_files WHERE path LIKE ?').all('%byomem-index.sqlite%')).toSatisfy((rows: unknown) => Array.isArray(rows) && rows.every((row) => !(row as { path?: string }).path?.includes('/byomem-index.sqlite')));
     expect(fileDb.db?.prepare('SELECT * FROM indexed_files WHERE path LIKE ?').all('%native-store.json%')).toSatisfy((rows: unknown) => Array.isArray(rows) && rows.every((row) => !(row as { path?: string }).path?.includes('/native-store.json')));
+    expect(fileDb.db?.prepare('SELECT * FROM indexed_files WHERE path LIKE ?').all('%native-store.json.migrated%')).toSatisfy((rows: unknown) => Array.isArray(rows) && rows.every((row) => !(row as { path?: string }).path?.includes('/native-store.json.migrated')));
   });
 
   it('keeps scheduler dependency bounded to a minimal refresh callback contract', () => {

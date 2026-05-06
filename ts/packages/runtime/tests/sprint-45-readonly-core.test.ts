@@ -34,6 +34,7 @@ describe('Sprint 45 read-only core', () => {
       packageSurface: 'ts/packages/runtime',
       storeBaseDir: '/tmp/byomem-runtime',
       nativeStorePath: '/tmp/byomem-runtime',
+      memoryDbPath: '/tmp/byomem-runtime/byomem-index.sqlite',
       projectKey: 'byomem',
       activeProject,
       fileSearchEmbeddingBatchSize: 31,

@@ -2,7 +2,7 @@ import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import * as z from 'zod/v3';
 import { buildByomemRuntimeStatus, safeJson, shapeByomemSearchResults, type ReadOnlyByomemRuntimeContext } from '../readonly-core.js';
 import { searchIndex } from '../search-index.js';
-import type { SearchMode } from '../ranking.js';
+import type { MemorySearchMode } from '../sqlite-sidecar.js';
 
 export type ReadOnlyMcpRuntimeContext = ReadOnlyByomemRuntimeContext & {
   status: ReturnType<typeof buildByomemRuntimeStatus>;
@@ -27,8 +27,8 @@ function normalizePositiveInteger(value: unknown, name: string): number | undefi
   return value;
 }
 
-function normalizeSearchMode(value: unknown): SearchMode | undefined {
-  if (value === 'lexical' || value === 'semantic' || value === 'hybrid') return value;
+function normalizeSearchMode(value: unknown): MemorySearchMode | undefined {
+  if (value === 'bm25' || value === 'semantic' || value === 'hybrid') return value;
   return undefined;
 }
 
@@ -48,10 +48,10 @@ export function registerReadOnlyTools(server: McpServer, getRuntimeContext: () =
         query: z.string().trim().min(1),
         scope: z.enum(['project', 'dir', 'user', 'agent']).optional(),
         limit: z.number().int().positive().optional(),
-        mode: z.enum(['lexical', 'semantic', 'hybrid']).optional(),
+        mode: z.enum(['bm25', 'semantic', 'hybrid']).optional(),
       }),
     },
-    async (params: { query: string; scope?: 'project' | 'dir' | 'user' | 'agent'; limit?: number; mode?: SearchMode }) => {
+    async (params: { query: string; scope?: 'project' | 'dir' | 'user' | 'agent'; limit?: number; mode?: MemorySearchMode }) => {
       const runtime = getRuntimeContext();
       const query = normalizeText(params.query);
       const scope = normalizeScope(params.scope);

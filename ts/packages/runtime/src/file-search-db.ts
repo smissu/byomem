@@ -193,7 +193,7 @@ type FileSearchScannerChunkerAccumulator = {
 const DEFAULT_FILE_SEARCH_DB_FILE = 'byomem-file-search.sqlite';
 const IGNORED_DIRS = new Set(['node_modules', '.git']);
 const ROOT_RUNTIME_IGNORED_DIRS = new Set(['queue', '.byomem']);
-const IGNORED_BASENAMES = new Set(['byomem-index.sqlite', 'byomem-file-search.sqlite', 'native-store.json', 'queue.json', 'worker.json', 'session-capture-state.json', 'byomem-turn-end.jsonl']);
+const IGNORED_BASENAMES = new Set(['byomem-index.sqlite', 'byomem-file-search.sqlite', 'native-store.json', 'native-store.json.migrated', 'queue.json', 'worker.json', 'session-capture-state.json', 'byomem-turn-end.jsonl']);
 const SENSITIVE_CONTENT_MARKERS = ['thinkingSignature', 'textSignature', 'encrypted_content', 'encryptedContent'];
 const SENSITIVE_CONTENT_FIELD_RE = new RegExp(
   String.raw`(?:^|[{\[,])\s*["'](?:${SENSITIVE_CONTENT_MARKERS.join('|')})["']\s*:\s*(?:["']|[{[]|true\b|false\b|null\b|-?\d)`,

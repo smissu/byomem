@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { openNativeStore } from '../src/store.js';
 
 function makeTempRuntime(): string {
   return mkdtempSync(join(tmpdir(), 'byomem-operations-mcp-'));
@@ -21,7 +22,6 @@ describe('Sprint 46 operations MCP server', () => {
 
   it('discovers mutation tools and performs end-to-end store, prune, scan, and refresh calls over stdio', async () => {
     const runtimeDir = makeTempRuntime();
-    const snapshotPath = join(runtimeDir, 'native-store.json');
     const scanTargetPath = join(runtimeDir, 'scan-target.txt');
     writeFileSync(scanTargetPath, 'scan target for Sprint 46\n', 'utf8');
 
@@ -88,9 +88,16 @@ describe('Sprint 46 operations MCP server', () => {
       },
     });
     expect(stored.record?.id).toBe('project:notes:root:sprint-46-mutation-target');
-    expect(JSON.parse(readFileSync(snapshotPath, 'utf8'))).toMatchObject({
-      records: [expect.objectContaining({ id: 'project:notes:root:sprint-46-mutation-target' })],
-    });
+    expect(existsSync(join(runtimeDir, 'native-store.json'))).toBe(false);
+    expect(existsSync(join(runtimeDir, 'byomem-index.sqlite'))).toBe(true);
+    const verifyStored = openNativeStore({ baseDir: runtimeDir, embeddingModel: 'fallback-deterministic-v1' });
+    try {
+      expect(verifyStored.read('project:notes:root:sprint-46-mutation-target')).toMatchObject({
+        id: 'project:notes:root:sprint-46-mutation-target',
+      });
+    } finally {
+      verifyStored.close();
+    }
 
     const searchResult = await client.callTool({ name: 'search', arguments: { query: 'Sprint 46 mutation target', limit: 5 } });
     const searchPayload = JSON.parse(searchResult.content[0].text ?? '{}') as { results?: Array<Record<string, unknown>> };
@@ -146,9 +153,13 @@ describe('Sprint 46 operations MCP server', () => {
 
     await client.close();
 
-    expect(JSON.parse(readFileSync(snapshotPath, 'utf8'))).toMatchObject({
-      records: [],
-    });
+    const verifyPruned = openNativeStore({ baseDir: runtimeDir, embeddingModel: 'fallback-deterministic-v1' });
+    try {
+      expect(verifyPruned.list()).toEqual([]);
+    } finally {
+      verifyPruned.close();
+    }
+    expect(existsSync(join(runtimeDir, 'native-store.json'))).toBe(false);
     expect(existsSync(join(runtimeDir, 'byomem-file-search.sqlite'))).toBe(true);
   });
 });

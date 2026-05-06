@@ -79,6 +79,7 @@ function parseWatchMode(flags: { watch: boolean; watchInterval?: string }, json:
 }
 
 type FileSearchCliRequest = { query: string; mode: 'bm25' | 'semantic' | 'hybrid'; limit: number };
+type MemorySearchCliRequest = { query: string; mode: 'bm25' | 'semantic' | 'hybrid'; limit: number; scope?: 'project' | 'dir' | 'user' | 'agent' };
 type FileSearchRelatedCliRequest = { filePath: string; line: number; limit: number };
 
 type CliFileSearchProject = {
@@ -251,6 +252,21 @@ function parseFileSearchRequest(payload: Record<string, string>): FileSearchCliR
   return { query, mode, limit };
 }
 
+function parseMemorySearchRequest(payload: Record<string, string>): MemorySearchCliRequest {
+  const query = payload.query?.trim();
+  if (!query) throw new Error('Missing --query for search');
+  const mode = (payload.mode?.trim() || 'hybrid') as 'bm25' | 'semantic' | 'hybrid';
+  if (mode !== 'bm25' && mode !== 'semantic' && mode !== 'hybrid') throw new Error('--mode must be bm25, semantic, or hybrid');
+  const limitRaw = payload.limit?.trim() || '10';
+  if (!/^[1-9]\d*$/.test(limitRaw)) throw new Error('--limit must be a positive integer');
+  const limit = Number(limitRaw);
+  if (!Number.isSafeInteger(limit)) throw new Error('--limit must be a positive integer');
+  const rawScope = payload.scope?.trim();
+  const scope = rawScope === undefined || rawScope === '' ? undefined : rawScope;
+  if (scope !== undefined && scope !== 'project' && scope !== 'dir' && scope !== 'user' && scope !== 'agent') throw new Error('--scope must be project, dir, user, or agent');
+  return { query, mode, limit, ...(scope ? { scope } : {}) };
+}
+
 function parseFileSearchRelatedRequest(payload: Record<string, string>): FileSearchRelatedCliRequest {
   const filePath = payload.filePath?.trim();
   if (!filePath) throw new Error('Missing --file-path for file-search-related');
@@ -296,9 +312,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const isFileSearchSemanticRefreshCommand = command === 'file-search-semantic-refresh';
   let store: ReturnType<typeof openNativeStore> | undefined;
   let queueRuntime: ReturnType<typeof openQueueRuntime> | undefined;
+  let memorySearchRequest: MemorySearchCliRequest | undefined;
   let fileSearchRequest: FileSearchCliRequest | undefined;
   let fileSearchRelatedRequest: FileSearchRelatedCliRequest | undefined;
   try {
+    memorySearchRequest = command === 'search' ? parseMemorySearchRequest(payload) : undefined;
     fileSearchRequest = command === 'file-search' ? parseFileSearchRequest(payload) : undefined;
     fileSearchRelatedRequest = command === 'file-search-related' ? parseFileSearchRelatedRequest(payload) : undefined;
     if (isFileSearchPollingCommand) {
@@ -363,9 +381,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
     if (command === 'search') {
       if (!store) throw new Error('Missing native store');
-      const query = payload.query?.trim();
-      if (!query) throw new Error('Missing --query for search');
-      console.log(JSON.stringify({ results: await searchIndex(store, { query, scope: payload.scope?.trim() as 'project' | 'user' | undefined }) }, null, 2));
+      if (!memorySearchRequest) throw new Error('Missing search request');
+      console.log(JSON.stringify({ results: await searchIndex(store, memorySearchRequest) }, null, 2));
       return;
     }
 
@@ -423,20 +440,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       return;
     }
     if (command === 'prune') {
-      if (!queueRuntime) throw new Error('Missing queue runtime');
+      if (!store) throw new Error('Missing native store');
       const id = payload.id?.trim();
       if (!id) throw new Error('Missing --id for prune');
-      const parts = id.split(':');
-      if (parts.length < 4) throw new Error('Invalid --id for prune');
-      const [scope, namespace, parentContext, ...leafParts] = parts;
-      if (!scope || !namespace || !parentContext || leafParts.length === 0) throw new Error('Invalid --id for prune');
-      const result = await queueRuntime.write({
-        scope: scope as 'project' | 'dir' | 'user' | 'agent',
-        identity: { namespace, parentContext, leafName: leafParts.join(':'), stableKey: id },
-        content: { text: `Prune ${id}` },
-        provenance: { source: 'cli-prune', adapter: 'native-store', origin: 'write' },
-      } as never);
-      console.log(JSON.stringify({ result }, null, 2));
+      const removed = store.prune(id) ?? null;
+      console.log(JSON.stringify({ id, deleted: Boolean(removed), removed }, null, 2));
       return;
     }
     if (isObserverCommand) {

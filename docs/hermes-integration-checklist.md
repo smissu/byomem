@@ -41,6 +41,8 @@ Use this checklist to review how BYOMem should be integrated and used from Herme
 
 ## 4) Runtime and storage model
 - [ ] Confirm the native store and queue runtime are initialized from the TS runtime base directory.
+- [ ] Confirm `byomem-index.sqlite` is the canonical memory DB.
+- [ ] Confirm `native-store.json` is legacy import-backup material only after the DB-only cutover.
 - [ ] Confirm `BYOMEM_RUNTIME_BASE_DIR` only affects runtime storage and does not redefine the target project.
 - [ ] Confirm project-scoped file search uses `baseDir` / active project identity, not global runtime storage as the project root.
 - [ ] Confirm runtime-local async scan jobs are explicitly documented as non-durable.

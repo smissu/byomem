@@ -69,7 +69,7 @@ describe('search parity regression', () => {
       provenance: { source: 'fixtures' },
     });
 
-    const lexical = await searchIndex(store, { query: 'beta gamma', scope: 'project', mode: 'lexical', limit: 5 });
+    const lexical = await searchIndex(store, { query: 'beta gamma', scope: 'project', mode: 'bm25', limit: 5 });
     const hybrid = await searchIndex(store, { query: 'beta gamma', scope: 'project', mode: 'hybrid', limit: 5 });
     expect(lexical[0]?.id).toBe(beta.id);
     expect(lexical.length).toBe(1);

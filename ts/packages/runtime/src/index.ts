@@ -11,6 +11,8 @@ export * from './no-python-hook.js';
 export * from './ranking.js';
 export * from './read.js';
 export * from './search-index.js';
+export * from './memory-search-index.js';
+export * from './memory-search-semantic-refresh.js';
 export * from './semantic.js';
 export * from './retrieval-types.js';
 export * from './retrieval.js';

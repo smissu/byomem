@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import extensionModule, { byomem_runtime_status } from '../src/pi-extension.ts';
+import extensionModule, { byomem_runtime_status, byomem_runtime_test_cleanup, byomem_runtime_test_reload_env } from '../src/pi-extension.ts';
+import { openNativeStore } from '../src/store.js';
 
 type RegisteredTool = {
   name: string;
@@ -78,14 +79,25 @@ function writeEventTranscript(path: string, turns: TranscriptTurn[]): void {
   writeFileSync(path, `${lines.join('\n')}\n`, 'utf8');
 }
 
+function readStoredRecords(dir: string): Array<any> {
+  const store = openNativeStore({ baseDir: dir, embeddingModel: 'fallback-deterministic-v1' });
+  try {
+    return store.list();
+  } finally {
+    store.close();
+  }
+}
+
 describe('byomem extension wiring', () => {
   const dirs: string[] = [];
   const originalFetch = globalThis.fetch;
 
   afterEach(() => {
+    byomem_runtime_test_cleanup();
     globalThis.fetch = originalFetch;
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    byomem_runtime_test_reload_env();
     while (dirs.length) {
       rmSync(dirs.pop()!, { recursive: true, force: true });
     }
@@ -189,11 +201,8 @@ describe('byomem extension wiring', () => {
   });
 
   it('registers the active session capture and context hooks', async () => {
-    vi.resetModules();
-
-    const mod = await import('../src/pi-extension.ts');
     const localMock = makeMockPi();
-    mod.default(localMock.api as never);
+    extensionModule(localMock.api as never);
 
     expect(localMock.events.session_start).toHaveLength(1);
     expect(localMock.events.before_agent_start).toHaveLength(1);
@@ -203,10 +212,8 @@ describe('byomem extension wiring', () => {
   });
 
   it('defaults storeBaseDir to a global runtime path while keeping active project tied to cwd', async () => {
-    vi.resetModules();
-
-    const { byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts');
-    const status = statusFn();
+    byomem_runtime_test_reload_env();
+    const status = byomem_runtime_status();
 
     expect(status.storeBaseDir).toBe(join(process.env.HOME ?? '', '.byomem', 'runtime'));
     expect(status.activeProject).toMatchObject({
@@ -224,10 +231,9 @@ describe('byomem extension wiring', () => {
     const dir = tempDir();
     dirs.push(dir);
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
-    vi.resetModules();
+    byomem_runtime_test_reload_env();
 
-    const { byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts');
-    const status = statusFn();
+    const status = byomem_runtime_status();
 
     expect(status.storeBaseDir).toBe(dir);
     expect(status.activeProject).toMatchObject({
@@ -245,11 +251,11 @@ describe('byomem extension wiring', () => {
     const dir = tempDir();
     dirs.push(dir);
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
-    vi.resetModules();
+    vi.stubEnv('BYOMEM_EMBEDDING_DIMENSION', '8');
+    byomem_runtime_test_reload_env();
 
-    const { default: mod } = await import('../src/pi-extension.ts');
     const localMock = makeMockPi();
-    mod(localMock.api as never);
+    extensionModule(localMock.api as never);
 
     const notify = vi.fn();
     await localMock.events.session_start?.[0]?.({ reason: 'startup' }, { ui: { notify } });
@@ -301,11 +307,10 @@ describe('byomem extension wiring', () => {
     writeFileSync(transcriptPath, ['user: hello', 'assistant: hi there'].join('\n'), 'utf8');
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
     vi.stubEnv('BYOMEM_CONFIG_PATH', configPath);
-    vi.resetModules();
+    byomem_runtime_test_reload_env();
 
-    const mod = await import('../src/pi-extension.ts');
     const localMock = makeMockPi();
-    mod.default(localMock.api as never);
+    extensionModule(localMock.api as never);
 
     const turnEndHandler = localMock.events.turn_end?.[0];
     expect(turnEndHandler).toBeTypeOf('function');
@@ -339,11 +344,10 @@ describe('byomem extension wiring', () => {
     const dir = tempDir();
     dirs.push(dir);
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
-    vi.resetModules();
+    byomem_runtime_test_reload_env();
 
-    const mod = await import('../src/pi-extension.ts');
     const localMock = makeMockPi();
-    mod.default(localMock.api as never);
+    extensionModule(localMock.api as never);
 
     const turnEndHandler = localMock.events.turn_end?.[0];
     await turnEndHandler?.(
@@ -358,11 +362,10 @@ describe('byomem extension wiring', () => {
     const dir = tempDir();
     dirs.push(dir);
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
-    vi.resetModules();
+    byomem_runtime_test_reload_env();
 
-    const mod = await import('../src/pi-extension.ts');
     const localMock = makeMockPi();
-    mod.default(localMock.api as never);
+    extensionModule(localMock.api as never);
 
     const turnEndHandler = localMock.events.turn_end?.[0];
     await expect(turnEndHandler?.(
@@ -394,11 +397,10 @@ describe('byomem extension wiring', () => {
     writeFileSync(transcriptPath, ['user: hello', 'assistant: hi there'].join('\n'), 'utf8');
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
     vi.stubEnv('BYOMEM_CONFIG_PATH', configPath);
-    vi.resetModules();
+    byomem_runtime_test_reload_env();
 
-    const mod = await import('../src/pi-extension.ts');
     const localMock = makeMockPi();
-    mod.default(localMock.api as never);
+    extensionModule(localMock.api as never);
 
     await localMock.events.session_before_switch?.[0]?.(
       {},
@@ -415,10 +417,11 @@ describe('byomem extension wiring', () => {
       {},
       { sessionId: 'milestone-a-session', transcriptPath, ui: { notify() {} } },
     );
-    expect(existsSync(nativeStorePath)).toBe(true);
-    const snapshot = JSON.parse(readFileSync(nativeStorePath, 'utf8')) as { records: Array<any> };
-    expect(snapshot.records.filter((record) => record.content.structured?.kind === 'checkpoint')).toHaveLength(0);
-    const rollups = snapshot.records.filter((record) => record.content.structured?.kind === 'rollup');
+    expect(existsSync(nativeStorePath)).toBe(false);
+    expect(existsSync(join(dir, 'byomem-index.sqlite'))).toBe(true);
+    const records = readStoredRecords(dir);
+    expect(records.filter((record) => record.content.structured?.kind === 'checkpoint')).toHaveLength(0);
+    const rollups = records.filter((record) => record.content.structured?.kind === 'rollup');
     expect(rollups.length).toBeGreaterThanOrEqual(1);
     expect(rollups[0]?.content.structured).toMatchObject({
       kind: 'rollup',
@@ -452,11 +455,10 @@ describe('byomem extension wiring', () => {
     }) as typeof fetch;
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
     vi.stubEnv('BYOMEM_CONFIG_PATH', configPath);
-    vi.resetModules();
+    byomem_runtime_test_reload_env();
 
-    const mod = await import('../src/pi-extension.ts');
     const localMock = makeMockPi();
-    mod.default(localMock.api as never);
+    extensionModule(localMock.api as never);
 
     writeEventTranscript(transcriptPath, [
       { id: 'turn-1', user: 'What changed?', assistant: 'Checkpoint capture was restored.' },
@@ -497,9 +499,10 @@ describe('byomem extension wiring', () => {
     const status = JSON.parse((await statusTool!.execute('status', {})).content[0].text) as Record<string, unknown>;
     expect(status).toMatchObject({ summarizerModel: 'qwen3:8b', summarizerFallbackModel: 'qwen3.5:4b', activeProject: expect.any(Object), projectKey: expect.any(String) });
 
-    const snapshot = JSON.parse(readFileSync(join(dir, 'native-store.json'), 'utf8')) as { records: Array<any> };
-    expect(snapshot.records.filter((record) => record.content.structured?.kind === 'rollup')).toHaveLength(1);
-    expect(snapshot.records.find((record) => record.content.structured?.kind === 'rollup')).toMatchObject({
+    expect(existsSync(join(dir, 'native-store.json'))).toBe(false);
+    const records = readStoredRecords(dir);
+    expect(records.filter((record) => record.content.structured?.kind === 'rollup')).toHaveLength(1);
+    expect(records.find((record) => record.content.structured?.kind === 'rollup')).toMatchObject({
       content: {
         text: expect.stringContaining('Summarized pending turns'),
         structured: {
@@ -510,7 +513,7 @@ describe('byomem extension wiring', () => {
         },
       },
     });
-    expect(Object.keys((snapshot.records.find((record) => record.content.structured?.kind === 'rollup')?.content.structured ?? {}) as Record<string, unknown>)).toEqual(['kind', 'sessionId', 'flushReason', 'sourceStableKey']);
+    expect(Object.keys((records.find((record) => record.content.structured?.kind === 'rollup')?.content.structured ?? {}) as Record<string, unknown>)).toEqual(['kind', 'sessionId', 'flushReason', 'sourceStableKey']);
   });
 
   it('infers Ollama native chat transport from summarizer base URL without num_ctx', async () => {
@@ -534,11 +537,10 @@ describe('byomem extension wiring', () => {
     }) as typeof fetch;
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
     vi.stubEnv('BYOMEM_CONFIG_PATH', configPath);
-    vi.resetModules();
+    byomem_runtime_test_reload_env();
 
-    const mod = await import('../src/pi-extension.ts');
     const localMock = makeMockPi();
-    mod.default(localMock.api as never);
+    extensionModule(localMock.api as never);
 
     writeEventTranscript(transcriptPath, [
       { id: 'turn-1', user: 'What changed?', assistant: 'Checkpoint capture was restored.' },
@@ -586,10 +588,9 @@ describe('byomem extension wiring', () => {
       '  min_turns: 2',
     ]);
     vi.stubEnv('BYOMEM_CONFIG_PATH', configPath);
-    vi.resetModules();
+    byomem_runtime_test_reload_env();
 
-    const { byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts');
-    expect(statusFn()).toMatchObject({
+    expect(byomem_runtime_status()).toMatchObject({
       embeddingConfigSource: 'config',
       embeddingConfigPath: configPath,
       embeddingBaseUrl: 'http://localhost:11434/v1',
@@ -618,10 +619,9 @@ describe('byomem extension wiring', () => {
     dirs.push(dir);
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
     vi.stubEnv('BYOMEM_FILE_SEARCH_EMBEDDING_BATCH_SIZE', '23');
-    vi.resetModules();
+    byomem_runtime_test_reload_env();
 
-    const { byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts');
-    expect(statusFn()).toMatchObject({
+    expect(byomem_runtime_status()).toMatchObject({
       fileSearchConfigSource: 'env',
       fileSearchEmbeddingBatchSize: 23,
     });
@@ -632,10 +632,9 @@ describe('byomem extension wiring', () => {
     dirs.push(dir);
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
     vi.stubEnv('BYOMEM_FILE_SEARCH_EMBEDDING_CONCURRENCY', '5');
-    vi.resetModules();
+    byomem_runtime_test_reload_env();
 
-    const { byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts');
-    expect(statusFn()).toMatchObject({
+    expect(byomem_runtime_status()).toMatchObject({
       fileSearchConfigSource: 'env',
       fileSearchEmbeddingConcurrency: 5,
     });
@@ -646,10 +645,9 @@ describe('byomem extension wiring', () => {
     dirs.push(dir);
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
     vi.stubEnv('BYOMEM_FILE_SEARCH_INDEX_STORAGE_MODE', 'memory');
-    vi.resetModules();
+    byomem_runtime_test_reload_env();
 
-    let { byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts');
-    expect(statusFn()).toMatchObject({
+    expect(byomem_runtime_status()).toMatchObject({
       fileSearchConfigSource: 'env',
       fileSearchIndexStorageMode: 'memory',
     });
@@ -662,10 +660,9 @@ describe('byomem extension wiring', () => {
     vi.unstubAllEnvs();
     vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
     vi.stubEnv('BYOMEM_CONFIG_PATH', configPath);
-    vi.resetModules();
+    byomem_runtime_test_reload_env();
 
-    ({ byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts'));
-    expect(statusFn()).toMatchObject({
+    expect(byomem_runtime_status()).toMatchObject({
       fileSearchConfigSource: 'config',
       fileSearchConfigPath: configPath,
       fileSearchIndexStorageMode: 'memory',
@@ -683,10 +680,9 @@ describe('byomem extension wiring', () => {
       '  excluded_extensions: [\'txt\', ".db"]',
     ]);
     vi.stubEnv('BYOMEM_CONFIG_PATH', bracketedConfigPath);
-    vi.resetModules();
+    byomem_runtime_test_reload_env();
 
-    let { byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts');
-    expect(statusFn()).toMatchObject({
+    expect(byomem_runtime_status()).toMatchObject({
       fileSearchConfigSource: 'config',
       fileSearchConfigPath: bracketedConfigPath,
       fileSearchScannerExcludedExtensions: ['txt', '.db'],
@@ -700,10 +696,9 @@ describe('byomem extension wiring', () => {
       '    - ".db"',
     ]);
     vi.stubEnv('BYOMEM_CONFIG_PATH', blockConfigPath);
-    vi.resetModules();
+    byomem_runtime_test_reload_env();
 
-    ({ byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts'));
-    expect(statusFn()).toMatchObject({
+    expect(byomem_runtime_status()).toMatchObject({
       fileSearchConfigSource: 'config',
       fileSearchConfigPath: blockConfigPath,
       fileSearchScannerExcludedExtensions: ['txt', '.db'],
@@ -715,10 +710,9 @@ describe('byomem extension wiring', () => {
       '  excluded_extensions: []',
     ]);
     vi.stubEnv('BYOMEM_CONFIG_PATH', emptyConfigPath);
-    vi.resetModules();
+    byomem_runtime_test_reload_env();
 
-    ({ byomem_runtime_status: statusFn } = await import('../src/pi-extension.ts'));
-    expect(statusFn()).toMatchObject({
+    expect(byomem_runtime_status()).toMatchObject({
       fileSearchConfigSource: 'config',
       fileSearchConfigPath: emptyConfigPath,
       fileSearchScannerExcludedExtensions: [],
@@ -726,6 +720,11 @@ describe('byomem extension wiring', () => {
   });
 
   it('returns a minimal DTO for byomem_search results and omits support fields', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
+    byomem_runtime_test_reload_env();
+
     const mock = makeMockPi();
     extensionModule(mock.api as never);
 
@@ -814,6 +813,11 @@ describe('byomem extension wiring', () => {
   });
 
   it('normalizes store and prune intents before write-path execution', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
+    byomem_runtime_test_reload_env();
+
     const mock = makeMockPi();
     extensionModule(mock.api as never);
 

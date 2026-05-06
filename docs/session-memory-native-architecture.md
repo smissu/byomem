@@ -3,11 +3,14 @@
 ## Status
 Target architecture / recommended direction. This note describes the desired end state while acknowledging that some parts of the current system may still be transitional. Sprint 23 is the runtime cutover point: the TS-native path is the sole active/default steady-state path, and any Python surface is offline/dev-only or disabled by default.
 
+Session capture activation status: manual opt-in. Codex session capture remains disabled by default until the user explicitly approves enabling `session_capture.enabled: true`.
+Memory storage status: `byomem-index.sqlite` is the canonical memory DB once the DB-only cutover lands; `native-store.json` is legacy import-backup material only.
+
 ## Goal
 Make session-derived knowledge first-class BYOMem data:
 
 - **Pi session history remains the raw transcript source**.
-- **BYOMem stores distilled session knowledge as native searchable memory records**.
+- **BYOMem stores distilled session knowledge as native searchable memory records backed by `byomem-index.sqlite`**.
 - **Markdown is optional projection/export, not the source of truth**.
 - **Session-derived memory is a native memory type** with project scope and session provenance.
 - **Retrieval uses the native BYOMem API/DB path**, not grep over markdown.
@@ -84,5 +87,18 @@ This keeps retrieval consistent, avoids parallel truth stores, and lets the same
 - Requiring every distilled fact to preserve verbatim transcript text.
 - Introducing a separate markdown-only retrieval path.
 
+## Activation Safety
+
+The activation-ready path stores summarized rollups only:
+
+- Below-threshold turns update `queue/session-capture-state.json` and create no durable record.
+- Flushes write compact `byomem-session` records with minimal structured fields: `kind`, `sessionId`, `flushReason`, and `sourceStableKey`.
+- Raw transcript content, tool traces, `thinkingSignature`, `textSignature`, `encrypted_content`, and `encryptedContent` are excluded before summarizer input, fallback summaries, and durable rollup persistence.
+- File search excludes session runtime artifacts such as `queue.json`, `worker.json`, `queue/session-capture-state.json`, `queue/debug/byomem-turn-end.jsonl`, root `queue/`, and root `.byomem/`.
+
+Manual enablement requires explicit approval, a config change to set `session_capture.enabled: true`, a runtime restart, and a dry-run check of `byomem_runtime_status`. Rollback is setting `session_capture.enabled: false` or removing the block, restarting, and pruning any validation rollups if needed.
+
 ## Migration note
 If the current implementation still uses markdown in any part of the pipeline, treat this note as the desired target architecture: keep markdown as an export/projection layer while moving retrieval and durable storage to native BYOMem records.
+
+After the DB-only storage cutover, treat `byomem-index.sqlite` as the canonical memory DB and `native-store.json` only as a legacy import backup for one-time migration and rollback safety.
