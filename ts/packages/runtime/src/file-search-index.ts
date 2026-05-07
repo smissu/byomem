@@ -502,6 +502,26 @@ function buildHit(row: FileSearchChunkRow, source: FileSearchSearchMode): FileSe
   return buildSearchResult(row, source, redactSensitiveFileSearchText);
 }
 
+function queryContentTermCoverage(row: Pick<FileSearchChunkRow, 'content'>, queryTokens: string[]): number {
+  if (!queryTokens.length) return 0;
+  const contentTokens = new Set(tokenizeSearchQuery(row.content));
+  return queryTokens.filter((token) => contentTokens.has(token)).length;
+}
+
+function boostAndRankLexicalRows(rows: FileSearchChunkRow[], allRows: FileSearchChunkRow[], query: string, limit: number): FileSearchChunkRow[] {
+  const candidateRows = candidateScoreMap(rows);
+  const allChunkRows = candidateScoreMap(allRows);
+  const scores = new Map(rows.map((row) => [chunkKey(row), row.lexicalScore ?? row.score ?? 0]));
+  const queryTokens = tokenize(query);
+  const contentCoverage = new Map(rows.map((row) => [chunkKey(row), queryContentTermCoverage(row, queryTokens)]));
+  const maxContentCoverage = Math.max(0, ...contentCoverage.values());
+  const boostCandidates = maxContentCoverage > 1
+    ? new Map([...candidateRows.entries()].filter(([key]) => contentCoverage.get(key) === maxContentCoverage))
+    : candidateRows;
+  const boosted = applyQueryBoost(scores, query, boostCandidates, allChunkRows);
+  return rerankTopK(boosted, candidateRows, limit, true, query).map((entry) => ({ ...entry.chunk, score: entry.score }));
+}
+
 function blendHits(
   bm25Rows: FileSearchChunkRow[],
   semanticRows: FileSearchChunkRow[],
@@ -827,11 +847,14 @@ export class FileSearchIndex {
     markFileSearchProjectSeen(fileDb.db, this.projectBaseDir, 'manual-search');
     const snapshot = this.hydrate();
     if (!snapshot) return [];
-    const overFetch = mode === 'hybrid' ? limit * 5 : limit;
+    const overFetch = mode === 'hybrid' || mode === 'bm25' ? limit * 5 : limit;
     const filteredRows = filterSnapshotRows(snapshot, options);
     const lexicalRows = queryLexicalBm25Prepared(ensureBm25Index(snapshot), query, overFetch, filteredRows);
-    const safeLexicalRows = lexicalRows.filter(isSafeFileSearchRow);
-    if (mode === 'bm25') return safeLexicalRows.slice(0, limit).map((row) => buildHit(row, 'bm25'));
+    let safeLexicalRows = lexicalRows.filter(isSafeFileSearchRow);
+    if (!safeLexicalRows.length) {
+      safeLexicalRows = queryLexicalBm25Rows(loadAllChunks(fileDb.db, this.projectKey), query, overFetch, options).filter(isSafeFileSearchRow);
+    }
+    if (mode === 'bm25') return boostAndRankLexicalRows(safeLexicalRows, filteredRows, query, limit).map((row) => buildHit(row, 'bm25'));
     if (mode === 'semantic') {
       const semanticRows = await querySemanticSnapshot(fileDb, snapshot, query, overFetch, filteredRows);
       return semanticRows.filter(isSafeFileSearchRow).slice(0, limit).map((row) => buildHit(row, 'semantic'));

@@ -493,7 +493,7 @@ function chunkCodeAware(filePath: string, content: string, language: string, wai
       filePath,
       content: chunk.text,
       startLine: lineNumberAt(content, chunk.startIndex),
-      endLine: lineNumberAt(content, chunk.endIndex),
+      endLine: lineNumberAt(content, Math.max(chunk.startIndex, chunk.endIndex - 1)),
       language,
     })), {
       source: 'chonkie',
@@ -787,10 +787,9 @@ export function buildSearchResult(row: FileSearchChunkRow, source: FileSearchSea
   const chunk: FileSearchChunk = {
     filePath: row.filePath,
     content: redactText(row.content),
-    startLine: row.startLine,
-    endLine: row.endLine,
+    ...(row.hasLineMetadata === false ? {} : { startLine: row.startLine, endLine: row.endLine }),
     ...(row.language ? { language: row.language } : {}),
-  };
+  } as FileSearchChunk;
   const result: FileSearchSearchResult = { chunk, score: row.score ?? 0, source };
   const legacyId = `${row.projectKey}:${row.filePath}:${row.chunkIndex}`;
   const legacyIdentity = {

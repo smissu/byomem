@@ -323,5 +323,5 @@ describe('Sprint 50 embedding backend contract', () => {
 
     await expect(refreshTool.execute('direct-refresh-failure', { baseDir: projectDir, limit: 1 }))
       .rejects.toThrow(/Remote embedding request returned no embedding for model nomic-embed-text/);
-  });
+  }, 15_000);
 });

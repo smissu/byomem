@@ -1375,6 +1375,7 @@ function embeddingModel(options: FileSearchDbOptions): string {
 
 function embeddingConfiguredDimension(options: FileSearchDbOptions): number {
   if (options.embeddingDimension !== undefined) return options.embeddingDimension;
+  if (options.embeddingBaseUrl) return 0;
   return embeddingModel(options) === SEMBLE_EMBEDDING_MODEL ? 256 : DEFAULT_EMBEDDING_DIMENSION;
 }
 

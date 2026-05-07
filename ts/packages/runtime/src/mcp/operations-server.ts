@@ -21,14 +21,7 @@ let runtimeContext: CachedOperationsRuntimeContext | undefined;
 function buildRuntimeContext(): CachedOperationsRuntimeContext {
   const runtime = openReadOnlyRuntimeContext({});
   const activeProject = resolveActiveProjectContext(process.env, process.cwd());
-  const nativeStore = openNativeStore({
-    baseDir: runtime.runtimeBaseDir,
-    fileSearchSemanticEnabled: true,
-    fileSearchScanOnOpen: false,
-    fileSearchSchedulerEnabled: false,
-    fileSearchScannerExcludedExtensions: runtime.fileSearchConfig.excludedExtensions,
-    fileSearchBinaryDetectionEnabled: runtime.fileSearchConfig.binaryDetectionEnabled,
-  });
+  let nativeStore: ReturnType<typeof openNativeStore> | undefined;
   const noPythonDisabled = (() => {
     try {
       noPythonDefaultPath('python-default');
@@ -40,12 +33,22 @@ function buildRuntimeContext(): CachedOperationsRuntimeContext {
 
   return {
     ...runtime,
-    nativeStore,
+    get nativeStore() {
+      nativeStore ??= openNativeStore({
+        baseDir: runtime.runtimeBaseDir,
+        fileSearchSemanticEnabled: true,
+        fileSearchScanOnOpen: false,
+        fileSearchSchedulerEnabled: false,
+        fileSearchScannerExcludedExtensions: runtime.fileSearchConfig.excludedExtensions,
+        fileSearchBinaryDetectionEnabled: runtime.fileSearchConfig.binaryDetectionEnabled,
+      });
+      return nativeStore;
+    },
     status: buildByomemRuntimeStatus({
       runtimeMode: resolveRuntimeMode(),
       noPythonDefaultPath: noPythonDisabled,
       runtimeBaseDir: runtime.runtimeBaseDir,
-      nativeStoreBaseDir: nativeStore.baseDir,
+      nativeStoreBaseDir: runtime.runtimeBaseDir,
       activeProject,
       embeddingConfig: runtime.embeddingConfig,
       sessionCaptureConfig: runtime.sessionCaptureConfig,

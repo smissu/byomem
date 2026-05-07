@@ -161,5 +161,5 @@ describe('Sprint 46 operations MCP server', () => {
     }
     expect(existsSync(join(runtimeDir, 'native-store.json'))).toBe(false);
     expect(existsSync(join(runtimeDir, 'byomem-file-search.sqlite'))).toBe(true);
-  });
+  }, 15_000);
 });

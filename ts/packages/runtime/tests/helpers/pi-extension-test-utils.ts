@@ -56,14 +56,24 @@ export function makeMockPi(): MockPi {
 }
 
 export async function disposeMockPi(mock: Pick<MockPi, 'events'>): Promise<void> {
-  for (const handler of mock.events.dispose ?? []) {
+  const cleanupHandlers = [
+    ...(mock.events.dispose ?? []),
+    ...(mock.events.shutdown ?? []),
+    ...(mock.events['runtime:end'] ?? []),
+    ...(mock.events['session:end'] ?? []),
+  ];
+  for (const handler of cleanupHandlers) {
     await handler({}, {});
   }
 }
 
+type PiExtensionModule = typeof import('../../src/pi-extension.js');
+let extensionModule: PiExtensionModule | undefined;
+
 export async function loadExtension() {
-  vi.resetModules();
-  return import('../../src/pi-extension.js');
+  extensionModule ??= await import('../../src/pi-extension.js');
+  extensionModule.byomem_runtime_test_reload_env();
+  return extensionModule;
 }
 
 export function findRegisteredTool(mock: Pick<MockPi, 'tools'>, name: string): RegisteredTool | undefined {

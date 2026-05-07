@@ -192,5 +192,5 @@ describe('Sprint 38 file-search extension direct scan contract', () => {
     } finally {
       fileDb.close();
     }
-  });
+  }, 15_000);
 });

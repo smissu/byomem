@@ -74,6 +74,7 @@ export interface SqliteSidecarReader {
 export interface SqliteSidecarMutator {
   syncWrite(intent: WriteIntent, owner: SqliteSidecarOwner): Promise<MemoryRecord>;
   syncImport(records: MemoryRecord[], owner: SqliteSidecarOwner): void;
+  syncReplace(records: MemoryRecord[], owner: SqliteSidecarOwner): void;
   syncPrune(id: string, owner: SqliteSidecarOwner): MemoryRecord | undefined;
 }
 
@@ -226,6 +227,9 @@ export function openSqliteSidecarBundle(options: SqliteSidecarOptions): { sideca
   const deleteFtsStmt = db.prepare(`DELETE FROM records_fts WHERE id = ?`);
   const deleteEmbeddingStmt = db.prepare(`DELETE FROM record_embeddings WHERE record_id = ?`);
   const deleteRecordStmt = db.prepare(`DELETE FROM records WHERE id = ?`);
+  const clearEmbeddingStmt = db.prepare(`DELETE FROM record_embeddings`);
+  const clearFtsAllStmt = db.prepare(`DELETE FROM records_fts`);
+  const clearRecordsStmt = db.prepare(`DELETE FROM records`);
   const cacheSelectStmt = db.prepare(`SELECT embedding, model, dimension FROM embedding_cache WHERE text_hash = ? AND provider_key = ? AND model = ? AND configured_dimension = ? AND identity_version = ? AND status = 'ready'`);
   const cacheUpsertStmt = db.prepare(`INSERT OR REPLACE INTO embedding_cache (text_hash, embedding, model, configured_dimension, dimension, provider_key, identity_version, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?) `);
   const recordEmbeddingUpsertStmt = db.prepare(`INSERT OR REPLACE INTO record_embeddings (record_id, text_hash, content_hash, embedding, model, configured_dimension, dimension, provider_key, identity_version, status, error, failed_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', NULL, NULL, ?) `);
@@ -272,6 +276,14 @@ export function openSqliteSidecarBundle(options: SqliteSidecarOptions): { sideca
 
   function semanticQueryVector(query: string): Promise<number[] | undefined> {
     return embeddingClient.embed(truncateEmbeddingText(query));
+  }
+
+  function upsertRecords(records: MemoryRecord[]): void {
+    for (const record of records) {
+      upsertRecordStmt.run(record.id, record.scope, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? 'root', record.provenance.source, record.provenance.timestamp ?? null, record.provenance.adapter ?? null, record.provenance.origin ?? null, record.content.text ?? null, JSON.stringify(record.content.structured ?? {}), record.metadata?.createdAt ?? new Date().toISOString(), record.metadata?.updatedAt ?? new Date().toISOString());
+      deleteFtsStmt.run(record.id);
+      upsertFtsStmt.run(record.id, record.scope, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? 'root', record.content.text ?? '', JSON.stringify(record.content.structured ?? {}));
+    }
   }
 
   function lexicalMatches(rows: Array<{ id: string; scope: string; namespace: string; leaf_name: string; parent_context: string; provenance_source: string; provenance_timestamp: string | null; provenance_adapter: string | null; provenance_origin: string | null; content_text: string | null; content_structured: string | null; created_at: string; updated_at: string }>, query: string): MemoryRecord[] {
@@ -499,12 +511,32 @@ export function openSqliteSidecarBundle(options: SqliteSidecarOptions): { sideca
       const now = new Date().toISOString();
       const normalizedRecords = records.map((record) => normalizeRecord(record));
       db.transaction(() => {
-        for (const record of normalizedRecords) {
-          upsertRecordStmt.run(record.id, record.scope, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? 'root', record.provenance.source, record.provenance.timestamp ?? null, record.provenance.adapter ?? null, record.provenance.origin ?? null, record.content.text ?? null, JSON.stringify(record.content.structured ?? {}), record.metadata?.createdAt ?? now, record.metadata?.updatedAt ?? now);
-          deleteFtsStmt.run(record.id);
-          upsertFtsStmt.run(record.id, record.scope, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? 'root', record.content.text ?? '', JSON.stringify(record.content.structured ?? {}));
-        }
+        upsertRecords(normalizedRecords.map((record) => ({
+          ...record,
+          metadata: {
+            createdAt: record.metadata?.createdAt ?? now,
+            updatedAt: record.metadata?.updatedAt ?? now,
+          },
+        })));
         if (normalizedRecords.length) bumpIndexRevision();
+      })();
+    },
+    syncReplace(records: MemoryRecord[], owner: SqliteSidecarOwner): void {
+      assertOwner(owner);
+      const now = new Date().toISOString();
+      const normalizedRecords = records.map((record) => normalizeRecord(record)).map((record) => ({
+        ...record,
+        metadata: {
+          createdAt: record.metadata?.createdAt ?? now,
+          updatedAt: record.metadata?.updatedAt ?? now,
+        },
+      }));
+      db.transaction(() => {
+        clearEmbeddingStmt.run();
+        clearFtsAllStmt.run();
+        clearRecordsStmt.run();
+        upsertRecords(normalizedRecords);
+        bumpIndexRevision();
       })();
     },
     async syncWrite(intent: WriteIntent, owner: SqliteSidecarOwner): Promise<MemoryRecord> {
@@ -522,9 +554,7 @@ export function openSqliteSidecarBundle(options: SqliteSidecarOptions): { sideca
       const text = recordText(record);
       const contentHash = embeddingClient.hashText(truncateEmbeddingText(text));
       const writeRecordRows = () => {
-        upsertRecordStmt.run(record.id, record.scope, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? 'root', record.provenance.source, record.provenance.timestamp ?? null, record.provenance.adapter ?? null, record.provenance.origin ?? null, record.content.text ?? null, JSON.stringify(record.content.structured ?? {}), record.metadata?.createdAt ?? new Date().toISOString(), record.metadata?.updatedAt ?? new Date().toISOString());
-        deleteFtsStmt.run(record.id);
-        upsertFtsStmt.run(record.id, record.scope, record.identity.namespace, record.identity.leafName, record.identity.parentContext ?? 'root', record.content.text ?? '', JSON.stringify(record.content.structured ?? {}));
+        upsertRecords([record]);
       };
       if (!options.embeddingRequireRemote) {
         db.transaction(() => {

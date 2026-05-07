@@ -37,9 +37,13 @@ function makeMockPi() {
   };
 }
 
-async function loadExtension() {
-  vi.resetModules();
-  return import('../src/pi-extension.ts');
+type PiExtensionModule = typeof import('../src/pi-extension.ts');
+let extensionModule: PiExtensionModule | undefined;
+
+async function loadExtension(): Promise<PiExtensionModule> {
+  extensionModule ??= await import('../src/pi-extension.ts');
+  extensionModule.byomem_runtime_test_reload_env();
+  return extensionModule;
 }
 
 function tool(mock: MockPi, name: string): RegisteredTool {
@@ -69,10 +73,21 @@ function pollingFields(extra: Record<string, unknown> = {}) {
 
 describe('Sprint 39 active-project file-search auto polling RED contract', () => {
   const dirs: string[] = [];
+  const mocks: MockPi[] = [];
   const originalRuntimeBase = process.env.BYOMEM_RUNTIME_BASE_DIR;
   const originalCwd = process.cwd;
 
-  afterEach(() => {
+  afterEach(async () => {
+    while (mocks.length) {
+      const mock = mocks.pop()!;
+      const cleanupHandlers = [
+        ...(mock.events.dispose ?? []),
+        ...(mock.events.shutdown ?? []),
+        ...(mock.events['runtime:end'] ?? []),
+        ...(mock.events['session:end'] ?? []),
+      ];
+      for (const handler of cleanupHandlers) await handler({}, {});
+    }
     vi.useRealTimers();
     vi.restoreAllMocks();
     process.cwd = originalCwd;
@@ -86,6 +101,12 @@ describe('Sprint 39 active-project file-search auto polling RED contract', () =>
     const dir = tempDir(prefix);
     dirs.push(dir);
     return dir;
+  }
+
+  function trackedMockPi(): MockPi {
+    const mock = makeMockPi();
+    mocks.push(mock);
+    return mock;
   }
 
   function setRuntime(): string {
@@ -102,7 +123,7 @@ describe('Sprint 39 active-project file-search auto polling RED contract', () =>
     vi.spyOn(process, 'cwd').mockReturnValue(projectDir);
 
     const mod = await loadExtension();
-    const mock = makeMockPi();
+    const mock = trackedMockPi();
     mod.default(mock.api as never);
     const fileDb = openFileSearchDb({ baseDir: projectDir, scanOnOpen: false, schedulerEnabled: false });
     try {
@@ -119,7 +140,7 @@ describe('Sprint 39 active-project file-search auto polling RED contract', () =>
     const projectDir = trackedTemp('byomem-s39-status-');
     writeFileSync(join(projectDir, 'status.txt'), 'status body\n', 'utf8');
     const mod = await loadExtension();
-    const mock = makeMockPi();
+    const mock = trackedMockPi();
     mod.default(mock.api as never);
 
     const status = await tool(mock, 'byomem_file_search_polling_status').execute('status-1', { baseDir: projectDir }) as Record<string, any>;
@@ -130,7 +151,7 @@ describe('Sprint 39 active-project file-search auto polling RED contract', () =>
 
   it('registers explicit polling-only Pi tools and leaves existing search/status/scan tools non-polling', async () => {
     const mod = await loadExtension();
-    const mock = makeMockPi();
+    const mock = trackedMockPi();
     mod.default(mock.api as never);
 
     expect(mock.tools.map((entry) => entry.name)).toEqual(expect.arrayContaining([
@@ -183,7 +204,7 @@ describe('Sprint 39 active-project file-search auto polling RED contract', () =>
     }
 
     const mod = await loadExtension();
-    const mock = makeMockPi();
+    const mock = trackedMockPi();
     mod.default(mock.api as never);
 
     const enabled = await tool(mock, 'byomem_file_search_polling_enable').execute('enable-1', {
@@ -212,7 +233,7 @@ describe('Sprint 39 active-project file-search auto polling RED contract', () =>
     const otherDir = trackedTemp('byomem-s39-active-mismatch-');
     vi.spyOn(process, 'cwd').mockReturnValue(activeDir);
     const mod = await loadExtension();
-    const mock = makeMockPi();
+    const mock = trackedMockPi();
     mod.default(mock.api as never);
 
     await expect(tool(mock, 'byomem_file_search_polling_enable').execute('mismatch', {
@@ -236,7 +257,7 @@ describe('Sprint 39 active-project file-search auto polling RED contract', () =>
     writeFileSync(join(projectDir, 'interval.txt'), 'interval v1\n', 'utf8');
     vi.spyOn(process, 'cwd').mockReturnValue(projectDir);
     const mod = await loadExtension();
-    const mock = makeMockPi();
+    const mock = trackedMockPi();
     mod.default(mock.api as never);
 
     await tool(mock, 'byomem_file_search_polling_enable').execute('enable-interval', {
@@ -267,7 +288,7 @@ describe('Sprint 39 active-project file-search auto polling RED contract', () =>
     writeFileSync(filePath, 'idle v1\n', 'utf8');
     vi.spyOn(process, 'cwd').mockReturnValue(projectDir);
     const mod = await loadExtension();
-    const mock = makeMockPi();
+    const mock = trackedMockPi();
     mod.default(mock.api as never);
 
     await tool(mock, 'byomem_file_search_polling_enable').execute('enable-idle', {
@@ -307,7 +328,7 @@ describe('Sprint 39 active-project file-search auto polling RED contract', () =>
     writeFileSync(filePath, 'readable baseline\n', 'utf8');
     vi.spyOn(process, 'cwd').mockReturnValue(projectDir);
     const mod = await loadExtension();
-    const mock = makeMockPi();
+    const mock = trackedMockPi();
     mod.default(mock.api as never);
 
     await tool(mock, 'byomem_file_search_polling_enable').execute('enable-poll-error', {
@@ -337,7 +358,7 @@ describe('Sprint 39 active-project file-search auto polling RED contract', () =>
     writeFileSync(join(projectDir, 'disable.txt'), 'disable\n', 'utf8');
     vi.spyOn(process, 'cwd').mockReturnValue(projectDir);
     const mod = await loadExtension();
-    const mock = makeMockPi();
+    const mock = trackedMockPi();
     mod.default(mock.api as never);
 
     await tool(mock, 'byomem_file_search_polling_enable').execute('enable-disable', {
@@ -361,7 +382,7 @@ describe('Sprint 39 active-project file-search auto polling RED contract', () =>
     writeFileSync(join(projectDir, 'session.txt'), 'session\n', 'utf8');
     vi.spyOn(process, 'cwd').mockReturnValue(projectDir);
     const mod = await loadExtension();
-    const mock = makeMockPi();
+    const mock = trackedMockPi();
     mod.default(mock.api as never);
 
     await tool(mock, 'byomem_file_search_polling_enable').execute('enable-session', {

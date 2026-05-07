@@ -6,7 +6,7 @@ import { openNativeStore } from '../src/store.js';
 import { searchIndex, type FileSearchHit } from '../src/file-search-query.js';
 import { rankRecords } from '../src/ranking.js';
 import type { MemoryRecord } from '../src/contracts.js';
-import { openFileSearchDb } from '../src/file-search-db.js';
+import { openFileSearchDb, resolveFileSearchProjectKey } from '../src/file-search-db.js';
 
 type SchedulerHandle = {
   scheduleRefresh?: (event: { kind: string; projectKey?: string; baseDir?: string }) => void;
@@ -75,9 +75,10 @@ describe('Sprint 31 file search refinement and cleanup', () => {
     expect(() => openFileSearchDb({ baseDir: dir, dbFile: canonicalSnapshotPath })).toThrow(/memories DB path/i);
     expect(() => openFileSearchDb({ baseDir: dir, dbFile: migratedSnapshotPath })).not.toThrow();
     const fileDb = openFileDb(dir);
-    expect(fileDb.db?.prepare('SELECT * FROM indexed_files WHERE path LIKE ?').all('%byomem-index.sqlite%')).toSatisfy((rows: unknown) => Array.isArray(rows) && rows.every((row) => !(row as { path?: string }).path?.includes('/byomem-index.sqlite')));
-    expect(fileDb.db?.prepare('SELECT * FROM indexed_files WHERE path LIKE ?').all('%native-store.json%')).toSatisfy((rows: unknown) => Array.isArray(rows) && rows.every((row) => !(row as { path?: string }).path?.includes('/native-store.json')));
-    expect(fileDb.db?.prepare('SELECT * FROM indexed_files WHERE path LIKE ?').all('%native-store.json.migrated%')).toSatisfy((rows: unknown) => Array.isArray(rows) && rows.every((row) => !(row as { path?: string }).path?.includes('/native-store.json.migrated')));
+    const projectKey = resolveFileSearchProjectKey(dir);
+    expect(fileDb.db?.prepare('SELECT * FROM indexed_files WHERE project_key = ? AND path LIKE ?').all(projectKey, '%byomem-index.sqlite%')).toSatisfy((rows: unknown) => Array.isArray(rows) && rows.every((row) => !(row as { path?: string }).path?.includes('/byomem-index.sqlite')));
+    expect(fileDb.db?.prepare('SELECT * FROM indexed_files WHERE project_key = ? AND path LIKE ?').all(projectKey, '%native-store.json%')).toSatisfy((rows: unknown) => Array.isArray(rows) && rows.every((row) => !(row as { path?: string }).path?.includes('/native-store.json')));
+    expect(fileDb.db?.prepare('SELECT * FROM indexed_files WHERE project_key = ? AND path LIKE ?').all(projectKey, '%native-store.json.migrated%')).toSatisfy((rows: unknown) => Array.isArray(rows) && rows.every((row) => !(row as { path?: string }).path?.includes('/native-store.json.migrated')));
   });
 
   it('keeps scheduler dependency bounded to a minimal refresh callback contract', () => {

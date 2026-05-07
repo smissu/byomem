@@ -29,6 +29,8 @@
 - [Sprint 39 — Active-Project File-Search Auto Polling](./sprint-39-active-project-file-search-auto-polling.md)
 - [Sprint 42 — File-Search Source Line Ranges](./sprint-42-file-search-line-ranges.md)
 - [Sprint 43 — Runtime-Local File-Search Async Scan Jobs](./sprint-43-file-search-async-scan-jobs.md)
+- [Sprint 62 — Runtime Stabilization Before New Features](./sprint-62-runtime-stabilization-before-new-features.md)
+- [Sprint 63 — Graphify-Native BYOMem Graph Search](./sprint-63-graphify-native-parity.md)
 - [Semantic / Hybrid Document Search Runbook](./semantic-hybrid-document-search-runbook.md)
 - [Pi memory implementation backlog](./pi-memory-implementation-backlog.md)
 

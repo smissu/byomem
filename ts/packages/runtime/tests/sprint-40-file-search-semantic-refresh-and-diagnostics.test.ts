@@ -69,9 +69,13 @@ function makeMockPi() {
   };
 }
 
-async function loadExtension() {
-  vi.resetModules();
-  return import('../src/pi-extension.ts');
+type PiExtensionModule = typeof import('../src/pi-extension.ts');
+let extensionModule: PiExtensionModule | undefined;
+
+async function loadExtension(): Promise<PiExtensionModule> {
+  extensionModule ??= await import('../src/pi-extension.ts');
+  extensionModule.byomem_runtime_test_reload_env();
+  return extensionModule;
 }
 
 function parseLastLog(spy: ReturnType<typeof vi.spyOn>): Record<string, unknown> {
@@ -433,6 +437,19 @@ describe('Sprint 40 file-search semantic refresh and diagnostics RED contracts',
     const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ embedding: [1, 0, 0] }), { status: 200, headers: { 'content-type': 'application/json' } }));
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const fileDb = openFileSearchDb({
+      baseDir: projectDir,
+      dbBaseDir: runtimeDir,
+      scanOnOpen: true,
+      schedulerEnabled: false,
+      semanticSearchEnabled: true,
+      embeddingBaseUrl: 'http://localhost:11434',
+      embeddingModel: 'cli-model',
+      embeddingDimension: 3,
+      scannerIncludeTextFiles: true,
+    });
+    fileDb.close();
+    fetchSpy.mockClear();
 
     await main([
       'file-search',

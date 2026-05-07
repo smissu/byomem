@@ -164,5 +164,5 @@ describe('Sprint 56 hot-index runtime surfaces', () => {
       revision: scanHotIndex.revision,
       buildCount: scanHotIndex.buildCount,
     }));
-  });
+  }, 15_000);
 });

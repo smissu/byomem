@@ -41,4 +41,7 @@ pnpm-debug.log*
 .DS_Store
 playwright-report/
 test-results/
-docs/
+docs/*
+!docs/
+!docs/sprint-62-runtime-stabilization-before-new-features.md
+!docs/sprint-63-graphify-native-parity.md

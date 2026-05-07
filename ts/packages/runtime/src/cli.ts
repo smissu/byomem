@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { openNativeStore } from './store.js';
+import { join, resolve } from 'node:path';
+import { inspectNativeStoreConflict, openNativeStore, repairNativeStoreConflict } from './store.js';
+import { openFileSearchDb } from './file-search-db.js';
 import { openFileSearchRegistryDb } from './file-search-db.js';
 import { buildFileSearchIndex } from './file-search-index.js';
 import { listFileSearchProjects, markFileSearchProjectSeen, normalizeFileSearchPollingDisabledReason, registerFileSearchProject, unregisterFileSearchProject } from './file-search-project-registry.js';
@@ -41,9 +42,10 @@ type CliOptions = {
 };
 
 type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
+type NativeStoreRepairAuthority = 'sqlite' | 'json' | 'abort';
 
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
@@ -81,6 +83,12 @@ function parseWatchMode(flags: { watch: boolean; watchInterval?: string }, json:
 type FileSearchCliRequest = { query: string; mode: 'bm25' | 'semantic' | 'hybrid'; limit: number };
 type MemorySearchCliRequest = { query: string; mode: 'bm25' | 'semantic' | 'hybrid'; limit: number; scope?: 'project' | 'dir' | 'user' | 'agent' };
 type FileSearchRelatedCliRequest = { filePath: string; line: number; limit: number };
+type DirectFileSearchCliStore = {
+  baseDir: string;
+  fileSearchDb: ReturnType<typeof openFileSearchDb>;
+  fileSearchProjectBaseDir: string;
+  close(): void;
+};
 
 type CliFileSearchProject = {
   project_key: string;
@@ -126,9 +134,39 @@ function serializeFileSearchProject(project: ReturnType<typeof registerFileSearc
   };
 }
 
-function parseArgs(argv: string[]): { command?: string; options: CliOptions; payload: Record<string, string>; flags: { watch: boolean; watchInterval?: string; baseDirProvided: boolean } } {
+function openDirectFileSearchCliStore(options: CliOptions): DirectFileSearchCliStore {
+  const baseDir = resolve(options.baseDir);
+  const fileSearchDb = openFileSearchDb({
+    baseDir,
+    projectBaseDir: baseDir,
+    embeddingBaseUrl: options.embeddingBaseUrl,
+    embeddingModel: options.embeddingModel,
+    embeddingDimension: options.embeddingDimension,
+    embeddingTimeoutMs: options.embeddingTimeoutMs,
+    embeddingRequireRemote: options.embeddingRequireRemote,
+    semanticSearchEnabled: options.fileSearchSemanticEnabled,
+    embeddingBatchSize: options.fileSearchEmbeddingBatchSize,
+    embeddingConcurrency: options.fileSearchEmbeddingConcurrency,
+    scanOnOpen: false,
+    schedulerEnabled: false,
+    scannerExcludedExtensions: options.fileSearchScannerExcludedExtensions,
+    scannerBinaryDetectionEnabled: options.fileSearchBinaryDetectionEnabled,
+    scannerIncludeTextFiles: options.fileSearchIncludeTextFiles,
+    storageMode: options.fileSearchIndexStorageMode,
+  });
+  return {
+    baseDir,
+    fileSearchDb,
+    fileSearchProjectBaseDir: baseDir,
+    close(): void {
+      fileSearchDb.close();
+    },
+  };
+}
+
+function parseArgs(argv: string[]): { command?: string; options: CliOptions; payload: Record<string, string>; flags: { watch: boolean; watchInterval?: string; baseDirProvided: boolean; dryRun: boolean } } {
   const payload: Record<string, string> = {};
-  const flags = { watch: false, watchInterval: undefined as string | undefined, baseDirProvided: false };
+  const flags = { watch: false, watchInterval: undefined as string | undefined, baseDirProvided: false, dryRun: false };
   const options: CliOptions = {
     baseDir: mkdtempSync(join(tmpdir(), 'byomem-cli-')),
     fileSearchScannerExcludedExtensions: parseExtensionList(process.env.BYOMEM_FILE_SEARCH_EXCLUDED_EXTENSIONS),
@@ -174,6 +212,7 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--async') { payload.async = 'true'; }
     else if (arg === '--watch') { flags.watch = true; }
     else if (arg === '--watch-interval') { flags.watchInterval = requireValue(next, '--watch-interval'); i += 1; }
+    else if (arg === '--dry-run') { flags.dryRun = true; }
     else if (arg === '--poll-interval-seconds') { payload.pollIntervalSeconds = requireValue(next, '--poll-interval-seconds'); i += 1; }
     else if (arg === '--idle-disable-after-polls') { payload.idleDisableAfterPolls = requireValue(next, '--idle-disable-after-polls'); i += 1; }
     else if (arg === '--reason') { payload.reason = requireValue(next, '--reason'); i += 1; }
@@ -183,6 +222,7 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--scope') { payload.scope = requireValue(next, '--scope'); i += 1; }
     else if (arg === '--mode') { payload.mode = requireValue(next, '--mode'); i += 1; }
     else if (arg === '--limit') { payload.limit = requireValue(next, '--limit'); i += 1; }
+    else if (arg === '--authority') { payload.authority = requireValue(next, '--authority'); i += 1; }
     else if (arg === '--file-path') { payload.filePath = requireValue(next, '--file-path'); i += 1; }
     else if (arg === '--line') { payload.line = requireValue(next, '--line'); i += 1; }
     else if (arg === '--semantic-file-search') { options.fileSearchSemanticEnabled = true; }
@@ -238,6 +278,12 @@ function parseExtensionList(value: string | undefined): string[] | undefined {
 
 function parseOptionalPositiveIntegerFlag(payload: Record<string, string>, key: string, flag: string): number | undefined {
   return payload[key] === undefined ? undefined : parsePositiveIntegerFlag(payload, key, flag);
+}
+
+function parseNativeStoreRepairAuthority(value: string | undefined): NativeStoreRepairAuthority {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === 'sqlite' || normalized === 'json' || normalized === 'abort') return normalized;
+  throw new Error('Missing --authority for native-store-repair');
 }
 
 function parseFileSearchRequest(payload: Record<string, string>): FileSearchCliRequest {
@@ -307,10 +353,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const isFileSearchCommand = command === 'file-search' || command === 'file-search-related' || command === 'file-search-scan' || command === 'file-search-status' || command === 'file-search-semantic-refresh';
   const isFileSearchPollingCommand = command === 'file-search-polling-status' || command === 'file-search-polling-enable' || command === 'file-search-polling-disable';
   const isFileSearchRegistryCommand = command === 'file-search-project-register' || command === 'file-search-project-unregister' || command === 'file-search-project-list';
+  const isNativeStoreConflictCommand = command === 'native-store-inspect' || command === 'native-store-repair';
   const isFileSearchScanCommand = command === 'file-search-scan';
   const isFileSearchStatusCommand = command === 'file-search-status';
   const isFileSearchSemanticRefreshCommand = command === 'file-search-semantic-refresh';
   let store: ReturnType<typeof openNativeStore> | undefined;
+  let fileSearchStore: DirectFileSearchCliStore | undefined;
   let queueRuntime: ReturnType<typeof openQueueRuntime> | undefined;
   let memorySearchRequest: MemorySearchCliRequest | undefined;
   let fileSearchRequest: FileSearchCliRequest | undefined;
@@ -319,6 +367,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     memorySearchRequest = command === 'search' ? parseMemorySearchRequest(payload) : undefined;
     fileSearchRequest = command === 'file-search' ? parseFileSearchRequest(payload) : undefined;
     fileSearchRelatedRequest = command === 'file-search-related' ? parseFileSearchRelatedRequest(payload) : undefined;
+    if (isNativeStoreConflictCommand) {
+      if (command === 'native-store-inspect') {
+        console.log(JSON.stringify({ inspection: inspectNativeStoreConflict(options) }, null, 2));
+        return;
+      }
+      const authority = parseNativeStoreRepairAuthority(payload.authority);
+      console.log(JSON.stringify({ repair: repairNativeStoreConflict({ ...options, authority, dryRun: flags.dryRun }) }, null, 2));
+      return;
+    }
     if (isFileSearchPollingCommand) {
       if (!flags.baseDirProvided) throw new Error(`Missing --base-dir for ${command}`);
       if (command === 'file-search-polling-status') {
@@ -362,14 +419,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       throw new Error('async-scan-runtime-local-only: file-search-scan --async requires an active runtime worker and is unsupported by the CLI in Sprint 43');
     }
 
-    store = isGenerationCommand || isObserverCommand
-      ? undefined
-      : openNativeStore({
+    if (isFileSearchCommand) {
+      fileSearchStore = openDirectFileSearchCliStore(options);
+    } else if (!isGenerationCommand && !isObserverCommand) {
+      store = openNativeStore({
         ...options,
-        embeddingRequireRemote: isFileSearchCommand ? options.embeddingRequireRemote : true,
-        fileSearchSemanticEnabled: isFileSearchCommand ? options.fileSearchSemanticEnabled : undefined,
-        fileSearchScanOnOpen: isFileSearchCommand ? false : undefined,
+        embeddingRequireRemote: true,
       });
+    }
     queueRuntime = store ? openQueueRuntime(store, { baseDir: options.baseDir }) : undefined;
     if (command === 'store') {
       if (!store) throw new Error('Missing native store');
@@ -388,50 +445,49 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
     if (command === 'file-search-semantic-refresh') {
       if (!flags.baseDirProvided) throw new Error('Missing --base-dir for file-search-semantic-refresh');
-      if (!store?.fileSearchDb) throw new Error('Missing file-search DB');
+      if (!fileSearchStore?.fileSearchDb) throw new Error('Missing file-search DB');
       const limit = parseOptionalPositiveIntegerFlag(payload, 'limit', '--limit');
-      const diagnostics = await store.fileSearchDb.refreshSemanticIndex({ limit });
+      const diagnostics = await fileSearchStore.fileSearchDb.refreshSemanticIndex({ limit });
       const refresh = { command: 'file-search-semantic-refresh', baseDir: diagnostics.baseDir, projectKey: diagnostics.projectKey, limit };
-      const index = buildFileSearchIndex(store).stats();
+      const index = buildFileSearchIndex(fileSearchStore as never).stats();
       console.log(JSON.stringify({ refresh, diagnostics, embeddings: diagnostics, index }, null, 2));
       return;
     }
     if (command === 'file-search-status') {
-      if (!store) throw new Error('Missing native store');
-      const scanner = store.fileSearchDb?.getScannerStatus();
-      const index = buildFileSearchIndex(store).stats();
+      if (!fileSearchStore) throw new Error('Missing file-search DB');
+      const scanner = fileSearchStore.fileSearchDb.getScannerStatus();
+      const index = buildFileSearchIndex(fileSearchStore as never).stats();
       console.log(JSON.stringify({ scanner, status: scanner, index }, null, 2));
       return;
     }
     if (command === 'file-search-scan') {
-      if (!store) throw new Error('Missing native store');
-      if (!store.fileSearchDb) throw new Error('Missing file-search DB');
-      store.fileSearchDb.scanAndIndex();
+      if (!fileSearchStore) throw new Error('Missing file-search DB');
+      fileSearchStore.fileSearchDb.scanAndIndex();
       const refreshLimit = parseOptionalPositiveIntegerFlag(payload, 'limit', '--limit');
-      const refresh = await refreshSemanticIndexAfterManualScan(store.fileSearchDb, {
+      const refresh = await refreshSemanticIndexAfterManualScan(fileSearchStore.fileSearchDb, {
         limit: refreshLimit,
         concurrency: options.fileSearchEmbeddingConcurrency,
       });
-      const index = buildFileSearchIndex(store).stats();
-      const scanner = store.fileSearchDb.getScannerStatus();
+      const index = buildFileSearchIndex(fileSearchStore as never).stats();
+      const scanner = fileSearchStore.fileSearchDb.getScannerStatus();
       console.log(JSON.stringify({ scanner, status: scanner, refresh, diagnostics: refresh.diagnostics, embeddings: refresh.diagnostics, index }, null, 2));
       return;
     }
     if (command === 'file-search') {
-      if (!store) throw new Error('Missing native store');
+      if (!fileSearchStore) throw new Error('Missing file-search DB');
       if (!fileSearchRequest) throw new Error('Missing file-search request');
       const { query, mode, limit } = fileSearchRequest;
       const request = { query, mode, limit };
-      const results = await searchFileIndex(store, request);
-      const semantic = await buildSearchSemanticMetadata(store, request, results);
-      const index = buildFileSearchIndex(store).stats();
+      const results = await searchFileIndex(fileSearchStore as never, request);
+      const semantic = await buildSearchSemanticMetadata(fileSearchStore as never, request, results);
+      const index = buildFileSearchIndex(fileSearchStore as never).stats();
       console.log(JSON.stringify({ results, ...(semantic ? { semantic } : {}), index }, null, 2));
       return;
     }
     if (command === 'file-search-related') {
-      if (!store) throw new Error('Missing native store');
+      if (!fileSearchStore) throw new Error('Missing file-search DB');
       if (!fileSearchRelatedRequest) throw new Error('Missing file-search-related request');
-      const results = await findRelatedFileIndex(store, {
+      const results = await findRelatedFileIndex(fileSearchStore as never, {
         filePath: fileSearchRelatedRequest.filePath,
         line: fileSearchRelatedRequest.line,
         limit: fileSearchRelatedRequest.limit,
@@ -508,6 +564,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exitCode = 1;
   } finally {
     store?.close();
+    fileSearchStore?.close();
   }
 }
 
