@@ -5,7 +5,7 @@
 
 ## Implementation Status
 
-Planned. This supersedes the earlier wrapper-style Sprint 63 plan. The objective is native BYOMem graph functionality, not a thin subprocess bridge to the external `graphify` CLI.
+Ready for implementation. Sprint 62 stabilization is complete, and the Sprint 64 Codex Stop-hook follow-up fixed live Codex `response_item.payload` transcript parsing so session-capture rollups no longer checkpoint live turns as `no-pending-turns`. This supersedes the earlier wrapper-style Sprint 63 plan. The objective is native BYOMem graph functionality, not a thin subprocess bridge to the external `graphify` CLI.
 
 ## Objective
 
@@ -21,7 +21,7 @@ This should follow the Semble precedent from Sprint 54:
 ## Current State
 
 - The repo has an external graphify graph at `graphify-out/`.
-- `graphify-out/GRAPH_REPORT.md` reports 5,156 nodes, 7,154 edges, and 110 communities.
+- `graphify-out/GRAPH_REPORT.md` reports 5,209 nodes, 7,286 edges, and 110 communities as of 2026-05-07 after the latest `graphify update .`.
 - External graphify provides useful behavior today:
   - `graphify query`
   - `graphify explain`
@@ -33,6 +33,14 @@ This should follow the Semble precedent from Sprint 54:
   - TS-native file-search index/search stack
   - file scanner, chunker, line metadata, project identity, MCP operations/readonly surfaces
   - Semble-style recreation precedent in `FileSearchIndex`
+
+## Recent Readiness Updates
+
+- Sprint 62 removed the blocking native-store conflict path for file-search and memory tooling by adding explicit inspect/repair surfaces and repairing the live runtime with SQLite authority.
+- Sprint 64 added the `codex-session-capture` CLI Stop-hook adapter and was validated against live Codex transcripts after adding support for `response_item.payload.role` / `payload.content` wrappers.
+- `AGENTS.md` now includes memory-hygiene guidance: prune clearly stale or redundant memories proactively, especially ephemeral `byomem-session` rollups superseded by architecture, bugfix, sprint-outcome, or preference records.
+- The current BYOMem file-search index is healthy after the latest scan: 280 indexed files, 5,156 chunks, 5,156 embedded chunks, and no missing/incompatible/failed embeddings.
+- Implementation should begin from current `graphify-out/graph.json` and `GRAPH_REPORT.md` state, not older Sprint 63 planning counts.
 
 ## Success Criteria
 
@@ -692,9 +700,10 @@ Metadata:
 
 ## Execution Notes
 
-- Sprint 62 remains the stabilization prerequisite before Sprint 63 implementation work.
-- RED tests and parity fixture capture can begin before Sprint 62 is complete.
+- Sprint 62 is complete and no longer blocks Sprint 63 implementation.
+- RED tests and parity fixture capture should use the current `graphify-out/` artifacts and refresh the fixture if `graphify update .` changes the graph during implementation.
 - Do not implement production BYOMem graph tools by shelling out to `graphify`.
 - Use external graphify only to capture parity fixtures and compare behavior during development.
 - Keep graph storage separate from memory and file-search persistence.
 - Keep graph-to-file evidence lookup explicit and use BYOMem file search for exact passages.
+- After material graph/runtime architecture changes, update durable architecture memories and prune stale session rollups that duplicate the new records.
