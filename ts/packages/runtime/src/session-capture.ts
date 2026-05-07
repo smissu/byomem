@@ -154,6 +154,14 @@ function eventMessage(msg: Record<string, unknown>): Record<string, unknown> {
   if (message) return message;
   const item = nestedObject(msg.item);
   if (item && typeof item.role === 'string') return item;
+  const payload = nestedObject(msg.payload);
+  if (payload) {
+    const payloadMessage = nestedObject(payload.message);
+    if (payloadMessage) return payloadMessage;
+    const payloadItem = nestedObject(payload.item);
+    if (payloadItem && typeof payloadItem.role === 'string') return payloadItem;
+    if (typeof payload.role === 'string') return payload;
+  }
   if (typeof msg.role === 'string') return msg;
   return {};
 }

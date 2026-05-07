@@ -109,4 +109,49 @@ describe('Sprint 64 Codex transcript sanitizer', () => {
     expect(JSON.stringify(result.rollup?.record)).not.toContain('encrypted_content');
     expect(JSON.stringify(result.rollup?.record)).not.toContain('thinkingSignature');
   });
+
+  it('captures live Codex response_item payload message wrappers', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    const transcriptPath = join(dir, 'codex-live-wrapper.jsonl');
+    writeFileSync(transcriptPath, [
+      JSON.stringify({
+        timestamp: '2026-05-07T11:03:20.842Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Why is Ollama not running?' }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-05-07T11:03:48.121Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'The hook skipped because no pending turns were parsed.' }],
+        },
+      }),
+    ].join('\n'), 'utf8');
+    const store = openNativeStore({ baseDir: dir });
+
+    const result = await captureSessionCheckpoint(store, {
+      baseDir: dir,
+      thresholdTurns: 1,
+      minTurns: 1,
+    }, {
+      sessionId: 'codex-session-live-wrapper',
+      transcriptPath,
+      event: 'codex_stop',
+      final: true,
+      idle: false,
+      agent: 'codex',
+      model: 'gpt-5.4',
+    });
+
+    expect(result.reason).toBe('final');
+    expect(result.rollup?.record?.content.text).toContain('Why is Ollama not running');
+    expect(result.rollup?.record?.content.text).toContain('The hook skipped because');
+  });
 });
