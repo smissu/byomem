@@ -22,6 +22,13 @@
 - Generate candidate memories from task outcomes, and store them when confidence is high and the information is durable.
 - Default ambiguous content to **project** or reject; do not auto-promote uncertain content to user memory.
 
+## Memory hygiene
+- Prune stale, outdated, redundant, or superseded memories proactively when the stale status is clear.
+- Do not ask for approval before pruning clearly stale memories; preserve durable architecture, outcome, decision, and preference records.
+- Prefer pruning ephemeral `byomem-session` rollups when they duplicate newer architecture, sprint-outcome, bugfix, or explicit preference memories.
+- When replacing a memory with a more accurate record, prune the older duplicate after verifying the new record covers the durable fact.
+- Avoid fully automatic destructive prune hooks; use directives or future dry-run recommendations unless a hook can prove high-confidence stale records.
+
 ## Hermes-native retrieval order
 - Keep memory retrieval separate from code search/indexing.
 - For repo-local decisions or prior durable facts, check project memory first; only use user memory for stable cross-repo preferences.
