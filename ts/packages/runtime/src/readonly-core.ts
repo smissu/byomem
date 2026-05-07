@@ -25,6 +25,7 @@ export interface ByomemSessionCaptureConfig {
   largeTurnChars?: number;
   idleFlushSeconds?: number;
   minTurns?: number;
+  rawArchiveEnabled?: boolean;
 }
 
 export interface ByomemEmbeddingConfig {
@@ -85,7 +86,7 @@ export interface ByomemSearchResultDto {
   };
 }
 
-function resolveDefaultRuntimeBaseDir(env: NodeJS.ProcessEnv = process.env): string {
+export function resolveDefaultRuntimeBaseDir(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.BYOMEM_RUNTIME_BASE_DIR?.trim();
   return override ? resolve(override) : resolve(homedir(), '.byomem', 'runtime');
 }
@@ -145,7 +146,7 @@ function extractYamlBlock(content: string, key: string): string | undefined {
 function parseConfigYaml(content: string): {
   embeddings?: { base_url?: string; model?: string; dimension?: string; request_timeout?: number };
   summarizer?: { base_url?: string; model?: string; fallback_model?: string; max_tokens?: number; ollama_num_ctx?: number };
-  session_capture?: { enabled?: boolean; threshold_turns?: number; large_turn_chars?: number; idle_flush_seconds?: number; min_turns?: number };
+  session_capture?: { enabled?: boolean; threshold_turns?: number; large_turn_chars?: number; idle_flush_seconds?: number; min_turns?: number; raw_archive_enabled?: boolean };
 } {
   const embeddingsBlock = extractYamlBlock(content, 'embeddings') ?? '';
   const summarizerBlock = extractYamlBlock(content, 'summarizer') ?? '';
@@ -171,6 +172,7 @@ function parseConfigYaml(content: string): {
       large_turn_chars: (() => { const value = sessionCaptureBlock.match(/large_turn_chars:\s*(\d+)/)?.[1]; return value ? Number(value) : undefined; })(),
       idle_flush_seconds: (() => { const value = sessionCaptureBlock.match(/idle_flush_seconds:\s*(\d+)/)?.[1]; return value ? Number(value) : undefined; })(),
       min_turns: (() => { const value = sessionCaptureBlock.match(/min_turns:\s*(\d+)/)?.[1]; return value ? Number(value) : undefined; })(),
+      raw_archive_enabled: parseBool(sessionCaptureBlock.match(/raw_archive_enabled:\s*(.+)/)?.[1]),
     },
   };
 }
@@ -209,9 +211,10 @@ export function resolveSessionCaptureConfig(env: NodeJS.ProcessEnv = process.env
       largeTurnChars: parsed.session_capture?.large_turn_chars,
       idleFlushSeconds: parsed.session_capture?.idle_flush_seconds,
       minTurns: parsed.session_capture?.min_turns,
+      rawArchiveEnabled: parsed.session_capture?.raw_archive_enabled ?? false,
     };
   }
-  return { source: 'default', enabled: false };
+  return { source: 'default', enabled: false, rawArchiveEnabled: false };
 }
 
 export function resolveFileSearchConfig(env: NodeJS.ProcessEnv = process.env): ByomemFileSearchConfig {
@@ -373,6 +376,7 @@ export function buildByomemRuntimeStatus(input: ByomemRuntimeStatusInput) {
     sessionCaptureLargeTurnChars: input.sessionCaptureConfig.largeTurnChars,
     sessionCaptureIdleFlushSeconds: input.sessionCaptureConfig.idleFlushSeconds,
     sessionCaptureMinTurns: input.sessionCaptureConfig.minTurns,
+    sessionCaptureRawArchiveEnabled: input.sessionCaptureConfig.rawArchiveEnabled,
   };
 }
 

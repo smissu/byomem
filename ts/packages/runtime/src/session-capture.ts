@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import type { MemoryRecord, QueueEvent, WriteIntent } from './contracts.js';
 import { openGenerationClient, type GenerationClientOptions } from './generation-client.js';
 import { openQueueRuntime, type QueueRuntime, type QueueWriteResult } from './queue-runtime.js';
@@ -16,6 +16,7 @@ export interface SessionCaptureOptions {
   generation?: GenerationClientOptions;
   userMessageMax?: number;
   assistantMessageMax?: number;
+  rawArchive?: { enabled?: boolean };
 }
 
 interface SessionTurn {
@@ -66,6 +67,7 @@ export interface SessionCaptureWriteResult {
   reason: SessionCaptureReason;
   pendingTurns?: number;
   checkpointOffset?: number;
+  rawArchive?: { path: string; turns: number };
 }
 
 const SESSION_CAPTURE_STATE_FILE = 'session-capture-state.json';
@@ -84,6 +86,7 @@ const ROLLUP_SYSTEM_PROMPT = [
 const RAW_TOOL_TRACE_MARKER_PATTERN = /["']?(?:tool_call|tool_result|toolCall|toolResult)["']?\s*:\s*/;
 const SENSITIVE_CAPTURE_FIELD_PATTERN = /\b(?:thinkingSignature|textSignature|encrypted_content|encryptedContent)\b/g;
 const SENSITIVE_CAPTURE_JSON_FIELD_PATTERN = /["'](?:thinkingSignature|textSignature|encrypted_content|encryptedContent)["']\s*:\s*(?:"[^"]*"|'[^']*'|[{[][\s\S]*?[}\]]|true\b|false\b|null\b|-?\d+(?:\.\d+)?)/g;
+const SESSION_CAPTURE_RAW_ARCHIVE_VERSION = 'session-capture-raw-archive-v1';
 
 function stripRawToolTraceText(value: string): string {
   return value.split(/\r?\n/).map((line) => {
@@ -142,8 +145,17 @@ function hashFlushKey(sessionId: string, checkpointOffset: number, turns: Sessio
   return createHash('sha256').update(`${sessionId}:${checkpointOffset}:${turns.map((turn) => turn.id).join('|')}`).digest('hex').slice(0, 12);
 }
 
+function nestedObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
 function eventMessage(msg: Record<string, unknown>): Record<string, unknown> {
-  return msg.message && typeof msg.message === 'object' ? (msg.message as Record<string, unknown>) : {};
+  const message = nestedObject(msg.message);
+  if (message) return message;
+  const item = nestedObject(msg.item);
+  if (item && typeof item.role === 'string') return item;
+  if (typeof msg.role === 'string') return msg;
+  return {};
 }
 
 function eventMessageRole(msg: Record<string, unknown>): string | undefined {
@@ -175,10 +187,15 @@ function eventText(msg: Record<string, unknown>): string {
   if (typeof content === 'string') return sanitizeCaptureText(content);
   if (Array.isArray(content)) {
     return sanitizeCaptureText(content
-      .filter((item) => item && typeof item === 'object' && (item as Record<string, unknown>).type === 'text')
+      .filter((item) => {
+        if (!item || typeof item !== 'object') return false;
+        const type = (item as Record<string, unknown>).type;
+        return type === 'text' || type === 'input_text' || type === 'output_text';
+      })
       .map((item) => String((item as Record<string, unknown>).text ?? ''))
       .join(' '));
   }
+  if (typeof message.text === 'string') return sanitizeCaptureText(message.text);
   return '';
 }
 
@@ -244,6 +261,43 @@ function parseEventTranscriptTurns(messages: Array<Record<string, unknown>>, opt
     });
   }
 
+  return turns.length > 0 ? turns : parseSequentialEventTranscriptTurns(messages, userMessageMax, assistantMessageMax);
+}
+
+function parseSequentialEventTranscriptTurns(messages: Array<Record<string, unknown>>, userMessageMax: number, assistantMessageMax: number): SessionTurn[] {
+  const turns: SessionTurn[] = [];
+  let activeUser: Record<string, unknown> | undefined;
+  const assistantMessages: Array<Record<string, unknown>> = [];
+
+  const flush = () => {
+    if (!activeUser) return;
+    const user = eventText(activeUser).slice(0, userMessageMax).trim();
+    const assistant = joinAssistant(assistantMessages, assistantMessageMax);
+    if (user && assistant.trim()) {
+      turns.push({
+        id: eventMessageUuid(activeUser) ?? hashTurn({ id: '', timestamp: eventMessageTimestamp(activeUser), user, assistant }),
+        timestamp: eventMessageTimestamp(activeUser),
+        user,
+        assistant,
+      });
+    }
+    activeUser = undefined;
+    assistantMessages.length = 0;
+  };
+
+  for (const message of messages) {
+    const role = eventMessageRole(message);
+    if (role === 'user') {
+      flush();
+      activeUser = message;
+      continue;
+    }
+    if (role === 'assistant' && activeUser) {
+      assistantMessages.push(message);
+    }
+  }
+  flush();
+
   return turns;
 }
 
@@ -295,7 +349,7 @@ function parseTurnsFromTranscriptBuffer(buffer: Buffer, startOffset: number, opt
     }
   }
 
-  const looksLikeEventTranscript = messages.some((message) => message.type === 'message' && message.message && typeof message.message === 'object');
+  const looksLikeEventTranscript = messages.some((message) => Boolean(eventMessageRole(message)));
   if (looksLikeEventTranscript) {
     return { turns: parseEventTranscriptTurns(messages, options), endOffset };
   }
@@ -314,7 +368,7 @@ function summarizeTurnsPrompt(request: SessionCaptureSummaryRequest): string {
   ].join('\n')).join('\n\n');
 
   return [
-    'Summarize the pending Pi session turns into a compact memory rollup.',
+    'Summarize the pending agent session turns into a compact memory rollup.',
     request.sessionId ? `Session: ${request.sessionId}` : undefined,
     request.agent ? `Agent: ${request.agent}` : undefined,
     request.model ? `Conversation model: ${request.model}` : undefined,
@@ -351,7 +405,8 @@ function determineFlushReason(input: SessionCaptureInput, pendingTurns: SessionT
 
 function deriveLeafName(sessionId: string): string {
   const trimmed = sessionId.trim();
-  return trimmed.length ? trimmed : 'session-capture';
+  const safe = trimmed.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^\.+/, '').slice(0, 120);
+  return safe.length ? safe : 'session-capture';
 }
 
 function buildSessionRollupIntent(input: SessionCaptureInput, summary: string, turns: SessionTurn[], reason: SessionCaptureReason): WriteIntent {
@@ -380,6 +435,35 @@ function buildSessionRollupIntent(input: SessionCaptureInput, summary: string, t
       origin: 'session-rollup',
     },
   };
+}
+
+function rawArchivePath(baseDir: string, sessionId: string, checkpointOffset: number, turns: SessionTurn[]): string {
+  const rollupKey = hashFlushKey(sessionId, checkpointOffset, turns);
+  return resolve(baseDir, 'queue', 'session-archive', `${deriveLeafName(sessionId)}-${rollupKey}.json`);
+}
+
+function writeRawArchive(options: SessionCaptureOptions, input: SessionCaptureInput, turns: SessionTurn[], checkpointOffset: number, reason: SessionCaptureReason): { path: string; turns: number } | undefined {
+  if (options.rawArchive?.enabled !== true || turns.length === 0) return undefined;
+  const path = rawArchivePath(options.baseDir, input.sessionId, checkpointOffset, turns);
+  mkdirSync(dirname(path), { recursive: true });
+  const payload = {
+    version: SESSION_CAPTURE_RAW_ARCHIVE_VERSION,
+    sessionId: input.sessionId,
+    event: input.event,
+    flushReason: reason,
+    transcriptPath: input.transcriptPath,
+    checkpointOffset,
+    createdAt: new Date().toISOString(),
+    sanitizer: 'visible-user-assistant-text-only',
+    turns: turns.map((turn) => ({
+      id: turn.id,
+      timestamp: turn.timestamp,
+      user: sanitizeCaptureText(turn.user),
+      assistant: sanitizeCaptureText(turn.assistant),
+    })),
+  };
+  writeFileSync(path, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  return { path, turns: turns.length };
 }
 
 
@@ -436,6 +520,7 @@ export async function captureSessionCheckpoint(store: NativeStore, options: Sess
     event: input.event,
   }).catch(() => summarizeFallback(pendingTurns))) || summarizeFallback(pendingTurns));
 
+  const rawArchive = writeRawArchive(options, input, pendingTurns, endOffset, reason);
   const rollupIntent = buildSessionRollupIntent(input, summary, pendingTurns, reason);
   const rollup = await queueRuntime.write(rollupIntent);
   if (!rollup?.record) throw new Error('Failed to persist session rollup');
@@ -447,5 +532,5 @@ export async function captureSessionCheckpoint(store: NativeStore, options: Sess
     lastModel: input.model,
     lastActivityAt: new Date().toISOString(),
   });
-  return { checkpoint: [], record: undefined as never, rollup, pendingTurns: 0, checkpointOffset: endOffset, reason };
+  return { checkpoint: [], record: undefined as never, rollup, pendingTurns: 0, checkpointOffset: endOffset, reason, rawArchive };
 }

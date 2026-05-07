@@ -14,5 +14,6 @@ Future Hermes sessions in this repo should:
 - read `graphify-out/GRAPH_REPORT.md` before architecture or cross-module questions
 - use graphify queries/paths for relationships that span files
 - run `graphify update .` after modifying code files
+- run a BYOMem file-search scan after modifying code files
 
 Historical compatibility docs may remain here, but implementation work should target the TS-native runtime.

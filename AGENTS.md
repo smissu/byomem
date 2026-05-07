@@ -32,6 +32,7 @@
 
 ## Hermes-native graph maintenance
 - After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- After modifying code files in this session, run a BYOMem file-search scan for this repo to keep indexed source passages current.
 - If you capture a durable repo decision, store it as concise project memory only after verifying it is stable and worth keeping.
 
 ## BYOMem extension policy
@@ -52,3 +53,4 @@ Rules:
 - Use `rg` mainly for narrow exact string checks, test names, or when graphify/BYOMem does not cover the need
 - For cross-module "how does X relate to Y" questions, prefer `graphify query "<question>"`, `graphify path "<A>" "<B>"`, or `graphify explain "<concept>"` over grep — these traverse the graph's EXTRACTED + INFERRED edges instead of scanning files
 - After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
+- After modifying code files in this session, run a BYOMem file-search scan for this repo to keep indexed source passages current

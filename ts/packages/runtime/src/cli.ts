@@ -14,6 +14,7 @@ import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searc
 import { refreshSemanticIndexAfterManualScan } from './file-search-semantic-refresh.js';
 import { openGenerationClient } from './generation-client.js';
 import { observeQueue, renderQueueObserver } from './queue-observer.js';
+import { runCodexSessionCaptureCommand } from './codex-session-capture.js';
 
 const GENERATION_COMMANDS = new Set(['generate', 'summarize', 'reason', 'chat']);
 const OBSERVER_COMMANDS = new Set(['queue-observe']);
@@ -45,7 +46,7 @@ type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
 type NativeStoreRepairAuthority = 'sqlite' | 'json' | 'abort';
 
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'codex-session-capture', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
@@ -374,6 +375,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       }
       const authority = parseNativeStoreRepairAuthority(payload.authority);
       console.log(JSON.stringify({ repair: repairNativeStoreConflict({ ...options, authority, dryRun: flags.dryRun }) }, null, 2));
+      return;
+    }
+    if (command === 'codex-session-capture') {
+      const result = await runCodexSessionCaptureCommand({
+        input: payload.input,
+        runtimeBaseDir: flags.baseDirProvided ? options.baseDir : undefined,
+      });
+      console.log(JSON.stringify(result, null, 2));
       return;
     }
     if (isFileSearchPollingCommand) {
