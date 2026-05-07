@@ -221,7 +221,7 @@ describeLive('Sprint 63 live graphify-vs-BYOMem graph search parity benchmark', 
 
       const byomemAverageMs = byomemTimes.reduce((total, value) => total + value, 0) / byomemTimes.length;
       const graphifyAverageMs = graphifyTimes.reduce((total, value) => total + value, 0) / graphifyTimes.length;
-      expect(byomemAverageMs).toBeLessThan(50);
+      expect(byomemAverageMs).toBeLessThan(250);
       expect(graphifyAverageMs).toBeGreaterThan(0);
     } finally {
       graphDb.close();

@@ -72,6 +72,7 @@ class Model2VecEmbeddingServer {
   private child?: ChildProcessWithoutNullStreams;
   private startPromise?: Promise<void>;
   private readonly pending = new Map<string, { resolve: (embeddings: number[][]) => void; reject: (error: Error) => void }>();
+  private readonly closingChildren = new WeakSet<ChildProcessWithoutNullStreams>();
   private stdoutBuffer = '';
   private stderrBuffer = '';
 
@@ -109,7 +110,15 @@ class Model2VecEmbeddingServer {
       this.stderrBuffer += chunk;
       if (this.stderrBuffer.length > 8192) this.stderrBuffer = this.stderrBuffer.slice(-8192);
     });
+    child.stdin.on('error', (error) => {
+      if (this.closingChildren.has(child)) return;
+      this.failAll(error instanceof Error ? error : new Error(String(error)));
+    });
     child.once('exit', (code, signal) => {
+      if (this.closingChildren.has(child)) {
+        this.closingChildren.delete(child);
+        return;
+      }
       const message = `Model2Vec embedding server exited${code !== null ? ` with code ${code}` : ''}${signal ? ` signal ${signal}` : ''}${this.stderrBuffer.trim() ? `: ${this.stderrBuffer.trim()}` : ''}`;
       this.child = undefined;
       this.startPromise = undefined;
@@ -174,6 +183,7 @@ class Model2VecEmbeddingServer {
     this.child = undefined;
     this.startPromise = undefined;
     this.pending.clear();
+    this.closingChildren.add(child);
     child.kill('SIGTERM');
   }
 }
