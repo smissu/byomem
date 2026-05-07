@@ -53,7 +53,17 @@ describe('Sprint 45 read-only MCP server', () => {
     await client.connect(transport);
 
     const toolList = await client.listTools();
-    expect(toolList.tools.map((tool) => tool.name)).toEqual(['status', 'search']);
+    const toolNames = toolList.tools.map((tool) => tool.name);
+    expect(toolNames).toEqual(expect.arrayContaining([
+      'status',
+      'search',
+      'byomem_graph_status',
+      'byomem_graph_query',
+      'byomem_graph_explain',
+      'byomem_graph_path',
+    ]));
+    expect(toolNames).not.toContain('store');
+    expect(toolNames).not.toContain('byomem_graph_update');
 
     const statusResult = await client.callTool({ name: 'status' });
     const status = JSON.parse(statusResult.content[0].text ?? '{}') as Record<string, unknown>;

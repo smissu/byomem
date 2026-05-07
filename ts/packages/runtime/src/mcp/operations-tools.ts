@@ -2,6 +2,7 @@ import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { resolve } from 'node:path';
 import * as z from 'zod/v3';
 import { openFileSearchDb, openFileSearchRegistryDb } from '../file-search-db.js';
+import { openGraphDb } from '../graph-db.js';
 import { buildFileSearchIndex } from '../file-search-index.js';
 import { configureFileSearchPolling, disableFileSearchPolling, getFileSearchPollingStatus } from '../file-search-active-poller.js';
 import { listFileSearchProjects, registerFileSearchProject, unregisterFileSearchProject, type FileSearchPollingDisabledReason, type FileSearchProjectEntry } from '../file-search-project-registry.js';
@@ -83,6 +84,13 @@ type PollingDisableIntentInput = {
   reason?: string;
 };
 
+type GraphUpdateIntentInput = {
+  baseDir?: string;
+  graphJsonPath?: string;
+  reportPath?: string;
+  mode?: 'auto' | 'graphify-export' | 'native-source';
+};
+
 const memoryScopeSchema = z.enum(['project', 'dir', 'user', 'agent']);
 const memoryIdentitySchema = z.object({
   namespace: z.string().trim().min(1),
@@ -147,6 +155,12 @@ const pollingEnableIntentSchema = z.object({
 const pollingDisableIntentSchema = z.object({
   baseDir: z.string().trim().min(1).optional(),
   reason: z.string().trim().min(1).optional(),
+}).strict();
+const graphUpdateIntentSchema = z.object({
+  baseDir: z.string().trim().min(1).optional(),
+  graphJsonPath: z.string().trim().min(1).optional(),
+  reportPath: z.string().trim().min(1).optional(),
+  mode: z.enum(['auto', 'graphify-export', 'native-source']).optional(),
 }).strict();
 
 export type OperationsMcpRuntimeContext = ReadOnlyMcpRuntimeContext;
@@ -378,6 +392,37 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
           content: [{ type: 'text', text: safeJson({ tool: 'scan', baseDir: targetBaseDir, scanner, status, refresh, diagnostics: refresh.diagnostics, embeddings: refresh.diagnostics, index }) }],
         };
       });
+    },
+  );
+
+  registerTool(
+    'byomem_graph_update',
+    {
+      description: 'Update the native BYOMem graph index for a project without shelling out to graphify.',
+      inputSchema: graphUpdateIntentSchema,
+    },
+    async (params: unknown) => {
+      const runtime = getRuntimeContext();
+      const intent = graphUpdateIntentSchema.parse(params) as GraphUpdateIntentInput;
+      const targetBaseDir = resolveFileSearchTargetBaseDir(intent.baseDir);
+      const graphDb = openGraphDb({ baseDir: targetBaseDir, dbBaseDir: runtime.runtimeBaseDir });
+      try {
+        const update = graphDb.update({
+          baseDir: targetBaseDir,
+          graphJsonPath: intent.graphJsonPath,
+          reportPath: intent.reportPath,
+          mode: intent.mode,
+        });
+        const status = graphDb.status();
+        const payload = { tool: 'byomem_graph_update', update, status };
+        return {
+          content: [{ type: 'text', text: safeJson(payload) }],
+          details: payload,
+          ...payload,
+        };
+      } finally {
+        graphDb.close();
+      }
     },
   );
 

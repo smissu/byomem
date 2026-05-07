@@ -5,7 +5,17 @@
 
 ## Implementation Status
 
-Ready for implementation. Sprint 62 stabilization is complete, and the Sprint 64 Codex Stop-hook follow-up fixed live Codex `response_item.payload` transcript parsing so session-capture rollups no longer checkpoint live turns as `no-pending-turns`. This supersedes the earlier wrapper-style Sprint 63 plan. The objective is native BYOMem graph functionality, not a thin subprocess bridge to the external `graphify` CLI.
+Implemented on branch `sprint63-graph-native` in the isolated worktree `/private/tmp/byomem-sprint63`. Sprint 62 stabilization is complete, and the Sprint 64 Codex Stop-hook follow-up fixed live Codex `response_item.payload` transcript parsing so session-capture rollups no longer checkpoint live turns as `no-pending-turns`. This supersedes the earlier wrapper-style Sprint 63 plan. The objective is native BYOMem graph functionality, not a thin subprocess bridge to the external `graphify` CLI.
+
+Implementation notes:
+
+- Added native graph persistence in `byomem-graph.sqlite`, separate from memory and file-search storage.
+- Added BYOMem CLI commands: `graph-status`, `graph-query`, `graph-explain`, `graph-path`, and `graph-update`.
+- Added MCP tools: read-only `byomem_graph_status`, `byomem_graph_query`, `byomem_graph_explain`, `byomem_graph_path`, plus operations-only `byomem_graph_update`.
+- Read-only graph MCP tools open the graph DB read-only and do not create graph DB files on clean runtimes.
+- Graph rows are project-scoped inside the graph DB so updating one project does not wipe another project's graph in the same runtime.
+- Existing `graphify-out/graph.json` import is supported for migration/parity, and `native-source` update mode builds a deterministic source graph without shelling out to `graphify`.
+- Verification passed in the sprint worktree: focused graph tests, MCP regressions, full `npm test` (99 files / 391 tests), and `npm run build`.
 
 ## Objective
 

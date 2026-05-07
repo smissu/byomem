@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import extensionModule, { byomem_runtime_status, byomem_runtime_test_cleanup, byomem_runtime_test_reload_env } from '../src/pi-extension.ts';
 import { openNativeStore } from '../src/store.js';
 
@@ -214,15 +214,17 @@ describe('byomem extension wiring', () => {
   it('defaults storeBaseDir to a global runtime path while keeping active project tied to cwd', async () => {
     byomem_runtime_test_reload_env();
     const status = byomem_runtime_status();
+    const repoRoot = process.cwd();
+    const projectKey = basename(repoRoot);
 
     expect(status.storeBaseDir).toBe(join(process.env.HOME ?? '', '.byomem', 'runtime'));
     expect(status.activeProject).toMatchObject({
-      repoRoot: '/Users/ericsmith/Documents/byomem',
-      projectKey: 'byomem',
+      repoRoot,
+      projectKey,
       activeProjectMetadata: {
         source: 'git',
-        path: '/Users/ericsmith/Documents/byomem',
-        normalizedLeafName: 'byomem',
+        path: repoRoot,
+        normalizedLeafName: projectKey,
       },
     });
   });
@@ -234,15 +236,17 @@ describe('byomem extension wiring', () => {
     byomem_runtime_test_reload_env();
 
     const status = byomem_runtime_status();
+    const repoRoot = process.cwd();
+    const projectKey = basename(repoRoot);
 
     expect(status.storeBaseDir).toBe(dir);
     expect(status.activeProject).toMatchObject({
-      repoRoot: '/Users/ericsmith/Documents/byomem',
-      projectKey: 'byomem',
+      repoRoot,
+      projectKey,
       activeProjectMetadata: {
         source: 'git',
-        path: '/Users/ericsmith/Documents/byomem',
-        normalizedLeafName: 'byomem',
+        path: repoRoot,
+        normalizedLeafName: projectKey,
       },
     });
   });

@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { inspectNativeStoreConflict, openNativeStore, repairNativeStoreConflict } from './store.js';
 import { openFileSearchDb } from './file-search-db.js';
 import { openFileSearchRegistryDb } from './file-search-db.js';
+import { openGraphDb, type GraphUpdateOptions } from './graph-db.js';
 import { buildFileSearchIndex } from './file-search-index.js';
 import { listFileSearchProjects, markFileSearchProjectSeen, normalizeFileSearchPollingDisabledReason, registerFileSearchProject, unregisterFileSearchProject } from './file-search-project-registry.js';
 import { configureFileSearchPolling, disableFileSearchPolling, getFileSearchPollingStatus } from './file-search-active-poller.js';
@@ -46,7 +47,7 @@ type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
 type NativeStoreRepairAuthority = 'sqlite' | 'json' | 'abort';
 
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'codex-session-capture', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'codex-session-capture', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'graph-status', 'graph-query', 'graph-explain', 'graph-path', 'graph-update', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
@@ -84,6 +85,8 @@ function parseWatchMode(flags: { watch: boolean; watchInterval?: string }, json:
 type FileSearchCliRequest = { query: string; mode: 'bm25' | 'semantic' | 'hybrid'; limit: number };
 type MemorySearchCliRequest = { query: string; mode: 'bm25' | 'semantic' | 'hybrid'; limit: number; scope?: 'project' | 'dir' | 'user' | 'agent' };
 type FileSearchRelatedCliRequest = { filePath: string; line: number; limit: number };
+type GraphCliRequest = { query: string; limit: number };
+type GraphPathCliRequest = { source: string; target: string; maxDepth: number };
 type DirectFileSearchCliStore = {
   baseDir: string;
   fileSearchDb: ReturnType<typeof openFileSearchDb>;
@@ -226,6 +229,12 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--authority') { payload.authority = requireValue(next, '--authority'); i += 1; }
     else if (arg === '--file-path') { payload.filePath = requireValue(next, '--file-path'); i += 1; }
     else if (arg === '--line') { payload.line = requireValue(next, '--line'); i += 1; }
+    else if (arg === '--source') { payload.source = requireValue(next, '--source'); i += 1; }
+    else if (arg === '--target') { payload.target = requireValue(next, '--target'); i += 1; }
+    else if (arg === '--max-depth') { payload.maxDepth = requireValue(next, '--max-depth'); i += 1; }
+    else if (arg === '--graph-json') { payload.graphJsonPath = requireValue(next, '--graph-json'); i += 1; }
+    else if (arg === '--report') { payload.reportPath = requireValue(next, '--report'); i += 1; }
+    else if (arg === '--graph-mode') { payload.graphMode = requireValue(next, '--graph-mode'); i += 1; }
     else if (arg === '--semantic-file-search') { options.fileSearchSemanticEnabled = true; }
     else if (arg === '--file-search-excluded-extensions') { if (next === undefined) throw new Error('Missing value for --file-search-excluded-extensions'); options.fileSearchScannerExcludedExtensions = parseExtensionList(next); i += 1; }
     else if (arg === '--file-search-include-text-files') { options.fileSearchIncludeTextFiles = parseBooleanFlag(requireValue(next, '--file-search-include-text-files'), '--file-search-include-text-files'); i += 1; }
@@ -328,6 +337,39 @@ function parseFileSearchRelatedRequest(payload: Record<string, string>): FileSea
   return { filePath, line, limit };
 }
 
+function parseGraphRequest(payload: Record<string, string>, command: string): GraphCliRequest {
+  const query = payload.query?.trim();
+  if (!query) throw new Error(`Missing --query for ${command}`);
+  const limitRaw = payload.limit?.trim() || '10';
+  if (!/^[1-9]\d*$/.test(limitRaw)) throw new Error('--limit must be a positive integer');
+  const limit = Number(limitRaw);
+  if (!Number.isSafeInteger(limit)) throw new Error('--limit must be a positive integer');
+  return { query, limit };
+}
+
+function parseGraphPathRequest(payload: Record<string, string>): GraphPathCliRequest {
+  const source = payload.source?.trim();
+  const target = payload.target?.trim();
+  if (!source) throw new Error('Missing --source for graph-path');
+  if (!target) throw new Error('Missing --target for graph-path');
+  const depthRaw = payload.maxDepth?.trim() || '4';
+  if (!/^[1-9]\d*$/.test(depthRaw)) throw new Error('--max-depth must be a positive integer');
+  const maxDepth = Number(depthRaw);
+  if (!Number.isSafeInteger(maxDepth)) throw new Error('--max-depth must be a positive integer');
+  return { source, target, maxDepth };
+}
+
+function parseGraphUpdateOptions(payload: Record<string, string>, baseDir: string): GraphUpdateOptions {
+  const graphMode = payload.graphMode?.trim();
+  if (graphMode !== undefined && graphMode !== 'auto' && graphMode !== 'graphify-export' && graphMode !== 'native-source') throw new Error('--graph-mode must be auto, graphify-export, or native-source');
+  return {
+    baseDir,
+    graphJsonPath: payload.graphJsonPath?.trim(),
+    reportPath: payload.reportPath?.trim(),
+    mode: graphMode,
+  };
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   let parsed: ReturnType<typeof parseArgs>;
   try {
@@ -354,20 +396,26 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const isFileSearchCommand = command === 'file-search' || command === 'file-search-related' || command === 'file-search-scan' || command === 'file-search-status' || command === 'file-search-semantic-refresh';
   const isFileSearchPollingCommand = command === 'file-search-polling-status' || command === 'file-search-polling-enable' || command === 'file-search-polling-disable';
   const isFileSearchRegistryCommand = command === 'file-search-project-register' || command === 'file-search-project-unregister' || command === 'file-search-project-list';
+  const isGraphCommand = command === 'graph-status' || command === 'graph-query' || command === 'graph-explain' || command === 'graph-path' || command === 'graph-update';
   const isNativeStoreConflictCommand = command === 'native-store-inspect' || command === 'native-store-repair';
   const isFileSearchScanCommand = command === 'file-search-scan';
   const isFileSearchStatusCommand = command === 'file-search-status';
   const isFileSearchSemanticRefreshCommand = command === 'file-search-semantic-refresh';
   let store: ReturnType<typeof openNativeStore> | undefined;
   let fileSearchStore: DirectFileSearchCliStore | undefined;
+  let graphStore: ReturnType<typeof openGraphDb> | undefined;
   let queueRuntime: ReturnType<typeof openQueueRuntime> | undefined;
   let memorySearchRequest: MemorySearchCliRequest | undefined;
   let fileSearchRequest: FileSearchCliRequest | undefined;
   let fileSearchRelatedRequest: FileSearchRelatedCliRequest | undefined;
+  let graphRequest: GraphCliRequest | undefined;
+  let graphPathRequest: GraphPathCliRequest | undefined;
   try {
     memorySearchRequest = command === 'search' ? parseMemorySearchRequest(payload) : undefined;
     fileSearchRequest = command === 'file-search' ? parseFileSearchRequest(payload) : undefined;
     fileSearchRelatedRequest = command === 'file-search-related' ? parseFileSearchRelatedRequest(payload) : undefined;
+    graphRequest = command === 'graph-query' || command === 'graph-explain' ? parseGraphRequest(payload, command) : undefined;
+    graphPathRequest = command === 'graph-path' ? parseGraphPathRequest(payload) : undefined;
     if (isNativeStoreConflictCommand) {
       if (command === 'native-store-inspect') {
         console.log(JSON.stringify({ inspection: inspectNativeStoreConflict(options) }, null, 2));
@@ -430,6 +478,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
     if (isFileSearchCommand) {
       fileSearchStore = openDirectFileSearchCliStore(options);
+    } else if (isGraphCommand) {
+      graphStore = openGraphDb({ baseDir: options.baseDir });
     } else if (!isGenerationCommand && !isObserverCommand) {
       store = openNativeStore({
         ...options,
@@ -504,6 +554,35 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       console.log(JSON.stringify({ results }, null, 2));
       return;
     }
+    if (command === 'graph-status') {
+      if (!graphStore) throw new Error('Missing graph DB');
+      console.log(JSON.stringify({ status: graphStore.status() }, null, 2));
+      return;
+    }
+    if (command === 'graph-update') {
+      if (!graphStore) throw new Error('Missing graph DB');
+      const update = graphStore.update(parseGraphUpdateOptions(payload, options.baseDir));
+      console.log(JSON.stringify({ update, status: graphStore.status() }, null, 2));
+      return;
+    }
+    if (command === 'graph-query') {
+      if (!graphStore) throw new Error('Missing graph DB');
+      if (!graphRequest) throw new Error('Missing graph-query request');
+      console.log(JSON.stringify(graphStore.query(graphRequest), null, 2));
+      return;
+    }
+    if (command === 'graph-explain') {
+      if (!graphStore) throw new Error('Missing graph DB');
+      if (!graphRequest) throw new Error('Missing graph-explain request');
+      console.log(JSON.stringify(graphStore.explain(graphRequest), null, 2));
+      return;
+    }
+    if (command === 'graph-path') {
+      if (!graphStore) throw new Error('Missing graph DB');
+      if (!graphPathRequest) throw new Error('Missing graph-path request');
+      console.log(JSON.stringify(graphStore.pathQuery(graphPathRequest), null, 2));
+      return;
+    }
     if (command === 'prune') {
       if (!store) throw new Error('Missing native store');
       const id = payload.id?.trim();
@@ -574,6 +653,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   } finally {
     store?.close();
     fileSearchStore?.close();
+    graphStore?.close();
   }
 }
 

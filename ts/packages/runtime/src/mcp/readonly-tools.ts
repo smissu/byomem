@@ -1,5 +1,6 @@
 import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import * as z from 'zod/v3';
+import { openGraphDb } from '../graph-db.js';
 import { buildByomemRuntimeStatus, safeJson, shapeByomemSearchResults, type ReadOnlyByomemRuntimeContext } from '../readonly-core.js';
 import { searchIndex } from '../search-index.js';
 import type { MemorySearchMode } from '../sqlite-sidecar.js';
@@ -31,6 +32,21 @@ function normalizeSearchMode(value: unknown): MemorySearchMode | undefined {
   if (value === 'bm25' || value === 'semantic' || value === 'hybrid') return value;
   return undefined;
 }
+
+const graphQuerySchema = z.object({
+  query: z.string().trim().min(1),
+  limit: z.number().int().positive().optional(),
+  baseDir: z.string().trim().min(1).optional(),
+}).strict();
+const graphPathSchema = z.object({
+  source: z.string().trim().min(1),
+  target: z.string().trim().min(1),
+  maxDepth: z.number().int().positive().optional(),
+  baseDir: z.string().trim().min(1).optional(),
+}).strict();
+const graphStatusSchema = z.object({
+  baseDir: z.string().trim().min(1).optional(),
+}).strict();
 
 export function registerReadOnlyTools(server: McpServer, getRuntimeContext: () => ReadOnlyMcpRuntimeContext): void {
   const registerTool = server.registerTool.bind(server) as (...args: any[]) => void;
@@ -67,6 +83,82 @@ export function registerReadOnlyTools(server: McpServer, getRuntimeContext: () =
         }),
       );
       return { content: [{ type: 'text', text: safeJson({ results }) }] };
+    },
+  );
+
+  registerTool(
+    'byomem_graph_status',
+    {
+      description: 'Inspect the native BYOMem graph index without mutating it.',
+      inputSchema: graphStatusSchema,
+    },
+    async (params: unknown) => {
+      const runtime = getRuntimeContext();
+      const intent = graphStatusSchema.parse(params);
+      const graphDb = openGraphDb({ baseDir: intent.baseDir, dbBaseDir: runtime.runtimeBaseDir, readonly: true });
+      try {
+        const payload = { status: graphDb.status() };
+        return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
+      } finally {
+        graphDb.close();
+      }
+    },
+  );
+
+  registerTool(
+    'byomem_graph_query',
+    {
+      description: 'Query the native BYOMem graph by symbol, label, or source path.',
+      inputSchema: graphQuerySchema,
+    },
+    async (params: unknown) => {
+      const runtime = getRuntimeContext();
+      const intent = graphQuerySchema.parse(params);
+      const graphDb = openGraphDb({ baseDir: intent.baseDir, dbBaseDir: runtime.runtimeBaseDir, readonly: true });
+      try {
+        const payload = graphDb.query({ query: intent.query, limit: intent.limit });
+        return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
+      } finally {
+        graphDb.close();
+      }
+    },
+  );
+
+  registerTool(
+    'byomem_graph_explain',
+    {
+      description: 'Explain a native BYOMem graph node with incoming and outgoing relationships.',
+      inputSchema: graphQuerySchema,
+    },
+    async (params: unknown) => {
+      const runtime = getRuntimeContext();
+      const intent = graphQuerySchema.parse(params);
+      const graphDb = openGraphDb({ baseDir: intent.baseDir, dbBaseDir: runtime.runtimeBaseDir, readonly: true });
+      try {
+        const payload = graphDb.explain({ query: intent.query, limit: intent.limit });
+        return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
+      } finally {
+        graphDb.close();
+      }
+    },
+  );
+
+  registerTool(
+    'byomem_graph_path',
+    {
+      description: 'Find a directed path between two native BYOMem graph nodes.',
+      inputSchema: graphPathSchema,
+    },
+    async (params: unknown) => {
+      const runtime = getRuntimeContext();
+      const intent = graphPathSchema.parse(params);
+      const graphDb = openGraphDb({ baseDir: intent.baseDir, dbBaseDir: runtime.runtimeBaseDir, readonly: true });
+      try {
+        const payload = graphDb.pathQuery({ source: intent.source, target: intent.target, maxDepth: intent.maxDepth });
+        return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
+      } finally {
+        graphDb.close();
+      }
     },
   );
 }

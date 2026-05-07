@@ -35,6 +35,8 @@ export { searchIndex as searchFileIndex, findRelated, findRelated as findRelated
 export type { FileSearchHit, FileSearchQuery } from './file-search-query.js';
 export { openFileSearchDb, openFileSearchRegistryDb, resolveDefaultFileSearchDbPath, resolveFileSearchProjectKey } from './file-search-db.js';
 export type { FileSearchDbHandle, FileSearchDbOptions, FileSearchEmbeddingDiagnostics, FileSearchRefreshEvent, FileSearchRegistryDbHandle, FileSearchScannerDatabaseCounts, FileSearchScannerProgress, FileSearchScannerState, FileSearchScannerStatus, FileSearchScannerTrigger } from './file-search-db.js';
+export { openGraphDb, parseGraphReport, resolveDefaultGraphDbPath } from './graph-db.js';
+export type { GraphCommunityRecord, GraphDbHandle, GraphDbOptions, GraphEdgeRecord, GraphExplainOptions, GraphExplainResult, GraphImportInput, GraphImportResult, GraphNodeRecord, GraphPathOptions, GraphPathResult, GraphQueryOptions, GraphQueryResult, GraphReportStats, GraphStatus, GraphUpdateOptions } from './graph-db.js';
 export { FileSearchScanManager } from './file-search-scan-manager.js';
 export type { FileSearchAsyncScanJob, FileSearchAsyncScanJobState, FileSearchAsyncScanJobStatus, FileSearchAsyncScanRequest, FileSearchScanManagerOptions } from './file-search-scan-manager.js';
 export { ensureFileSearchProjectRegistrySchema, getFileSearchProject, listFileSearchProjects, markFileSearchProjectSeen, registerFileSearchProject, resolveFileSearchProjectRegistryIdentity, unregisterFileSearchProject } from './file-search-project-registry.js';
