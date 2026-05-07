@@ -746,7 +746,7 @@ function pathGraph(db: BetterSqliteDatabase, baseDir: string, options: GraphPath
   if (!source || !target) return { source: options.source, target: options.target, maxDepth, found: false, path: source ? [source] : [], edges: [] };
   const queue: Array<{ id: string; nodePath: string[]; edgePath: GraphEdgeRecord[] }> = [{ id: source.id, nodePath: [source.id], edgePath: [] }];
   const seen = new Set([source.id]);
-  const edgeStmt = db.prepare('SELECT * FROM graph_edges WHERE project_key = ? AND source = ? ORDER BY weight DESC, relation ASC LIMIT 200');
+  const edgeStmt = db.prepare('SELECT * FROM graph_edges WHERE project_key = ? AND (source = ? OR target = ?) ORDER BY weight DESC, relation ASC LIMIT 200');
   while (queue.length) {
     const current = queue.shift()!;
     if (current.id === target.id) {
@@ -756,10 +756,11 @@ function pathGraph(db: BetterSqliteDatabase, baseDir: string, options: GraphPath
       return { source: source.id, target: target.id, maxDepth, found: true, path: current.nodePath.map((id) => byId.get(id)).filter((node): node is GraphNodeRecord => Boolean(node)), edges: current.edgePath };
     }
     if (current.edgePath.length >= maxDepth) continue;
-    for (const edge of (edgeStmt.all(projectKey, current.id) as Array<Record<string, unknown>>).map(edgeFromRow)) {
-      if (seen.has(edge.target)) continue;
-      seen.add(edge.target);
-      queue.push({ id: edge.target, nodePath: [...current.nodePath, edge.target], edgePath: [...current.edgePath, edge] });
+    for (const edge of (edgeStmt.all(projectKey, current.id, current.id) as Array<Record<string, unknown>>).map(edgeFromRow)) {
+      const nextId = edge.source === current.id ? edge.target : edge.source;
+      if (seen.has(nextId)) continue;
+      seen.add(nextId);
+      queue.push({ id: nextId, nodePath: [...current.nodePath, nextId], edgePath: [...current.edgePath, edge] });
     }
   }
   return { source: source.id, target: target.id, maxDepth, found: false, path: [source], edges: [] };

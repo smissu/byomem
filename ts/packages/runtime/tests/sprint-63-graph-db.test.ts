@@ -141,6 +141,11 @@ describe('Sprint 63 native graph DB', () => {
       expect(path.found).toBe(true);
       expect(path.path.map((node) => node.id)).toEqual(['alpha', 'beta', 'gamma']);
       expect(path.edges.map((edge) => edge.relation)).toEqual(['calls', 'method']);
+
+      const reversePath = graphDb.pathQuery({ source: 'gamma', target: 'alpha', maxDepth: 3 });
+      expect(reversePath.found).toBe(true);
+      expect(reversePath.path.map((node) => node.id)).toEqual(['gamma', 'beta', 'alpha']);
+      expect(reversePath.edges.map((edge) => edge.relation)).toEqual(['method', 'calls']);
     } finally {
       graphDb.close();
     }

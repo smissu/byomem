@@ -146,7 +146,7 @@ export function registerReadOnlyTools(server: McpServer, getRuntimeContext: () =
   registerTool(
     'byomem_graph_path',
     {
-      description: 'Find a directed path between two native BYOMem graph nodes.',
+      description: 'Find a graphify-style relationship path between two native BYOMem graph nodes.',
       inputSchema: graphPathSchema,
     },
     async (params: unknown) => {
