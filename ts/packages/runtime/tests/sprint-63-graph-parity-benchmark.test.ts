@@ -227,7 +227,7 @@ describe('Sprint 63 graphify-style parity and benchmark coverage', () => {
     dirs.push(runtimeDir, projectDir);
     writeGraphifyStyleFixture(projectDir);
     const graphDb = openGraphDb({ baseDir: projectDir, dbBaseDir: runtimeDir });
-    graphDb.update();
+    graphDb.update({ mode: 'graphify-export' });
     return graphDb;
   }
 

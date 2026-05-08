@@ -4,6 +4,7 @@ import * as z from 'zod/v3';
 import { openFileSearchDb, openFileSearchRegistryDb } from '../file-search-db.js';
 import { openGraphDb } from '../graph-db.js';
 import { buildFileSearchIndex } from '../file-search-index.js';
+import { enrichFileSearchHitsWithGraph, type FileSearchGraphContext } from '../file-search-graph-context.js';
 import { configureFileSearchPolling, disableFileSearchPolling, getFileSearchPollingStatus } from '../file-search-active-poller.js';
 import { listFileSearchProjects, registerFileSearchProject, unregisterFileSearchProject, type FileSearchPollingDisabledReason, type FileSearchProjectEntry } from '../file-search-project-registry.js';
 import { resolveActiveProjectContext, normalizeStableKey } from '../identity.js';
@@ -56,6 +57,7 @@ type FileSearchQueryIntentInput = {
   mode?: 'bm25' | 'semantic' | 'hybrid';
   limit?: number;
   baseDir?: string;
+  includeGraph?: boolean;
 };
 
 type FileSearchRelatedIntentInput = {
@@ -129,6 +131,7 @@ const fileSearchQueryIntentSchema = z.object({
   mode: z.enum(['bm25', 'semantic', 'hybrid']).optional(),
   limit: z.number().int().positive().optional(),
   baseDir: z.string().trim().min(1).optional(),
+  includeGraph: z.boolean().optional(),
 }).strict();
 const fileSearchRelatedIntentSchema = z.object({
   filePath: z.string().trim().min(1),
@@ -282,8 +285,18 @@ async function withDirectFileSearchStore<T>(runtime: OperationsMcpRuntimeContext
   }
 }
 
-function serializeFileSearchResult(result: { chunk?: { filePath?: unknown; content?: unknown; startLine?: unknown; endLine?: unknown; language?: unknown }; score?: unknown; source?: unknown }) {
+function serializeFileSearchGraphContext(graph: FileSearchGraphContext): FileSearchGraphContext {
   return {
+    available: graph.available,
+    ...(graph.fileNode ? { fileNode: graph.fileNode } : {}),
+    ...(graph.nearestSymbols ? { nearestSymbols: graph.nearestSymbols } : {}),
+    ...(graph.importsFrom ? { importsFrom: graph.importsFrom } : {}),
+    ...(graph.relations ? { relations: graph.relations } : {}),
+  };
+}
+
+function serializeFileSearchResult(result: { chunk?: { filePath?: unknown; content?: unknown; startLine?: unknown; endLine?: unknown; language?: unknown }; score?: unknown; source?: unknown; graph?: FileSearchGraphContext }) {
+  const serialized = {
     score: typeof result.score === 'number' ? result.score : undefined,
     source: typeof result.source === 'string' ? result.source : undefined,
     chunk: result.chunk ? {
@@ -294,13 +307,17 @@ function serializeFileSearchResult(result: { chunk?: { filePath?: unknown; conte
       ...(typeof result.chunk.language === 'string' ? { language: result.chunk.language } : {}),
     } : undefined,
   };
+  return result.graph ? { ...serialized, graph: serializeFileSearchGraphContext(result.graph) } : serialized;
 }
 
 async function searchFileIndexDirect(runtime: OperationsMcpRuntimeContext, targetBaseDir: string, query: FileSearchQueryIntentInput) {
   return withDirectFileSearchStore(runtime, targetBaseDir, async (store) => {
     const hits = await searchFileIndexForTool(store as never, query as never);
-    const results = hits.map(serializeFileSearchResult);
-    const semantic = await buildSearchSemanticMetadata(store as never, query as never, hits);
+    const enrichedHits = query.includeGraph
+      ? await enrichFileSearchHitsWithGraph(hits, { baseDir: targetBaseDir, dbBaseDir: runtime.runtimeBaseDir })
+      : hits;
+    const results = enrichedHits.map(serializeFileSearchResult);
+    const semantic = await buildSearchSemanticMetadata(store as never, query as never, enrichedHits);
     const index = buildFileSearchIndex(store as never).stats();
     return { results, semantic, index };
   });
@@ -440,6 +457,7 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
         query: intent.query,
         mode: intent.mode ?? 'hybrid',
         limit: intent.limit ?? 10,
+        includeGraph: intent.includeGraph,
       });
       return {
         content: [{ type: 'text', text: safeJson(payload) }],

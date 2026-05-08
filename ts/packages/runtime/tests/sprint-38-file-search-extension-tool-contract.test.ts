@@ -79,6 +79,7 @@ describe('Sprint 38 file-search extension tool contract', () => {
         mode: { type: 'string', enum: ['bm25', 'semantic', 'hybrid'] },
         limit: { type: 'integer', minimum: 1 },
         baseDir: { type: 'string' },
+        includeGraph: { type: 'boolean' },
       },
       required: ['query'],
       additionalProperties: false,

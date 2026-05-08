@@ -11,6 +11,7 @@ import { openQueueRuntime } from './queue-runtime.js';
 import { resolveRuntimeMode } from './runtime-mode.js';
 import { searchIndex } from './search-index.js';
 import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searchIndex as searchFileIndexForTool } from './file-search-query.js';
+import { enrichFileSearchHitsWithGraph, type FileSearchGraphContext } from './file-search-graph-context.js';
 import { refreshSemanticIndexAfterManualScan } from './file-search-semantic-refresh.js';
 import { buildFileSearchIndex } from './file-search-index.js';
 import { captureSessionCheckpoint, type SessionCaptureInput } from './session-capture.js';
@@ -422,8 +423,18 @@ function getRuntimeFileSearchScanManager(): FileSearchScanManager {
   return runtimeFileSearchScanManager;
 }
 
-function serializeFileSearchResult(result: { chunk?: { filePath?: unknown; content?: unknown; startLine?: unknown; endLine?: unknown; language?: unknown }; score?: unknown; source?: unknown }) {
+function serializeFileSearchGraphContext(graph: FileSearchGraphContext): FileSearchGraphContext {
   return {
+    available: graph.available,
+    ...(graph.fileNode ? { fileNode: graph.fileNode } : {}),
+    ...(graph.nearestSymbols ? { nearestSymbols: graph.nearestSymbols } : {}),
+    ...(graph.importsFrom ? { importsFrom: graph.importsFrom } : {}),
+    ...(graph.relations ? { relations: graph.relations } : {}),
+  };
+}
+
+function serializeFileSearchResult(result: { chunk?: { filePath?: unknown; content?: unknown; startLine?: unknown; endLine?: unknown; language?: unknown }; score?: unknown; source?: unknown; graph?: FileSearchGraphContext }) {
+  const serialized = {
     score: typeof result.score === 'number' ? result.score : undefined,
     source: typeof result.source === 'string' ? result.source : undefined,
     chunk: result.chunk ? {
@@ -434,13 +445,17 @@ function serializeFileSearchResult(result: { chunk?: { filePath?: unknown; conte
       ...(typeof result.chunk.language === 'string' ? { language: result.chunk.language } : {}),
     } : undefined,
   };
+  return result.graph ? { ...serialized, graph: serializeFileSearchGraphContext(result.graph) } : serialized;
 }
 
-async function searchFileIndexDirect(targetBaseDir: string, query: { query: string; mode?: 'bm25' | 'semantic' | 'hybrid'; limit?: number }) {
+async function searchFileIndexDirect(targetBaseDir: string, query: { query: string; mode?: 'bm25' | 'semantic' | 'hybrid'; limit?: number; includeGraph?: boolean }) {
   return withDirectFileSearchStore(targetBaseDir, async (store) => {
     const hits = await searchFileIndexForTool(store as never, query as never);
-    const results = hits.map(serializeFileSearchResult);
-    const semantic = await buildSearchSemanticMetadata(store as never, query as never, hits);
+    const enrichedHits = query.includeGraph
+      ? await enrichFileSearchHitsWithGraph(hits, { baseDir: targetBaseDir, dbBaseDir: process.env.BYOMEM_RUNTIME_BASE_DIR ?? runtimeBaseDir })
+      : hits;
+    const results = enrichedHits.map(serializeFileSearchResult);
+    const semantic = await buildSearchSemanticMetadata(store as never, query as never, enrichedHits);
     const index = buildFileSearchIndex(store as never).stats();
     return { results, semantic, index };
   });
@@ -1110,12 +1125,13 @@ export default function (pi: ExtensionAPI) {
         mode: { type: 'string', enum: ['bm25', 'semantic', 'hybrid'] },
         limit: { type: 'integer', minimum: 1 },
         baseDir: { type: 'string' },
+        includeGraph: { type: 'boolean' },
       },
       required: ['query'],
       additionalProperties: false,
     },
     async execute(_toolCallId: string, params: unknown) {
-      const intent = params as { query?: unknown; mode?: unknown; limit?: unknown; baseDir?: unknown };
+      const intent = params as { query?: unknown; mode?: unknown; limit?: unknown; baseDir?: unknown; includeGraph?: unknown };
       const query = normalizeText(intent?.query);
       if (!query) throw new Error('Invalid byomem_file_search intent: query is required');
       const mode = intent?.mode === undefined ? 'hybrid' : intent.mode;
@@ -1123,7 +1139,8 @@ export default function (pi: ExtensionAPI) {
       const limit = intent?.limit === undefined ? 10 : intent.limit;
       if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1) throw new Error('Invalid byomem_file_search intent: limit must be a positive integer');
       const targetBaseDir = resolveFileSearchTargetBaseDir(intent?.baseDir);
-      const payload = await searchFileIndexDirect(targetBaseDir, { query, mode, limit });
+      if (intent?.includeGraph !== undefined && typeof intent.includeGraph !== 'boolean') throw new Error('Invalid byomem_file_search intent: includeGraph must be a boolean');
+      const payload = await searchFileIndexDirect(targetBaseDir, { query, mode, limit, includeGraph: intent?.includeGraph === true });
       return { content: [{ type: 'text', text: safeJson(payload) }], details: payload, ...payload };
     },
   });

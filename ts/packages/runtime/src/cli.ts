@@ -7,6 +7,7 @@ import { openFileSearchDb } from './file-search-db.js';
 import { openFileSearchRegistryDb } from './file-search-db.js';
 import { openGraphDb, type GraphUpdateOptions } from './graph-db.js';
 import { buildFileSearchIndex } from './file-search-index.js';
+import { enrichFileSearchHitsWithGraph } from './file-search-graph-context.js';
 import { listFileSearchProjects, markFileSearchProjectSeen, normalizeFileSearchPollingDisabledReason, registerFileSearchProject, unregisterFileSearchProject } from './file-search-project-registry.js';
 import { configureFileSearchPolling, disableFileSearchPolling, getFileSearchPollingStatus } from './file-search-active-poller.js';
 import { openQueueRuntime } from './queue-runtime.js';
@@ -82,7 +83,7 @@ function parseWatchMode(flags: { watch: boolean; watchInterval?: string }, json:
   return { enabled: true, intervalSeconds };
 }
 
-type FileSearchCliRequest = { query: string; mode: 'bm25' | 'semantic' | 'hybrid'; limit: number };
+type FileSearchCliRequest = { query: string; mode: 'bm25' | 'semantic' | 'hybrid'; limit: number; includeGraph?: boolean };
 type MemorySearchCliRequest = { query: string; mode: 'bm25' | 'semantic' | 'hybrid'; limit: number; scope?: 'project' | 'dir' | 'user' | 'agent' };
 type FileSearchRelatedCliRequest = { filePath: string; line: number; limit: number };
 type GraphCliRequest = { query: string; limit: number };
@@ -235,6 +236,7 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--graph-json') { payload.graphJsonPath = requireValue(next, '--graph-json'); i += 1; }
     else if (arg === '--report') { payload.reportPath = requireValue(next, '--report'); i += 1; }
     else if (arg === '--graph-mode') { payload.graphMode = requireValue(next, '--graph-mode'); i += 1; }
+    else if (arg === '--include-graph') { payload.includeGraph = 'true'; }
     else if (arg === '--semantic-file-search') { options.fileSearchSemanticEnabled = true; }
     else if (arg === '--file-search-excluded-extensions') { if (next === undefined) throw new Error('Missing value for --file-search-excluded-extensions'); options.fileSearchScannerExcludedExtensions = parseExtensionList(next); i += 1; }
     else if (arg === '--file-search-include-text-files') { options.fileSearchIncludeTextFiles = parseBooleanFlag(requireValue(next, '--file-search-include-text-files'), '--file-search-include-text-files'); i += 1; }
@@ -305,7 +307,7 @@ function parseFileSearchRequest(payload: Record<string, string>): FileSearchCliR
   if (!/^[1-9]\d*$/.test(limitRaw)) throw new Error('--limit must be a positive integer');
   const limit = Number(limitRaw);
   if (!Number.isSafeInteger(limit)) throw new Error('--limit must be a positive integer');
-  return { query, mode, limit };
+  return { query, mode, limit, ...(payload.includeGraph === 'true' ? { includeGraph: true } : {}) };
 }
 
 function parseMemorySearchRequest(payload: Record<string, string>): MemorySearchCliRequest {
@@ -537,7 +539,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       if (!fileSearchRequest) throw new Error('Missing file-search request');
       const { query, mode, limit } = fileSearchRequest;
       const request = { query, mode, limit };
-      const results = await searchFileIndex(fileSearchStore as never, request);
+      const results = fileSearchRequest.includeGraph
+        ? await enrichFileSearchHitsWithGraph(await searchFileIndex(fileSearchStore as never, request), { baseDir: options.baseDir })
+        : await searchFileIndex(fileSearchStore as never, request);
       const semantic = await buildSearchSemanticMetadata(fileSearchStore as never, request, results);
       const index = buildFileSearchIndex(fileSearchStore as never).stats();
       console.log(JSON.stringify({ results, ...(semantic ? { semantic } : {}), index }, null, 2));
