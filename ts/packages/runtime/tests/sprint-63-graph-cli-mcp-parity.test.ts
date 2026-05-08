@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main } from '../src/cli.js';
+import { openGraphDb } from '../src/graph-db.js';
 import { registerOperationsTools } from '../src/mcp/operations-tools.js';
 import { registerReadOnlyTools } from '../src/mcp/readonly-tools.js';
 
@@ -175,5 +176,69 @@ describe('Sprint 63 graph CLI/MCP parity', () => {
     };
     expect(queryPayload.results).toEqual([]);
     expect(existsSync(join(runtimeDir, 'byomem-graph.sqlite'))).toBe(false);
+  });
+
+  it('exposes native downgrade override through CLI and operations MCP graph update', async () => {
+    const runtimeDir = tempDir('byomem-sprint-66-runtime-');
+    const projectDir = tempDir('byomem-sprint-66-project-');
+    dirs.push(runtimeDir, projectDir);
+    process.env.BYOMEM_RUNTIME_BASE_DIR = runtimeDir;
+    mkdirSync(join(projectDir, 'src'), { recursive: true });
+    writeFileSync(join(projectDir, 'src', 'small.ts'), 'export function onlyOne() { return 1; }\n', 'utf8');
+    const richNodes = Array.from({ length: 20 }, (_, index) => ({
+      id: `rich_${index}`,
+      label: `rich${index}()`,
+      sourceFile: 'src/rich.ts',
+      sourceLocation: `L${index + 1}`,
+    }));
+    const richEdges = richNodes.slice(1).map((node, index) => ({
+      source: richNodes[index]!.id,
+      target: node.id,
+      relation: 'calls',
+      sourceFile: 'src/rich.ts',
+      sourceLocation: `L${index + 1}`,
+    }));
+
+    const seed = openGraphDb({ baseDir: projectDir, dbBaseDir: runtimeDir });
+    try {
+      seed.importGraph({ source: 'graphify-export', baseDir: projectDir, nodes: richNodes, edges: richEdges });
+    } finally {
+      seed.close();
+    }
+
+    const cliSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await main(['graph-update', '--base-dir', projectDir, '--graph-mode', 'native-source', '--json']);
+    const skipped = JSON.parse(String(cliSpy.mock.calls.at(-1)?.[0] ?? '{}')) as { update?: { skipped?: boolean; nodeCount?: number } };
+    expect(skipped.update).toMatchObject({ skipped: true, nodeCount: 20 });
+
+    await main(['graph-update', '--base-dir', projectDir, '--graph-mode', 'native-source', '--allow-native-downgrade', '--json']);
+    const forced = JSON.parse(String(cliSpy.mock.calls.at(-1)?.[0] ?? '{}')) as { update?: { skipped?: boolean; source?: string; nodeCount?: number } };
+    expect(forced.update?.source).toBe('native-source');
+    expect(forced.update?.skipped).toBeUndefined();
+    expect(forced.update?.nodeCount).toBeLessThan(20);
+
+    const reseed = openGraphDb({ baseDir: projectDir, dbBaseDir: runtimeDir });
+    try {
+      reseed.importGraph({ source: 'graphify-export', baseDir: projectDir, nodes: richNodes, edges: richEdges });
+    } finally {
+      reseed.close();
+    }
+    const runtimeContext: any = {
+      runtimeBaseDir: runtimeDir,
+      nativeStore: {},
+      status: {},
+      embeddingConfig: { source: 'default' },
+      fileSearchConfig: { source: 'default' },
+      sessionCaptureConfig: { source: 'default', enabled: false },
+      summarizerConfig: { source: 'default' },
+    };
+    const operations = makeMockServer();
+    registerOperationsTools(operations.server as never, () => runtimeContext);
+    const updateTool = operations.tools.find((tool) => tool.name === 'byomem_graph_update');
+    expect(updateTool).toBeDefined();
+    const mcpForced = parseToolPayload(await updateTool!.execute({ baseDir: projectDir, mode: 'native-source', allowNativeDowngrade: true })) as { update?: { skipped?: boolean; source?: string; nodeCount?: number } };
+    expect(mcpForced.update?.source).toBe('native-source');
+    expect(mcpForced.update?.skipped).toBeUndefined();
+    expect(mcpForced.update?.nodeCount).toBeLessThan(20);
   });
 });

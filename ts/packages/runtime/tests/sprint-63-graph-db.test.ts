@@ -169,7 +169,7 @@ export function alpha() {
       const update = graphDb.update();
       expect(update.source).toBe('native-source');
       expect(update.nodeCount).toBeGreaterThanOrEqual(4);
-      expect(update.reportCommunityCount).toBe(0);
+      expect(update.reportCommunityCount).toBeGreaterThan(0);
       expect(graphDb.query({ query: 'alpha', limit: 1 }).results[0]?.node.label).toBe('alpha()');
     } finally {
       graphDb.close();

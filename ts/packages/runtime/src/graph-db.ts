@@ -1,14 +1,13 @@
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
+import { buildNativeSourceGraph } from './graph-builder.js';
 
 const DEFAULT_GRAPH_DB_FILE = 'byomem-graph.sqlite';
 const GRAPH_SCHEMA_VERSION = 1;
-const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
-const IGNORED_DIRS = new Set(['.git', 'node_modules', 'dist', 'coverage', '.byomem', 'graphify-out']);
 
 export interface GraphDbOptions {
   baseDir?: string;
@@ -110,6 +109,7 @@ export interface GraphUpdateOptions {
   graphJsonPath?: string;
   reportPath?: string;
   mode?: 'auto' | 'graphify-export' | 'native-source';
+  allowNativeDowngrade?: boolean;
 }
 
 export interface GraphImportResult {
@@ -122,6 +122,8 @@ export interface GraphImportResult {
   edgeCount: number;
   reportCommunityCount: number;
   reportStats?: GraphReportStats;
+  skipped?: boolean;
+  skipReason?: string;
 }
 
 export interface GraphDbHandle {
@@ -571,61 +573,6 @@ function importGraphifyExport(db: BetterSqliteDatabase, dbPath: string, baseDir:
   });
 }
 
-function walkSourceFiles(baseDir: string): string[] {
-  const files: string[] = [];
-  const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const fullPath = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (!IGNORED_DIRS.has(entry.name)) walk(fullPath);
-        continue;
-      }
-      if (!entry.isFile() || !SOURCE_EXTENSIONS.has(extname(entry.name))) continue;
-      files.push(fullPath);
-    }
-  };
-  if (existsSync(baseDir) && statSync(baseDir).isDirectory()) walk(baseDir);
-  return files.sort();
-}
-
-function buildNativeSourceGraph(baseDir: string): GraphImportInput {
-  const nodes = new Map<string, GraphNodeRecord>();
-  const edges = new Map<string, GraphEdgeRecord>();
-  const addNode = (node: GraphNodeRecord): void => {
-    nodes.set(node.id, node);
-  };
-  const addEdge = (edge: GraphEdgeRecord): void => {
-    edges.set(edge.id ?? stableId([edge.source, edge.target, edge.relation, edge.sourceFile, edge.sourceLocation]), edge);
-  };
-  for (const filePath of walkSourceFiles(baseDir)) {
-    const rel = relative(baseDir, filePath);
-    const content = readFileSync(filePath, 'utf8');
-    const fileNodeId = `file:${rel}`;
-    addNode({ id: fileNodeId, label: rel, fileType: 'code', sourceFile: rel, sourceLocation: 'L1', normLabel: normalizeGraphLabel(rel), kind: 'file' });
-    const lines = content.split(/\r?\n/);
-    lines.forEach((line, index) => {
-      const lineNo = index + 1;
-      const importMatch = line.match(/^\s*import\s+(?:[\s\S]+?\s+from\s+)?['"]([^'"]+)['"]/);
-      if (importMatch) {
-        const label = importMatch[1];
-        const importNodeId = `import:${label}`;
-        addNode({ id: importNodeId, label, fileType: 'code', sourceFile: rel, sourceLocation: `L${lineNo}`, normLabel: normalizeGraphLabel(label), kind: 'import' });
-        addEdge({ source: fileNodeId, target: importNodeId, relation: 'imports_from', confidence: 'EXTRACTED', weight: 1, sourceFile: rel, sourceLocation: `L${lineNo}` });
-      }
-      const declarationMatch = line.match(/(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(|(?:export\s+)?class\s+([A-Za-z_$][\w$]*)|(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=/);
-      const declaration = declarationMatch === null ? undefined : declarationMatch[1] ?? declarationMatch[2] ?? declarationMatch[3];
-      if (declaration) {
-        const kind = declarationMatch?.[2] ? 'class' : 'symbol';
-        const label = declarationMatch?.[1] ? `${declaration}()` : declaration;
-        const nodeId = `${rel}:${declaration}:${lineNo}`;
-        addNode({ id: nodeId, label, fileType: 'code', sourceFile: rel, sourceLocation: `L${lineNo}`, normLabel: normalizeGraphLabel(label), kind });
-        addEdge({ source: fileNodeId, target: nodeId, relation: 'contains', confidence: 'EXTRACTED', weight: 1, sourceFile: rel, sourceLocation: `L${lineNo}` });
-      }
-    });
-  }
-  return { source: 'native-source', baseDir, nodes: [...nodes.values()], edges: [...edges.values()] };
-}
-
 function updateGraph(db: BetterSqliteDatabase, dbPath: string, defaultBaseDir: string, options: GraphUpdateOptions = {}): GraphImportResult {
   const baseDir = resolve(options.baseDir ?? defaultBaseDir);
   const graphJsonPath = options.graphJsonPath ? resolve(options.graphJsonPath) : join(baseDir, 'graphify-out', 'graph.json');
@@ -635,7 +582,26 @@ function updateGraph(db: BetterSqliteDatabase, dbPath: string, defaultBaseDir: s
     return importGraphifyExport(db, dbPath, baseDir, graphJsonPath, reportPath);
   }
   if (mode === 'graphify-export') throw new Error(`graphify export not found: ${graphJsonPath}`);
-  return importGraph(db, dbPath, baseDir, buildNativeSourceGraph(baseDir));
+  const nativeGraph = buildNativeSourceGraph(baseDir);
+  const current = status(db, dbPath, baseDir);
+  const materiallySmaller = current.nodeCount > 0
+    && (nativeGraph.nodes.length < current.nodeCount * 0.8 || nativeGraph.edges.length < current.edgeCount * 0.8);
+  if (materiallySmaller && !options.allowNativeDowngrade) {
+    return {
+      source: current.lastImport?.source ?? 'existing-graph',
+      dbPath,
+      baseDir,
+      projectKey: current.projectKey,
+      fingerprint: current.lastImport?.fingerprint ?? stableId([current.projectKey, String(current.nodeCount), String(current.edgeCount)]),
+      nodeCount: current.nodeCount,
+      edgeCount: current.edgeCount,
+      reportCommunityCount: current.reportCommunityCount,
+      reportStats: current.lastImport?.reportStats,
+      skipped: true,
+      skipReason: `native-source output (${nativeGraph.nodes.length} nodes/${nativeGraph.edges.length} edges) is materially smaller than existing graph (${current.nodeCount} nodes/${current.edgeCount} edges)`,
+    };
+  }
+  return importGraph(db, dbPath, baseDir, nativeGraph);
 }
 
 function latestImport(db: BetterSqliteDatabase, projectKey: string): GraphStatus['lastImport'] | undefined {

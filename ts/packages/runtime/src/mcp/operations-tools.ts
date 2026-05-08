@@ -91,6 +91,7 @@ type GraphUpdateIntentInput = {
   graphJsonPath?: string;
   reportPath?: string;
   mode?: 'auto' | 'graphify-export' | 'native-source';
+  allowNativeDowngrade?: boolean;
 };
 
 const memoryScopeSchema = z.enum(['project', 'dir', 'user', 'agent']);
@@ -164,6 +165,7 @@ const graphUpdateIntentSchema = z.object({
   graphJsonPath: z.string().trim().min(1).optional(),
   reportPath: z.string().trim().min(1).optional(),
   mode: z.enum(['auto', 'graphify-export', 'native-source']).optional(),
+  allowNativeDowngrade: z.boolean().optional(),
 }).strict();
 
 export type OperationsMcpRuntimeContext = ReadOnlyMcpRuntimeContext;
@@ -429,6 +431,7 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
           graphJsonPath: intent.graphJsonPath,
           reportPath: intent.reportPath,
           mode: intent.mode,
+          allowNativeDowngrade: intent.allowNativeDowngrade,
         });
         const status = graphDb.status();
         const payload = { tool: 'byomem_graph_update', update, status };

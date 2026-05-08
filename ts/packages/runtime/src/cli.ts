@@ -236,6 +236,7 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--graph-json') { payload.graphJsonPath = requireValue(next, '--graph-json'); i += 1; }
     else if (arg === '--report') { payload.reportPath = requireValue(next, '--report'); i += 1; }
     else if (arg === '--graph-mode') { payload.graphMode = requireValue(next, '--graph-mode'); i += 1; }
+    else if (arg === '--allow-native-downgrade') { payload.allowNativeDowngrade = 'true'; }
     else if (arg === '--include-graph') { payload.includeGraph = 'true'; }
     else if (arg === '--semantic-file-search') { options.fileSearchSemanticEnabled = true; }
     else if (arg === '--file-search-excluded-extensions') { if (next === undefined) throw new Error('Missing value for --file-search-excluded-extensions'); options.fileSearchScannerExcludedExtensions = parseExtensionList(next); i += 1; }
@@ -369,6 +370,7 @@ function parseGraphUpdateOptions(payload: Record<string, string>, baseDir: strin
     graphJsonPath: payload.graphJsonPath?.trim(),
     reportPath: payload.reportPath?.trim(),
     mode: graphMode,
+    allowNativeDowngrade: payload.allowNativeDowngrade === 'true',
   };
 }
 
