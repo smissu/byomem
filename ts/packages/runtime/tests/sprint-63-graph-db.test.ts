@@ -76,7 +76,7 @@ describe('Sprint 63 native graph DB', () => {
 
     const graphDb = openGraphDb({ baseDir: projectDir, dbBaseDir: runtimeDir });
     try {
-      const update = graphDb.update();
+      const update = graphDb.update({ mode: 'graphify-export' });
       expect(update).toMatchObject({
         source: 'graphify-export',
         baseDir: projectDir,
@@ -123,7 +123,7 @@ describe('Sprint 63 native graph DB', () => {
 
     const graphDb = openGraphDb({ baseDir: projectDir, dbBaseDir: runtimeDir });
     try {
-      graphDb.update();
+      graphDb.update({ mode: 'graphify-export' });
       const query = graphDb.query({ query: 'alpha', limit: 1 });
       expect(query.results[0]).toMatchObject({
         node: { id: 'alpha', label: 'alpha()' },
@@ -146,6 +146,31 @@ describe('Sprint 63 native graph DB', () => {
       expect(reversePath.found).toBe(true);
       expect(reversePath.path.map((node) => node.id)).toEqual(['gamma', 'beta', 'alpha']);
       expect(reversePath.edges.map((edge) => edge.relation)).toEqual(['method', 'calls']);
+    } finally {
+      graphDb.close();
+    }
+  });
+
+  it('defaults graph update to native source even when a graphify export exists', () => {
+    const runtimeDir = tempDir('byomem-sprint-63-runtime-');
+    const projectDir = tempDir('byomem-sprint-63-project-');
+    dirs.push(runtimeDir, projectDir);
+    writeGraphifyFixture(projectDir);
+    mkdirSync(join(projectDir, 'src'), { recursive: true });
+    writeFileSync(join(projectDir, 'src', 'alpha.ts'), `import { beta } from './beta';
+export function alpha() {
+  return beta();
+}
+`, 'utf8');
+    writeFileSync(join(projectDir, 'src', 'beta.ts'), 'export function beta() {\n  return 1;\n}\n', 'utf8');
+
+    const graphDb = openGraphDb({ baseDir: projectDir, dbBaseDir: runtimeDir });
+    try {
+      const update = graphDb.update();
+      expect(update.source).toBe('native-source');
+      expect(update.nodeCount).toBeGreaterThanOrEqual(4);
+      expect(update.reportCommunityCount).toBe(0);
+      expect(graphDb.query({ query: 'alpha', limit: 1 }).results[0]?.node.label).toBe('alpha()');
     } finally {
       graphDb.close();
     }
@@ -189,7 +214,7 @@ export function alpha() {
     const graphDbOne = openGraphDb({ baseDir: projectOne, dbBaseDir: runtimeDir });
     const graphDbTwo = openGraphDb({ baseDir: projectTwo, dbBaseDir: runtimeDir });
     try {
-      graphDbOne.update();
+      graphDbOne.update({ mode: 'graphify-export' });
       graphDbTwo.update({ mode: 'native-source' });
 
       expect(graphDbOne.status()).toMatchObject({

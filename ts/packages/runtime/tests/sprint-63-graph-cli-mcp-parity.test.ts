@@ -87,7 +87,7 @@ describe('Sprint 63 graph CLI/MCP parity', () => {
     writeGraph(projectDir);
 
     const cliSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    await main(['graph-update', '--base-dir', projectDir, '--json']);
+    await main(['graph-update', '--base-dir', projectDir, '--graph-mode', 'graphify-export', '--json']);
     const cliUpdate = JSON.parse(String(cliSpy.mock.calls.at(-1)?.[0] ?? '{}')) as {
       update?: { nodeCount?: number; edgeCount?: number; source?: string };
       status?: { nodeCount?: number; edgeCount?: number };

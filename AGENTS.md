@@ -34,11 +34,11 @@
 - For repo-local decisions or prior durable facts, check project memory first; only use user memory for stable cross-repo preferences.
 - When investigating the codebase, prefer BYOMem file search / semantic search before `grep`, `find`, or other broad text searches.
 - For exact source passages, indexed evidence, and semantic matches, prefer `byomem_file_search` over raw file scans.
-- For architecture or cross-module questions, read `graphify-out/GRAPH_REPORT.md` first, then use graphify queries/paths for relationships that span files.
+- For architecture or cross-module questions, use BYOMem graph tools for relationships that span files.
 - Use canonical native BYOMem records as the source of truth.
 
 ## Hermes-native graph maintenance
-- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- After modifying code files in this session, run BYOMem graph update for this repo to keep the graph current.
 - After modifying code files in this session, run a BYOMem file-search scan for this repo to keep indexed source passages current.
 - If you capture a durable repo decision, store it as concise project memory only after verifying it is stable and worth keeping.
 
@@ -47,17 +47,15 @@
 - Do not keep a second active BYOMem runtime under `.pi/extensions/`, because Pi auto-discovers both project and global extensions and duplicate BYOMem tools/hooks can conflict.
 - Keep repo-local BYOMem implementation code in canonical shared source files, not as a second auto-loaded project extension runtime.
 
-## graphify
+## BYOMem graph
 
-This project has a graphify knowledge graph at graphify-out/.
+This project uses BYOMem graph tools for architecture, communities, cross-file relationships, and shortest paths.
 
 Rules:
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- Use `graphify query` / `graphify explain` first for architecture, components, modules, and relationships
-- Use `graphify path "<A>" "<B>"` for dependency/connection questions
-- Use BYOMem file search for exact source passages after graphify identifies the relevant area
-- Use `rg` mainly for narrow exact string checks, test names, or when graphify/BYOMem does not cover the need
-- For cross-module "how does X relate to Y" questions, prefer `graphify query "<question>"`, `graphify path "<A>" "<B>"`, or `graphify explain "<concept>"` over grep — these traverse the graph's EXTRACTED + INFERRED edges instead of scanning files
-- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
+- Use `byomem_graph_query` / `byomem_graph_explain` first for architecture, components, modules, and relationships
+- Use `byomem_graph_path` for dependency/connection questions
+- Use BYOMem file search for exact source passages after BYOMem graph identifies the relevant area
+- Use `rg` mainly for narrow exact string checks, test names, or when BYOMem graph/file search does not cover the need
+- For cross-module "how does X relate to Y" questions, prefer `byomem_graph_query`, `byomem_graph_path`, or `byomem_graph_explain` over grep
+- After modifying code files in this session, run `byomem_graph_update` to keep the graph current
 - After modifying code files in this session, run a BYOMem file-search scan for this repo to keep indexed source passages current

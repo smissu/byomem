@@ -6,14 +6,13 @@ This repository now treats the TypeScript runtime/observer path as canonical.
 - Legacy Python implementation has been moved to sibling repo: `/Users/ericsmith/Documents/byomem-python`
 - Keep Python surfaces out of this repo unless they are explicit compatibility docs or references.
 
-## Hermes / BYOMem / graphify workflow
+## Hermes / BYOMem workflow
 
 Future Hermes sessions in this repo should:
 - check project memory first for repo-local decisions and prior durable facts
 - use `byomem_file_search` for exact passages, indexed evidence, and semantic matches
-- read `graphify-out/GRAPH_REPORT.md` before architecture or cross-module questions
-- use graphify queries/paths for relationships that span files
-- run `graphify update .` after modifying code files
+- use `byomem_graph_query`, `byomem_graph_explain`, and `byomem_graph_path` for architecture or cross-module relationship questions
+- run `byomem_graph_update` after modifying code files when graph context should be refreshed
 - run a BYOMem file-search scan after modifying code files
 
 Historical compatibility docs may remain here, but implementation work should target the TS-native runtime.

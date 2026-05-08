@@ -630,7 +630,7 @@ function updateGraph(db: BetterSqliteDatabase, dbPath: string, defaultBaseDir: s
   const baseDir = resolve(options.baseDir ?? defaultBaseDir);
   const graphJsonPath = options.graphJsonPath ? resolve(options.graphJsonPath) : join(baseDir, 'graphify-out', 'graph.json');
   const reportPath = options.reportPath ? resolve(options.reportPath) : join(baseDir, 'graphify-out', 'GRAPH_REPORT.md');
-  const mode = options.mode ?? 'auto';
+  const mode = options.mode ?? 'native-source';
   if ((mode === 'auto' || mode === 'graphify-export') && existsSync(graphJsonPath)) {
     return importGraphifyExport(db, dbPath, baseDir, graphJsonPath, reportPath);
   }
