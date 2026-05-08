@@ -7,7 +7,25 @@ import type { GraphCommunityRecord, GraphEdgeRecord, GraphImportInput, GraphNode
 
 const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py']);
 const JS_TS_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
-const IGNORED_DIRS = new Set(['.git', 'node_modules', 'dist', 'coverage', '.byomem', 'graphify-out']);
+const IGNORED_DIRS = new Set([
+  '.byomem',
+  '.git',
+  '.mypy_cache',
+  '.nox',
+  '.pytest_cache',
+  '.ruff_cache',
+  '.tox',
+  '.venv',
+  '__pycache__',
+  'build',
+  'coverage',
+  'dist',
+  'env',
+  'graphify-out',
+  'node_modules',
+  'out',
+  'venv',
+]);
 
 interface MutableGraph {
   baseDir: string;
@@ -95,13 +113,28 @@ function addFileNode(graph: MutableGraph, rel: string): string {
   return id;
 }
 
+function loadRootIgnoredDirNames(baseDir: string): Set<string> {
+  const gitignorePath = join(baseDir, '.gitignore');
+  if (!existsSync(gitignorePath)) return new Set();
+  const names = new Set<string>();
+  for (const rawLine of readFileSync(gitignorePath, 'utf8').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#') || line.startsWith('!') || !line.endsWith('/')) continue;
+    const pattern = line.replace(/^\/+/, '').replace(/\/+$/, '');
+    if (!pattern || pattern.includes('/') || pattern.includes('*') || pattern.includes('?')) continue;
+    names.add(pattern);
+  }
+  return names;
+}
+
 function walkSourceFiles(baseDir: string): string[] {
   const files: string[] = [];
+  const rootIgnoredDirNames = loadRootIgnoredDirNames(baseDir);
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const fullPath = join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (!IGNORED_DIRS.has(entry.name)) walk(fullPath);
+        if (!IGNORED_DIRS.has(entry.name) && !rootIgnoredDirNames.has(entry.name)) walk(fullPath);
         continue;
       }
       if (entry.isFile() && SOURCE_EXTENSIONS.has(extname(entry.name))) files.push(fullPath);

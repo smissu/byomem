@@ -162,6 +162,46 @@ def later_call():
     }
   });
 
+  it('ignores virtualenv and generated dependency directories during native graph builds', () => {
+    const runtimeDir = tempDir('byomem-graph-parity-runtime-');
+    const projectDir = tempDir('byomem-graph-parity-ignore-');
+    dirs.push(runtimeDir, projectDir);
+    mkdirSync(join(projectDir, 'src'), { recursive: true });
+    mkdirSync(join(projectDir, '.venv', 'lib', 'python3.12', 'site-packages', 'external'), { recursive: true });
+    mkdirSync(join(projectDir, 'vendor_repo', 'packages', 'external'), { recursive: true });
+    writeFileSync(join(projectDir, '.gitignore'), 'vendor_repo/\n', 'utf8');
+    writeFileSync(join(projectDir, 'src', 'keeper.ts'), `
+export function projectResolve() {
+  return true;
+}
+`, 'utf8');
+    writeFileSync(join(projectDir, '.venv', 'lib', 'python3.12', 'site-packages', 'external', 'noise.py'), `
+class ExternalOnly:
+    def noisy_method(self):
+        return True
+
+def noisy_resolve():
+    return ExternalOnly()
+`, 'utf8');
+    writeFileSync(join(projectDir, 'vendor_repo', 'packages', 'external', 'ignored.ts'), `
+export function vendoredOnly() {
+  return true;
+}
+`, 'utf8');
+
+    const graphDb = openGraphDb({ baseDir: projectDir, dbBaseDir: runtimeDir });
+    try {
+      graphDb.update({ mode: 'native-source' });
+      expect(labels(graphDb.query({ query: 'projectResolve', limit: 5 }))).toContain('projectResolve()');
+      expect(graphDb.query({ query: 'ExternalOnly', limit: 5 }).results).toHaveLength(0);
+      expect(graphDb.query({ query: 'site-packages', limit: 5 }).results).toHaveLength(0);
+      expect(graphDb.query({ query: 'vendoredOnly', limit: 5 }).results).toHaveLength(0);
+      expect(graphDb.query({ query: 'vendor_repo', limit: 5 }).results).toHaveLength(0);
+    } finally {
+      graphDb.close();
+    }
+  });
+
   it('does not silently replace a richer graph with materially smaller native-source output', () => {
     const runtimeDir = tempDir('byomem-graph-parity-runtime-');
     const projectDir = tempDir('byomem-graph-parity-safe-');

@@ -1,8 +1,10 @@
 # BYOMem Repo Guidance
 
 ## Hermes-native graph maintenance
-- After modifying code files in this session, run BYOMem graph update for this repo to keep the graph current.
+- After modifying code files in this session, run BYOMem graph update with `native-source` mode for this repo to keep the graph current.
 - After modifying code files in this session, run a BYOMem file-search scan for this repo to keep indexed source passages current.
+- Use `graphify-out/graph.json` only as a one-time migration or repair import source, not as the ongoing graph refresh path.
+- Use `byomem-project-repair` if graph state is empty, stale, unexpectedly sparse, or still depends on a legacy graphify export.
 - If you capture a durable repo decision, store it as concise project memory only after verifying it is stable and worth keeping.
 
 ## BYOMem extension policy
