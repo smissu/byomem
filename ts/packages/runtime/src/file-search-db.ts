@@ -42,6 +42,7 @@ export interface FileSearchDbOptions {
   scannerExcludedExtensions?: string[];
   scannerBinaryDetectionEnabled?: boolean;
   scannerIncludeTextFiles?: boolean;
+  scannerMaxFileBytes?: number;
   storageMode?: FileSearchIndexStorageMode;
 }
 
@@ -83,6 +84,7 @@ export interface FileSearchScannerProgress {
   changedFiles: number;
   deletedFiles: number;
   ignoredFiles: number;
+  oversizedFiles: number;
   errorFiles: number;
   chunksWritten: number;
   bytesRead?: number;
@@ -211,6 +213,7 @@ function isSQLiteCompanion(filePath: string): boolean {
 const DEFAULT_SCANNER_EXCLUDED_EXTENSIONS = ['.db', '.sqlite', '.sqlite3'];
 const SCANNER_BINARY_SAMPLE_BYTES = 4096;
 const SCANNER_BINARY_CONTROL_RATIO = 0.3;
+const DEFAULT_SCANNER_MAX_FILE_BYTES = 16 * 1024 * 1024;
 
 function normalizeScannerExcludedExtension(extension: string): string | undefined {
   const trimmed = extension.trim().toLowerCase();
@@ -231,6 +234,20 @@ function matchesScannerExcludedExtension(filePath: string, extensions: Set<strin
     if (name.endsWith(extension)) return true;
   }
   return false;
+}
+
+function parsePositiveIntegerEnv(name: string): number | undefined {
+  const raw = process.env[name]?.trim();
+  if (!raw) return undefined;
+  if (!/^[1-9]\d*$/.test(raw)) return undefined;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+function resolveScannerMaxFileBytes(options: FileSearchDbOptions): number {
+  return options.scannerMaxFileBytes
+    ?? parsePositiveIntegerEnv('BYOMEM_FILE_SEARCH_SCANNER_MAX_FILE_BYTES')
+    ?? DEFAULT_SCANNER_MAX_FILE_BYTES;
 }
 
 function readFileSample(filePath: string, sampleSize = SCANNER_BINARY_SAMPLE_BYTES): Buffer {
@@ -686,6 +703,7 @@ function emptyScannerProgress(overrides: Partial<FileSearchScannerProgress> = {}
     changedFiles: 0,
     deletedFiles: 0,
     ignoredFiles: 0,
+    oversizedFiles: 0,
     errorFiles: 0,
     chunksWritten: 0,
     filesRemaining: 0,
@@ -1155,6 +1173,7 @@ function scanAndIndexFiles(
   const excludedExtensions = resolveScannerExcludedExtensions(options);
   const binaryDetectionEnabled = options.scannerBinaryDetectionEnabled ?? true;
   const includeTextFiles = options.scannerIncludeTextFiles ?? true;
+  const maxFileBytes = resolveScannerMaxFileBytes(options);
   let lastPath: string | undefined;
   progress.discoveredFiles = files.length;
   progress.ignoredFiles = walked.ignoredFiles;
@@ -1168,6 +1187,13 @@ function scanAndIndexFiles(
       onProgress?.(rel, lastPath);
       const stats = statSync(filePath);
       const prefilterId = `prefilter:${projectKey}:${rel}`;
+      if (stats.size > maxFileBytes) {
+        progress.ignoredFiles += 1;
+        progress.oversizedFiles += 1;
+        progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
+        onProgress?.(rel, lastPath);
+        continue;
+      }
       if (matchesScannerExcludedExtension(filePath, excludedExtensions)) {
         progress.ignoredFiles += 1;
         progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
@@ -1270,6 +1296,7 @@ async function scanAndIndexFilesAsync(
   const excludedExtensions = resolveScannerExcludedExtensions(options);
   const binaryDetectionEnabled = options.scannerBinaryDetectionEnabled ?? true;
   const includeTextFiles = options.scannerIncludeTextFiles ?? true;
+  const maxFileBytes = resolveScannerMaxFileBytes(options);
   let lastPath: string | undefined;
   progress.discoveredFiles = files.length;
   progress.ignoredFiles = walked.ignoredFiles;
@@ -1283,6 +1310,13 @@ async function scanAndIndexFilesAsync(
       onProgress?.(rel, lastPath);
       const stats = statSync(filePath);
       const prefilterId = `prefilter:${projectKey}:${rel}`;
+      if (stats.size > maxFileBytes) {
+        progress.ignoredFiles += 1;
+        progress.oversizedFiles += 1;
+        progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);
+        onProgress?.(rel, lastPath);
+        continue;
+      }
       if (matchesScannerExcludedExtension(filePath, excludedExtensions)) {
         progress.ignoredFiles += 1;
         progress.filesRemaining = Math.max(0, (progress.filesRemaining ?? 0) - 1);

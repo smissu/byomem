@@ -50,11 +50,50 @@ function trackFullChunkHydration(fileDb: ReturnType<typeof openFileSearchDb>) {
 describe('Sprint 70 file-search memory guards', () => {
   const dirs: string[] = [];
   const originalBudget = process.env.BYOMEM_FILE_SEARCH_HOT_INDEX_MEMORY_MB;
+  const originalMaxFileBytes = process.env.BYOMEM_FILE_SEARCH_SCANNER_MAX_FILE_BYTES;
 
   afterEach(() => {
     while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
     if (originalBudget === undefined) delete process.env.BYOMEM_FILE_SEARCH_HOT_INDEX_MEMORY_MB;
     else process.env.BYOMEM_FILE_SEARCH_HOT_INDEX_MEMORY_MB = originalBudget;
+    if (originalMaxFileBytes === undefined) delete process.env.BYOMEM_FILE_SEARCH_SCANNER_MAX_FILE_BYTES;
+    else process.env.BYOMEM_FILE_SEARCH_SCANNER_MAX_FILE_BYTES = originalMaxFileBytes;
+  });
+
+  it('skips oversized files before reading content and reconciles stale indexed rows', () => {
+    const runtimeDir = mkdtempSync(join(tmpdir(), 'byomem-s70-scan-size-runtime-'));
+    const projectDir = mkdtempSync(join(tmpdir(), 'byomem-s70-scan-size-project-'));
+    dirs.push(runtimeDir, projectDir);
+    const largePath = join(projectDir, 'large.jsonl');
+    writeFileSync(largePath, `${'oversized '.repeat(200)}\n`, 'utf8');
+    process.env.BYOMEM_FILE_SEARCH_SCANNER_MAX_FILE_BYTES = '10000';
+
+    const fileSearchDb = openFileSearchDb({
+      baseDir: projectDir,
+      projectBaseDir: projectDir,
+      dbBaseDir: runtimeDir,
+      scanOnOpen: false,
+      schedulerEnabled: false,
+      semanticSearchEnabled: false,
+      scannerIncludeTextFiles: true,
+    });
+    try {
+      expect(fileSearchDb.scanAndIndex({ trigger: 'manual' }).database.indexedFiles).toBe(1);
+      process.env.BYOMEM_FILE_SEARCH_SCANNER_MAX_FILE_BYTES = '10';
+
+      const status = fileSearchDb.scanAndIndex({ trigger: 'manual' });
+      const indexedRows = fileSearchDb.db.prepare('SELECT path FROM indexed_files WHERE project_key = ?').all(resolveFileSearchProjectKey(projectDir));
+
+      expect(status.progress).toMatchObject({
+        oversizedFiles: 1,
+        ignoredFiles: expect.any(Number),
+        deletedFiles: 1,
+        errorFiles: 0,
+      });
+      expect(indexedRows).toEqual([]);
+    } finally {
+      fileSearchDb.close();
+    }
   });
 
   it('degrades hot-index vector hydration when estimated memory exceeds budget', () => {
