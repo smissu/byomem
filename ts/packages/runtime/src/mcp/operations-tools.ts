@@ -10,8 +10,10 @@ import { listFileSearchProjects, registerFileSearchProject, unregisterFileSearch
 import { resolveActiveProjectContext, normalizeStableKey } from '../identity.js';
 import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searchIndex as searchFileIndexForTool } from '../file-search-query.js';
 import { refreshSemanticIndexAfterManualScan } from '../file-search-semantic-refresh.js';
+import { callFileSearchWorker, type FileSearchWorkerToolName } from '../file-search-worker-runner.js';
 import { safeJson } from '../readonly-core.js';
 import type { ReadOnlyMcpRuntimeContext } from './readonly-tools.js';
+import { BYOMEM_RUNTIME_INFO_TOOL_NAME, registerRuntimeInfoTool, type RuntimeInfoServerDescriptor } from './runtime-info.js';
 
 type MemoryScope = 'project' | 'dir' | 'user' | 'agent';
 
@@ -169,6 +171,40 @@ const graphUpdateIntentSchema = z.object({
 }).strict();
 
 export type OperationsMcpRuntimeContext = ReadOnlyMcpRuntimeContext;
+export type OperationsToolGroup = 'memory-mutation' | 'graph-mutation' | 'file-search';
+
+export const OPERATIONS_MEMORY_TOOL_NAMES = ['store', 'prune'] as const;
+export const OPERATIONS_GRAPH_TOOL_NAMES = ['byomem_graph_update'] as const;
+export const OPERATIONS_FILE_SEARCH_TOOL_NAMES = [
+  'scan',
+  'refresh',
+  'byomem_file_search',
+  'byomem_file_search_find_related',
+  'byomem_file_search_project_register',
+  'byomem_file_search_project_list',
+  'byomem_file_search_project_unregister',
+  'byomem_file_search_polling_status',
+  'byomem_file_search_polling_enable',
+  'byomem_file_search_polling_disable',
+] as const satisfies readonly FileSearchWorkerToolName[];
+
+export const MCP_TOOL_DOMAIN_MAP = {
+  common: [BYOMEM_RUNTIME_INFO_TOOL_NAME],
+  memory: ['status', 'search', ...OPERATIONS_MEMORY_TOOL_NAMES],
+  graph: ['byomem_graph_status', 'byomem_graph_query', 'byomem_graph_explain', 'byomem_graph_path', ...OPERATIONS_GRAPH_TOOL_NAMES],
+  fileSearch: OPERATIONS_FILE_SEARCH_TOOL_NAMES,
+} as const;
+
+function operationToolGroupForName(name: string): OperationsToolGroup | undefined {
+  if ((OPERATIONS_MEMORY_TOOL_NAMES as readonly string[]).includes(name)) return 'memory-mutation';
+  if ((OPERATIONS_GRAPH_TOOL_NAMES as readonly string[]).includes(name)) return 'graph-mutation';
+  if ((OPERATIONS_FILE_SEARCH_TOOL_NAMES as readonly string[]).includes(name)) return 'file-search';
+  return undefined;
+}
+
+function isFileSearchToolName(name: string): name is FileSearchWorkerToolName {
+  return (OPERATIONS_FILE_SEARCH_TOOL_NAMES as readonly string[]).includes(name);
+}
 
 function normalizeText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -241,10 +277,41 @@ type DirectFileSearchStore = {
   baseDir: string;
   fileSearchDb: ReturnType<typeof openFileSearchDb>;
   fileSearchProjectBaseDir: string;
+  activeUses: number;
 };
 
 const directFileSearchStores = new Map<string, DirectFileSearchStore>();
 let directFileSearchStoreIdleTimer: ReturnType<typeof setTimeout> | undefined;
+let directFileSearchStoreEvictionCount = 0;
+
+function directFileSearchStoreMaxEntries(): number {
+  const raw = process.env.BYOMEM_FILE_SEARCH_DIRECT_STORE_CACHE_MAX?.trim();
+  if (!raw) return 2;
+  if (!/^[1-9]\d*$/.test(raw)) return 2;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? parsed : 2;
+}
+
+function enforceDirectFileSearchStoreLimit(): void {
+  const maxEntries = directFileSearchStoreMaxEntries();
+  while (directFileSearchStores.size > maxEntries) {
+    const oldestKey = Array.from(directFileSearchStores.entries()).find(([, store]) => store.activeUses <= 0)?.[0];
+    if (!oldestKey) return;
+    const oldest = directFileSearchStores.get(oldestKey);
+    directFileSearchStores.delete(oldestKey);
+    oldest?.fileSearchDb.close();
+    directFileSearchStoreEvictionCount += 1;
+  }
+}
+
+function directFileSearchStoreCacheStats() {
+  return {
+    maxEntries: directFileSearchStoreMaxEntries(),
+    size: directFileSearchStores.size,
+    evictionCount: directFileSearchStoreEvictionCount,
+    owner: 'mcp-process',
+  };
+}
 
 function getDirectFileSearchStore(runtime: OperationsMcpRuntimeContext, targetBaseDir: string): DirectFileSearchStore {
   if (directFileSearchStoreIdleTimer) {
@@ -253,13 +320,19 @@ function getDirectFileSearchStore(runtime: OperationsMcpRuntimeContext, targetBa
   }
   const cacheKey = [runtime.runtimeBaseDir, targetBaseDir].join('\0');
   const existing = directFileSearchStores.get(cacheKey);
-  if (existing) return existing;
+  if (existing) {
+    directFileSearchStores.delete(cacheKey);
+    directFileSearchStores.set(cacheKey, existing);
+    return existing;
+  }
   const store = {
     baseDir: targetBaseDir,
     fileSearchDb: openDirectFileSearchDb(runtime, targetBaseDir),
     fileSearchProjectBaseDir: targetBaseDir,
+    activeUses: 0,
   };
   directFileSearchStores.set(cacheKey, store);
+  enforceDirectFileSearchStoreLimit();
   return store;
 }
 
@@ -268,8 +341,11 @@ function closeDirectFileSearchStores(): void {
     clearTimeout(directFileSearchStoreIdleTimer);
     directFileSearchStoreIdleTimer = undefined;
   }
-  for (const store of directFileSearchStores.values()) store.fileSearchDb.close();
-  directFileSearchStores.clear();
+  for (const [key, store] of directFileSearchStores.entries()) {
+    if (store.activeUses > 0) continue;
+    store.fileSearchDb.close();
+    directFileSearchStores.delete(key);
+  }
 }
 
 function scheduleDirectFileSearchStoreIdleCleanup(): void {
@@ -280,9 +356,12 @@ function scheduleDirectFileSearchStoreIdleCleanup(): void {
 
 async function withDirectFileSearchStore<T>(runtime: OperationsMcpRuntimeContext, targetBaseDir: string, fn: (store: DirectFileSearchStore) => Promise<T> | T): Promise<T> {
   const store = getDirectFileSearchStore(runtime, targetBaseDir);
+  store.activeUses += 1;
   try {
     return await fn(store);
   } finally {
+    store.activeUses = Math.max(0, store.activeUses - 1);
+    enforceDirectFileSearchStoreLimit();
     scheduleDirectFileSearchStoreIdleCleanup();
   }
 }
@@ -321,7 +400,7 @@ async function searchFileIndexDirect(runtime: OperationsMcpRuntimeContext, targe
     const results = enrichedHits.map(serializeFileSearchResult);
     const semantic = await buildSearchSemanticMetadata(store as never, query as never, enrichedHits);
     const index = buildFileSearchIndex(store as never).stats();
-    return { results, semantic, index };
+    return { results, semantic, index, directStoreCache: directFileSearchStoreCacheStats() };
   });
 }
 
@@ -352,8 +431,24 @@ function serializeFileSearchProjectEntries(entries: FileSearchProjectEntry[]) {
   return entries.map((entry) => serializeFileSearchProjectEntry(entry));
 }
 
-export function registerOperationsTools(server: McpServer, getRuntimeContext: () => OperationsMcpRuntimeContext): void {
-  const registerTool = server.registerTool.bind(server) as (...args: any[]) => void;
+export function registerOperationsTools(
+  server: McpServer,
+  getRuntimeContext: () => OperationsMcpRuntimeContext,
+  options: { groups?: OperationsToolGroup[]; fileSearchExecution?: 'direct' | 'worker'; runtimeInfo?: RuntimeInfoServerDescriptor | false } = {},
+): void {
+  const enabledGroups = new Set<OperationsToolGroup>(options.groups ?? ['memory-mutation', 'graph-mutation', 'file-search']);
+  if (options.runtimeInfo !== false) {
+    registerRuntimeInfoTool(server, options.runtimeInfo ?? { name: 'byomem-mcp-operations', version: '0.1.0', domain: 'operations' });
+  }
+  const registerTool = ((name: string, ...args: any[]) => {
+    const group = operationToolGroupForName(name);
+    if (!group || !enabledGroups.has(group)) return;
+    (server.registerTool.bind(server) as (...registerArgs: any[]) => void)(name, ...args);
+  }) as (...args: any[]) => void;
+  const runFileSearchTool = (toolName: FileSearchWorkerToolName, params: unknown): Promise<unknown> | undefined => {
+    if (options.fileSearchExecution !== 'worker') return undefined;
+    return callFileSearchWorker({ toolName, params });
+  };
 
   registerTool(
     'store',
@@ -395,6 +490,8 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
       inputSchema: scanIntentSchema,
     },
     async (params: unknown) => {
+      const workerResult = runFileSearchTool('scan', params);
+      if (workerResult) return workerResult;
       const runtime = getRuntimeContext();
       const intent = scanIntentSchema.parse(params) as ScanIntentInput;
       const targetBaseDir = resolveFileSearchTargetBaseDir(intent.baseDir);
@@ -453,6 +550,8 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
       inputSchema: fileSearchQueryIntentSchema,
     },
     async (params: unknown) => {
+      const workerResult = runFileSearchTool('byomem_file_search', params);
+      if (workerResult) return workerResult;
       const runtime = getRuntimeContext();
       const intent = fileSearchQueryIntentSchema.parse(params) as FileSearchQueryIntentInput;
       const targetBaseDir = resolveFileSearchTargetBaseDir(intent.baseDir);
@@ -477,6 +576,8 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
       inputSchema: fileSearchRelatedIntentSchema,
     },
     async (params: unknown) => {
+      const workerResult = runFileSearchTool('byomem_file_search_find_related', params);
+      if (workerResult) return workerResult;
       const runtime = getRuntimeContext();
       const intent = fileSearchRelatedIntentSchema.parse(params) as FileSearchRelatedIntentInput;
       const targetBaseDir = resolveFileSearchTargetBaseDir(intent.baseDir);
@@ -504,6 +605,8 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
       inputSchema: refreshIntentSchema,
     },
     async (params: unknown) => {
+      const workerResult = runFileSearchTool('refresh', params);
+      if (workerResult) return workerResult;
       const runtime = getRuntimeContext();
       const intent = refreshIntentSchema.parse(params) as RefreshIntentInput;
       const targetBaseDir = resolveFileSearchTargetBaseDir(intent.baseDir);
@@ -524,6 +627,8 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
       inputSchema: projectRegistryIntentSchema,
     },
     async (params: unknown) => {
+      const workerResult = runFileSearchTool('byomem_file_search_project_register', params);
+      if (workerResult) return workerResult;
       const runtime = getRuntimeContext();
       const intent = projectRegistryIntentSchema.parse(params) as ProjectRegistryIntentInput;
       const baseDir = normalizeRequiredBaseDir(intent.baseDir);
@@ -547,6 +652,8 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
       inputSchema: z.object({}).strict(),
     },
     async () => {
+      const workerResult = runFileSearchTool('byomem_file_search_project_list', {});
+      if (workerResult) return workerResult;
       const runtime = getRuntimeContext();
       const registryDb = openDirectFileSearchRegistryDb(runtime);
       try {
@@ -567,6 +674,8 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
       inputSchema: projectRegistryIntentSchema,
     },
     async (params: unknown) => {
+      const workerResult = runFileSearchTool('byomem_file_search_project_unregister', params);
+      if (workerResult) return workerResult;
       const runtime = getRuntimeContext();
       const intent = projectRegistryIntentSchema.parse(params) as ProjectRegistryIntentInput;
       const baseDir = normalizeRequiredBaseDir(intent.baseDir);
@@ -590,6 +699,8 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
       inputSchema: pollingStatusIntentSchema,
     },
     async (params: unknown) => {
+      const workerResult = runFileSearchTool('byomem_file_search_polling_status', params);
+      if (workerResult) return workerResult;
       const runtime = getRuntimeContext();
       const intent = pollingStatusIntentSchema.parse(params) as PollingStatusIntentInput;
       const targetBaseDir = resolveFileSearchTargetBaseDir(intent.baseDir);
@@ -608,6 +719,8 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
       inputSchema: pollingEnableIntentSchema,
     },
     async (params: unknown) => {
+      const workerResult = runFileSearchTool('byomem_file_search_polling_enable', params);
+      if (workerResult) return workerResult;
       const runtime = getRuntimeContext();
       const intent = pollingEnableIntentSchema.parse(params) as PollingEnableIntentInput;
       const targetBaseDir = resolveActivePollingTargetBaseDir(intent.baseDir);
@@ -632,6 +745,8 @@ export function registerOperationsTools(server: McpServer, getRuntimeContext: ()
       inputSchema: pollingDisableIntentSchema,
     },
     async (params: unknown) => {
+      const workerResult = runFileSearchTool('byomem_file_search_polling_disable', params);
+      if (workerResult) return workerResult;
       const runtime = getRuntimeContext();
       const intent = pollingDisableIntentSchema.parse(params) as PollingDisableIntentInput;
       const targetBaseDir = resolveActivePollingTargetBaseDir(intent.baseDir);

@@ -1,13 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { pathToFileURL } from 'node:url';
-import { assertNoPythonDefaultPath as noPythonDefaultPath } from '../no-python-default-path.js';
-import { resolveActiveProjectContext } from '../identity.js';
-import { buildByomemRuntimeStatus, openReadOnlyRuntimeContext } from '../readonly-core.js';
-import { resolveRuntimeMode } from '../runtime-mode.js';
-import { openNativeStore } from '../store.js';
 import { registerReadOnlyTools } from './readonly-tools.js';
 import { registerOperationsTools, type OperationsMcpRuntimeContext } from './operations-tools.js';
+import { buildOperationsRuntimeContext } from './split-runtime.js';
 
 export { registerOperationsTools };
 
@@ -19,43 +15,7 @@ type CachedOperationsRuntimeContext = OperationsMcpRuntimeContext;
 let runtimeContext: CachedOperationsRuntimeContext | undefined;
 
 function buildRuntimeContext(): CachedOperationsRuntimeContext {
-  const runtime = openReadOnlyRuntimeContext({});
-  const activeProject = resolveActiveProjectContext(process.env, process.cwd());
-  let nativeStore: ReturnType<typeof openNativeStore> | undefined;
-  const noPythonDisabled = (() => {
-    try {
-      noPythonDefaultPath('python-default');
-      return false;
-    } catch {
-      return true;
-    }
-  })();
-
-  return {
-    ...runtime,
-    get nativeStore() {
-      nativeStore ??= openNativeStore({
-        baseDir: runtime.runtimeBaseDir,
-        fileSearchSemanticEnabled: true,
-        fileSearchScanOnOpen: false,
-        fileSearchSchedulerEnabled: false,
-        fileSearchScannerExcludedExtensions: runtime.fileSearchConfig.excludedExtensions,
-        fileSearchBinaryDetectionEnabled: runtime.fileSearchConfig.binaryDetectionEnabled,
-      });
-      return nativeStore;
-    },
-    status: buildByomemRuntimeStatus({
-      runtimeMode: resolveRuntimeMode(),
-      noPythonDefaultPath: noPythonDisabled,
-      runtimeBaseDir: runtime.runtimeBaseDir,
-      nativeStoreBaseDir: runtime.runtimeBaseDir,
-      activeProject,
-      embeddingConfig: runtime.embeddingConfig,
-      sessionCaptureConfig: runtime.sessionCaptureConfig,
-      summarizerConfig: runtime.summarizerConfig,
-      fileSearchConfig: runtime.fileSearchConfig,
-    }),
-  };
+  return buildOperationsRuntimeContext();
 }
 
 function getRuntimeContext(): CachedOperationsRuntimeContext {
@@ -69,12 +29,22 @@ export function createOperationsMcpServer(): McpServer {
     version: OPERATIONS_MCP_SERVER_VERSION,
   });
 
-  registerReadOnlyTools(server, getRuntimeContext);
-  registerOperationsTools(server, getRuntimeContext);
+  const runtimeInfo = {
+    name: OPERATIONS_MCP_SERVER_NAME,
+    version: OPERATIONS_MCP_SERVER_VERSION,
+    domain: 'operations' as const,
+  };
+  registerReadOnlyTools(server, getRuntimeContext, { runtimeInfo });
+  registerOperationsTools(server, getRuntimeContext, { runtimeInfo });
   return server;
 }
 
 export async function main(): Promise<void> {
+  console.error(JSON.stringify({
+    level: 'warn',
+    server: OPERATIONS_MCP_SERVER_NAME,
+    message: 'byomem-mcp-operations is a compatibility surface; use split memory, graph, and file-search MCP servers for failure-domain isolation.',
+  }));
   const server = createOperationsMcpServer();
   await server.connect(new StdioServerTransport());
 }

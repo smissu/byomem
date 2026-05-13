@@ -8,7 +8,10 @@
     "build": "tsc -p tsconfig.build.json && npm --prefix ts/packages/runtime run build",
     "byomem:cli": "node ts/packages/runtime/dist/cli.js",
     "byomem:mcp-bootstrap": "node ts/packages/runtime/dist/mcp/bootstrap.js",
-    "byomem:mcp-operations": "node ts/packages/runtime/dist/mcp/operations.js"
+    "byomem:mcp-operations": "node ts/packages/runtime/dist/mcp/operations.js",
+    "byomem:mcp-memory": "node ts/packages/runtime/dist/mcp/memory.js",
+    "byomem:mcp-graph": "node ts/packages/runtime/dist/mcp/graph.js",
+    "byomem:mcp-file-search": "node ts/packages/runtime/dist/mcp/file-search.js"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

@@ -79,6 +79,15 @@ export interface FileSearchHotIndexStats {
     completedAt: string;
     elapsedMs: number;
   };
+  memoryGuard?: FileSearchHotIndexMemoryGuard;
+}
+
+export interface FileSearchHotIndexMemoryGuard {
+  degraded: boolean;
+  reason?: 'memory-budget-exceeded';
+  budgetMb?: number;
+  estimatedBytes: number;
+  vectorsSkipped: boolean;
 }
 
 export interface FileSearchIndexStats {
@@ -150,9 +159,61 @@ interface HotFileSearchIndexSnapshot {
   hydrateStartedAt: string;
   hydratedAt: string;
   hydrateMs: number;
+  memoryGuard?: FileSearchHotIndexMemoryGuard;
 }
 
 const BACKEND_VERSION = 'byomem-file-search-index-v1';
+
+function parsePositiveIntegerEnv(name: string): number | undefined {
+  const raw = process.env[name]?.trim();
+  if (!raw) return undefined;
+  if (!/^[1-9]\d*$/.test(raw)) return undefined;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+function estimateRowsBytes(rows: FileSearchIndexedRow[]): number {
+  let total = 0;
+  for (const row of rows) {
+    total += Buffer.byteLength(row.content ?? '', 'utf8');
+    total += Buffer.byteLength(row.searchText ?? '', 'utf8');
+    total += Buffer.byteLength(row.filePath ?? '', 'utf8');
+    total += 256;
+  }
+  return total;
+}
+
+function estimateProjectRowsBytes(fileDb: NonNullable<NativeStore['fileSearchDb']>, projectKey: string): number {
+  const row = fileDb.db.prepare(`
+    SELECT
+      COALESCE(SUM(LENGTH(fc.chunk_text)), 0) AS chunkBytes,
+      COALESCE(SUM(LENGTH(COALESCE(fc.search_text, fc.chunk_text))), 0) AS searchBytes,
+      COALESCE(SUM(LENGTH(fr.path)), 0) AS pathBytes,
+      COUNT(*) AS chunkCount
+    FROM indexed_chunks fc
+    JOIN file_records fr ON fr.id = fc.file_record_id
+    WHERE fr.project_key = ?
+  `).get(projectKey) as { chunkBytes?: number; searchBytes?: number; pathBytes?: number; chunkCount?: number };
+  return (row.chunkBytes ?? 0) + (row.searchBytes ?? 0) + (row.pathBytes ?? 0) + ((row.chunkCount ?? 0) * 256);
+}
+
+function resolveHotIndexMemoryGuard(fileDb: NonNullable<NativeStore['fileSearchDb']>, projectKey: string, rows?: FileSearchIndexedRow[]): FileSearchHotIndexMemoryGuard | undefined {
+  const budgetMb = parsePositiveIntegerEnv('BYOMEM_FILE_SEARCH_HOT_INDEX_MEMORY_MB');
+  if (!budgetMb) return undefined;
+  const diagnostics = fileDb.getEmbeddingDiagnostics();
+  const estimatedBytes = (rows ? estimateRowsBytes(rows) : estimateProjectRowsBytes(fileDb, projectKey)) + (diagnostics.embeddedChunks * diagnostics.configuredDimension * 4);
+  const budgetBytes = budgetMb * 1024 * 1024;
+  if (estimatedBytes <= budgetBytes) {
+    return { degraded: false, budgetMb, estimatedBytes, vectorsSkipped: false };
+  }
+  return {
+    degraded: true,
+    reason: 'memory-budget-exceeded',
+    budgetMb,
+    estimatedBytes,
+    vectorsSkipped: true,
+  };
+}
 
 function fingerprintText(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
@@ -743,6 +804,7 @@ export class FileSearchIndex {
       ...(this.lastError ? { lastError: this.lastError } : {}),
       ...(this.lastHydrateMs !== undefined ? { hydrateMs: this.lastHydrateMs } : {}),
       ...(snapshot ? { hydrate: { startedAt: snapshot.hydrateStartedAt, completedAt: snapshot.hydratedAt, elapsedMs: snapshot.hydrateMs } } : {}),
+      ...(snapshot?.memoryGuard ? { memoryGuard: snapshot.memoryGuard } : {}),
     };
   }
 
@@ -765,9 +827,38 @@ export class FileSearchIndex {
     const startedAt = performance.now();
     this.hotState = 'hydrating';
     try {
+      const preflightMemoryGuard = resolveHotIndexMemoryGuard(fileDb, this.projectKey);
+      if (preflightMemoryGuard?.degraded) {
+        const hydrateMs = performance.now() - startedAt;
+        const hydratedAt = new Date().toISOString();
+        const snapshot: HotFileSearchIndexSnapshot = {
+          rows: [],
+          vectors: new Map<string, HotFileSearchVector>(),
+          bm25: buildBm25Index([]),
+          vectorEntries: [],
+          perLanguageCounts: {},
+          indexedFiles: (fileDb.db.prepare('SELECT COUNT(*) AS count FROM indexed_files WHERE project_key = ?').get(this.projectKey) as { count: number }).count,
+          revision: fileDb.indexRevision,
+          source: 'sqlite',
+          hydrateStartedAt,
+          hydratedAt,
+          hydrateMs,
+          memoryGuard: preflightMemoryGuard,
+        };
+        this.snapshot = snapshot;
+        this.hydrateCount += 1;
+        this.buildCount += 1;
+        this.lastHydratedAt = hydratedAt;
+        this.lastBuiltAt = hydratedAt;
+        this.lastHydrateMs = hydrateMs;
+        this.lastError = undefined;
+        this.hotState = 'ready';
+        return this.snapshot;
+      }
       const rows = loadAllChunks(fileDb.db, this.projectKey);
       const bm25 = buildBm25Index(rows);
-      const vectors = loadReadyEmbeddingVectors(fileDb, this.projectKey, bm25.rowByKey);
+      const memoryGuard = resolveHotIndexMemoryGuard(fileDb, this.projectKey, rows);
+      const vectors = memoryGuard?.vectorsSkipped ? new Map<string, HotFileSearchVector>() : loadReadyEmbeddingVectors(fileDb, this.projectKey, bm25.rowByKey);
       const hydrateMs = performance.now() - startedAt;
       const hydratedAt = new Date().toISOString();
       const snapshot: HotFileSearchIndexSnapshot = {
@@ -782,6 +873,7 @@ export class FileSearchIndex {
         hydrateStartedAt,
         hydratedAt,
         hydrateMs,
+        ...(memoryGuard ? { memoryGuard } : {}),
       };
       snapshot.vectorEntries = buildVectorEntries(snapshot);
       this.snapshot = snapshot;
@@ -815,10 +907,11 @@ export class FileSearchIndex {
 
     const embeddingDiagnostics = fileDb.getEmbeddingDiagnostics();
     const snapshot = this.currentSnapshot() ?? this.hydrate();
+    const dbChunkCount = () => (fileDb.db.prepare('SELECT COUNT(*) AS count FROM indexed_chunks WHERE project_key = ?').get(this.projectKey) as { count: number }).count;
     return {
       index: {
         indexedFiles: snapshot?.indexedFiles ?? (fileDb.db.prepare('SELECT COUNT(*) AS count FROM indexed_files WHERE project_key = ?').get(this.projectKey) as { count: number }).count,
-        chunkCount: snapshot?.rows.length ?? (fileDb.db.prepare('SELECT COUNT(*) AS count FROM indexed_chunks WHERE project_key = ?').get(this.projectKey) as { count: number }).count,
+        chunkCount: snapshot?.memoryGuard?.degraded ? dbChunkCount() : snapshot?.rows.length ?? dbChunkCount(),
         perLanguageCounts: snapshot?.perLanguageCounts ?? {},
         projectKey: this.projectKey,
         baseDir: this.projectBaseDir,
@@ -851,7 +944,7 @@ export class FileSearchIndex {
     const filteredRows = filterSnapshotRows(snapshot, options);
     const lexicalRows = queryLexicalBm25Prepared(ensureBm25Index(snapshot), query, overFetch, filteredRows);
     let safeLexicalRows = lexicalRows.filter(isSafeFileSearchRow);
-    if (!safeLexicalRows.length) {
+    if (!safeLexicalRows.length && !snapshot.memoryGuard?.degraded) {
       safeLexicalRows = queryLexicalBm25Rows(loadAllChunks(fileDb.db, this.projectKey), query, overFetch, options).filter(isSafeFileSearchRow);
     }
     if (mode === 'bm25') return boostAndRankLexicalRows(safeLexicalRows, filteredRows, query, limit).map((row) => buildHit(row, 'bm25'));

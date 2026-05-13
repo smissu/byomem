@@ -1,9 +1,16 @@
 import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { registerRuntimeInfoTool } from './runtime-info.js';
 
 export const BOOTSTRAP_MCP_SERVER_NAME = 'byomem-mcp-bootstrap';
 export const BOOTSTRAP_MCP_SERVER_VERSION = '0.1.0';
 
 export function registerBootstrapTools(server: McpServer): void {
+  registerRuntimeInfoTool(server, {
+    name: BOOTSTRAP_MCP_SERVER_NAME,
+    version: BOOTSTRAP_MCP_SERVER_VERSION,
+    domain: 'bootstrap',
+  });
+
   server.registerTool('ping', {
     description: 'Return a trivial acknowledgement for transport verification.',
   }, async () => ({

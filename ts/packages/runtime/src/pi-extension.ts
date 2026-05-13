@@ -351,10 +351,41 @@ type DirectFileSearchStore = {
   baseDir: string;
   fileSearchDb: ReturnType<typeof openFileSearchDb>;
   fileSearchProjectBaseDir: string;
+  activeUses: number;
 };
 
 const directFileSearchStores = new Map<string, DirectFileSearchStore>();
 let directFileSearchStoreIdleTimer: ReturnType<typeof setTimeout> | undefined;
+let directFileSearchStoreEvictionCount = 0;
+
+function directFileSearchStoreMaxEntries(): number {
+  const raw = process.env.BYOMEM_FILE_SEARCH_DIRECT_STORE_CACHE_MAX?.trim();
+  if (!raw) return 2;
+  if (!/^[1-9]\d*$/.test(raw)) return 2;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? parsed : 2;
+}
+
+function enforceDirectFileSearchStoreLimit(): void {
+  const maxEntries = directFileSearchStoreMaxEntries();
+  while (directFileSearchStores.size > maxEntries) {
+    const oldestKey = Array.from(directFileSearchStores.entries()).find(([, store]) => store.activeUses <= 0)?.[0];
+    if (!oldestKey) return;
+    const oldest = directFileSearchStores.get(oldestKey);
+    directFileSearchStores.delete(oldestKey);
+    oldest?.fileSearchDb.close();
+    directFileSearchStoreEvictionCount += 1;
+  }
+}
+
+function directFileSearchStoreCacheStats() {
+  return {
+    maxEntries: directFileSearchStoreMaxEntries(),
+    size: directFileSearchStores.size,
+    evictionCount: directFileSearchStoreEvictionCount,
+    owner: 'pi-process',
+  };
+}
 
 function getDirectFileSearchStore(targetBaseDir: string): DirectFileSearchStore {
   if (directFileSearchStoreIdleTimer) {
@@ -362,13 +393,19 @@ function getDirectFileSearchStore(targetBaseDir: string): DirectFileSearchStore 
     directFileSearchStoreIdleTimer = undefined;
   }
   const existing = directFileSearchStores.get(targetBaseDir);
-  if (existing) return existing;
+  if (existing) {
+    directFileSearchStores.delete(targetBaseDir);
+    directFileSearchStores.set(targetBaseDir, existing);
+    return existing;
+  }
   const store = {
     baseDir: targetBaseDir,
     fileSearchDb: openDirectFileSearchDb(targetBaseDir),
     fileSearchProjectBaseDir: targetBaseDir,
+    activeUses: 0,
   };
   directFileSearchStores.set(targetBaseDir, store);
+  enforceDirectFileSearchStoreLimit();
   return store;
 }
 
@@ -377,8 +414,11 @@ function closeDirectFileSearchStores(): void {
     clearTimeout(directFileSearchStoreIdleTimer);
     directFileSearchStoreIdleTimer = undefined;
   }
-  for (const store of directFileSearchStores.values()) store.fileSearchDb.close();
-  directFileSearchStores.clear();
+  for (const [key, store] of directFileSearchStores.entries()) {
+    if (store.activeUses > 0) continue;
+    store.fileSearchDb.close();
+    directFileSearchStores.delete(key);
+  }
 }
 
 function scheduleDirectFileSearchStoreIdleCleanup(): void {
@@ -389,9 +429,12 @@ function scheduleDirectFileSearchStoreIdleCleanup(): void {
 
 async function withDirectFileSearchStore<T>(targetBaseDir: string, fn: (store: DirectFileSearchStore) => Promise<T> | T): Promise<T> {
   const store = getDirectFileSearchStore(targetBaseDir);
+  store.activeUses += 1;
   try {
     return await fn(store);
   } finally {
+    store.activeUses = Math.max(0, store.activeUses - 1);
+    enforceDirectFileSearchStoreLimit();
     scheduleDirectFileSearchStoreIdleCleanup();
   }
 }
@@ -457,7 +500,7 @@ async function searchFileIndexDirect(targetBaseDir: string, query: { query: stri
     const results = enrichedHits.map(serializeFileSearchResult);
     const semantic = await buildSearchSemanticMetadata(store as never, query as never, enrichedHits);
     const index = buildFileSearchIndex(store as never).stats();
-    return { results, semantic, index };
+    return { results, semantic, index, directStoreCache: directFileSearchStoreCacheStats() };
   });
 }
 

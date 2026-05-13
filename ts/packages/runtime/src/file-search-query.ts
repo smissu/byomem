@@ -36,6 +36,8 @@ export interface FileSearchSemanticMetadata {
   failures: number;
   refreshCommand: 'file-search-semantic-refresh';
   refreshTool: 'byomem_file_search_semantic_refresh';
+  degraded?: boolean;
+  degradeReason?: string;
 }
 
 export function redactSensitiveFileSearchText(text: string): string {
@@ -61,6 +63,7 @@ export async function buildSearchSemanticMetadata(store: NativeStore, query: Fil
   if (!fileDb || mode === 'bm25') return undefined;
   const diagnostics = fileDb.getEmbeddingDiagnostics();
   const used = Boolean(hits?.some((hit) => hit.file?.semanticScore !== undefined));
+  const memoryGuard = buildFileSearchIndex(store).hotIndexInfo.memoryGuard;
   return {
     requested: true,
     enabled: diagnostics.enabled,
@@ -83,6 +86,7 @@ export async function buildSearchSemanticMetadata(store: NativeStore, query: Fil
     failures: diagnostics.failures,
     refreshCommand: 'file-search-semantic-refresh',
     refreshTool: 'byomem_file_search_semantic_refresh',
+    ...(memoryGuard?.degraded ? { degraded: true, degradeReason: memoryGuard.reason ?? 'memory-guard' } : {}),
   };
 }
 

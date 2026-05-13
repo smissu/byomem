@@ -5,7 +5,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "byomem-runtime": "./dist/cli.js"
+    "byomem-runtime": "./dist/cli.js",
+    "byomem-mcp-memory": "./dist/mcp/memory.js",
+    "byomem-mcp-graph": "./dist/mcp/graph.js",
+    "byomem-mcp-file-search": "./dist/mcp/file-search.js"
   },
   "exports": {
     ".": {
@@ -27,13 +30,32 @@
     "./mcp/operations": {
       "types": "./dist/mcp/operations.d.ts",
       "default": "./dist/mcp/operations.js"
+    },
+    "./mcp/memory": {
+      "types": "./dist/mcp/memory.d.ts",
+      "default": "./dist/mcp/memory.js"
+    },
+    "./mcp/graph": {
+      "types": "./dist/mcp/graph.d.ts",
+      "default": "./dist/mcp/graph.js"
+    },
+    "./mcp/file-search": {
+      "types": "./dist/mcp/file-search.d.ts",
+      "default": "./dist/mcp/file-search.js"
+    },
+    "./file-search-worker": {
+      "types": "./dist/file-search-worker.d.ts",
+      "default": "./dist/file-search-worker.js"
     }
   },
   "scripts": {
     "build": "tsc -p ./tsconfig.build.json",
     "mcp:bootstrap": "node ./dist/mcp/bootstrap.js",
     "mcp:readonly": "node ./dist/mcp/readonly.js",
-    "mcp:operations": "node ./dist/mcp/operations.js"
+    "mcp:operations": "node ./dist/mcp/operations.js",
+    "mcp:memory": "node ./dist/mcp/memory.js",
+    "mcp:graph": "node ./dist/mcp/graph.js",
+    "mcp:file-search": "node ./dist/mcp/file-search.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

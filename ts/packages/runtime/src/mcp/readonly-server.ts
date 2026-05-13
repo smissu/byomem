@@ -51,6 +51,12 @@ export function createReadOnlyMcpServer(): McpServer {
     version: READONLY_MCP_SERVER_VERSION,
   });
 
-  registerReadOnlyTools(server, getRuntimeContext);
+  registerReadOnlyTools(server, getRuntimeContext, {
+    runtimeInfo: {
+      name: READONLY_MCP_SERVER_NAME,
+      version: READONLY_MCP_SERVER_VERSION,
+      domain: 'readonly',
+    },
+  });
   return server;
 }

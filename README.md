@@ -16,3 +16,13 @@ Future Hermes sessions in this repo should:
 - run a BYOMem file-search scan after modifying code files
 
 Historical compatibility docs may remain here, but implementation work should target the TS-native runtime.
+
+## MCP process isolation
+
+Use split MCP servers for normal Codex/Hermes operation:
+
+- `ts/packages/runtime/dist/mcp/memory.js`
+- `ts/packages/runtime/dist/mcp/graph.js`
+- `ts/packages/runtime/dist/mcp/file-search.js`
+
+The legacy `operations.js` entrypoint remains available for compatibility, but split servers are preferred so file-search worker failures cannot close memory or graph MCP transports. See [docs/byomem-mcp-process-isolation.md](docs/byomem-mcp-process-isolation.md).
