@@ -52,7 +52,7 @@ Environment variables:
 - `BYOMEM_FILE_SEARCH_WORKER_QUEUE_DEPTH`: queued worker calls before structured backpressure. Default: `8`.
 - `BYOMEM_FILE_SEARCH_WORKER_PATH`: override worker entrypoint, mainly for tests.
 - `BYOMEM_FILE_SEARCH_DIRECT_STORE_CACHE_MAX`: max process-local direct file-search stores. Default: `2`.
-- `BYOMEM_FILE_SEARCH_HOT_INDEX_MEMORY_MB`: optional hot-index hydration budget. When exceeded, vector hydration is skipped and BM25 remains available.
+- `BYOMEM_FILE_SEARCH_HOT_INDEX_MEMORY_MB`: hot-index hydration budget. Defaults to `BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB` when set, otherwise `1024`. When exceeded, full hot-index hydration is skipped and bounded BM25/lexical fallback remains available.
 
 Structured worker failures include safe operational fields such as kind, exit code, signal, retryability, timeout, memory limit, and recovery hint. Raw worker stderr/stdout and indexed chunk content are not returned to MCP clients.
 

@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { openFileSearchRegistryDb } from '../src/file-search-db.js';
+import { recordFileSearchPollFailure, registerFileSearchProject } from '../src/file-search-project-registry.js';
+import { FILE_SEARCH_WORKER_STDIO_MAX_BYTES } from '../src/file-search-worker-runner.js';
 import { registerBootstrapTools } from '../src/mcp/tools.js';
 import { registerOperationsTools, MCP_TOOL_DOMAIN_MAP } from '../src/mcp/operations-tools.js';
 import { registerReadOnlyTools } from '../src/mcp/readonly-tools.js';
@@ -37,10 +40,21 @@ function parseFirstContentJson<T>(result: unknown): T {
 
 describe('Sprint 70 split MCP tool topology', () => {
   const transports: StdioClientTransport[] = [];
+  const dirs: string[] = [];
+  const originalRuntimeBase = process.env.BYOMEM_RUNTIME_BASE_DIR;
 
   afterEach(async () => {
     while (transports.length) await transports.pop()!.close();
+    while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+    if (originalRuntimeBase === undefined) delete process.env.BYOMEM_RUNTIME_BASE_DIR;
+    else process.env.BYOMEM_RUNTIME_BASE_DIR = originalRuntimeBase;
   });
+
+  function trackedTemp(prefix: string): string {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    dirs.push(dir);
+    return dir;
+  }
 
   it('documents every split tool in an explicit domain map', () => {
     expect(MCP_TOOL_DOMAIN_MAP.memory).toEqual(expect.arrayContaining(['status', 'search', 'store', 'prune']));
@@ -99,8 +113,60 @@ describe('Sprint 70 split MCP tool topology', () => {
     expect(toolNames(bootstrap.tools)).toEqual(['byomem_runtime_info', 'ping', 'version']);
   });
 
+  it('bounds direct project-list responses with pagination metadata before worker stdio limits', async () => {
+    const runtimeDir = trackedTemp('byomem-s70-project-list-runtime-');
+    process.env.BYOMEM_RUNTIME_BASE_DIR = runtimeDir;
+    const projectCount = 60;
+    const oversizedLastError = 'poll failure '.repeat(1700);
+    const registryDb = openFileSearchRegistryDb({ dbBaseDir: runtimeDir });
+    try {
+      for (let index = 0; index < projectCount; index += 1) {
+        const baseDir = join(runtimeDir, `project-${String(index).padStart(3, '0')}`);
+        registerFileSearchProject(registryDb.db, baseDir);
+        recordFileSearchPollFailure(registryDb.db, baseDir, new Error(`${oversizedLastError}${index}`));
+      }
+    } finally {
+      registryDb.close();
+    }
+
+    const fileSearch = makeMockServer();
+    registerOperationsTools(fileSearch.server as never, () => ({ runtimeBaseDir: runtimeDir }) as never, {
+      groups: ['file-search'],
+      fileSearchExecution: 'direct',
+      runtimeInfo: false,
+    });
+    const tool = fileSearch.tools.find((candidate) => candidate.name === 'byomem_file_search_project_list');
+    expect(tool).toBeTruthy();
+
+    const result = await tool!.execute({});
+    const jsonText = (result as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? '';
+    const payload = parseFirstContentJson<{
+      projects: Array<Record<string, unknown>>;
+      pagination: {
+        total: number;
+        offset: number;
+        limit: number;
+        returned: number;
+        hasMore: boolean;
+      };
+    }>(result);
+
+    expect(Array.isArray(payload.projects)).toBe(true);
+    expect(payload.pagination).toEqual({
+      total: projectCount,
+      offset: 0,
+      limit: expect.any(Number),
+      returned: payload.projects.length,
+      hasMore: true,
+    });
+    expect(payload.pagination.limit).toBeGreaterThan(0);
+    expect(payload.pagination.limit).toBeLessThan(projectCount);
+    expect(payload.pagination.returned).toBeLessThan(projectCount);
+    expect(jsonText.length).toBeLessThan(FILE_SEARCH_WORKER_STDIO_MAX_BYTES / 2);
+  });
+
   it('starts split dist MCP servers and exposes only their failure-domain tools', async () => {
-    const runtimeDir = mkdtempSync(join(tmpdir(), 'byomem-s70-split-mcp-runtime-'));
+    const runtimeDir = trackedTemp('byomem-s70-split-mcp-runtime-');
     const cases = [
       {
         name: 'bootstrap',

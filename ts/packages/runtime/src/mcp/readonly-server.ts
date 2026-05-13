@@ -3,12 +3,13 @@ import { assertNoPythonDefaultPath as noPythonDefaultPath } from '../no-python-d
 import { resolveActiveProjectContext } from '../identity.js';
 import { buildByomemRuntimeStatus, openReadOnlyRuntimeContext } from '../readonly-core.js';
 import { resolveRuntimeMode } from '../runtime-mode.js';
+import { BYOMEM_RUNTIME_VERSION } from '../version.js';
 import { registerReadOnlyTools, type ReadOnlyMcpRuntimeContext } from './readonly-tools.js';
 
 export { registerReadOnlyTools };
 
 export const READONLY_MCP_SERVER_NAME = 'byomem-mcp-readonly';
-export const READONLY_MCP_SERVER_VERSION = '0.1.0';
+export const READONLY_MCP_SERVER_VERSION = BYOMEM_RUNTIME_VERSION;
 
 type CachedReadOnlyRuntimeContext = ReadOnlyMcpRuntimeContext;
 

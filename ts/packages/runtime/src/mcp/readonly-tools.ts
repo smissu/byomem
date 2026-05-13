@@ -4,6 +4,7 @@ import { openGraphDb } from '../graph-db.js';
 import { buildByomemRuntimeStatus, safeJson, shapeByomemSearchResults, type ReadOnlyByomemRuntimeContext } from '../readonly-core.js';
 import { searchIndex } from '../search-index.js';
 import type { MemorySearchMode } from '../sqlite-sidecar.js';
+import { BYOMEM_RUNTIME_VERSION } from '../version.js';
 import { registerRuntimeInfoTool, type RuntimeInfoServerDescriptor } from './runtime-info.js';
 
 export type ReadOnlyMcpRuntimeContext = ReadOnlyByomemRuntimeContext & {
@@ -66,7 +67,7 @@ export function registerReadOnlyTools(
   const registerTool = server.registerTool.bind(server) as (...args: any[]) => void;
   const groups = new Set<ReadOnlyToolGroup>(options.groups ?? ['memory', 'graph']);
   if (options.runtimeInfo !== false) {
-    registerRuntimeInfoTool(server, options.runtimeInfo ?? { name: 'byomem-mcp-readonly', version: '0.1.0', domain: 'readonly' });
+    registerRuntimeInfoTool(server, options.runtimeInfo ?? { name: 'byomem-mcp-readonly', version: BYOMEM_RUNTIME_VERSION, domain: 'readonly' });
   }
 
   if (shouldRegisterGroup(groups, 'memory')) {

@@ -12,6 +12,7 @@ import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searc
 import { refreshSemanticIndexAfterManualScan } from '../file-search-semantic-refresh.js';
 import { callFileSearchWorker, type FileSearchWorkerToolName } from '../file-search-worker-runner.js';
 import { safeJson } from '../readonly-core.js';
+import { BYOMEM_RUNTIME_VERSION } from '../version.js';
 import type { ReadOnlyMcpRuntimeContext } from './readonly-tools.js';
 import { BYOMEM_RUNTIME_INFO_TOOL_NAME, registerRuntimeInfoTool, type RuntimeInfoServerDescriptor } from './runtime-info.js';
 
@@ -71,6 +72,12 @@ type FileSearchRelatedIntentInput = {
 
 type ProjectRegistryIntentInput = {
   baseDir: string;
+};
+
+type ProjectListIntentInput = {
+  limit?: number;
+  offset?: number;
+  includeDetails?: boolean;
 };
 
 type PollingStatusIntentInput = {
@@ -149,6 +156,11 @@ const refreshIntentSchema = z.object({
 }).strict();
 const projectRegistryIntentSchema = z.object({
   baseDir: z.string().trim().min(1),
+}).strict();
+const projectListIntentSchema = z.object({
+  limit: z.number().int().positive().optional(),
+  offset: z.number().int().nonnegative().optional(),
+  includeDetails: z.boolean().optional(),
 }).strict();
 const pollingStatusIntentSchema = z.object({
   baseDir: z.string().trim().min(1).optional(),
@@ -404,7 +416,38 @@ async function searchFileIndexDirect(runtime: OperationsMcpRuntimeContext, targe
   });
 }
 
-function serializeFileSearchProjectEntry(entry: FileSearchProjectEntry) {
+const PROJECT_LIST_DEFAULT_LIMIT = 50;
+const PROJECT_LIST_MAX_LIMIT = 100;
+const PROJECT_LIST_LAST_ERROR_MAX_CHARS = 512;
+
+function truncateProjectListText(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (value.length <= PROJECT_LIST_LAST_ERROR_MAX_CHARS) return value;
+  return `${value.slice(0, PROJECT_LIST_LAST_ERROR_MAX_CHARS)}... [truncated ${value.length - PROJECT_LIST_LAST_ERROR_MAX_CHARS} chars]`;
+}
+
+function normalizeProjectListIntent(intent: ProjectListIntentInput) {
+  const offset = intent.offset ?? 0;
+  const requestedLimit = intent.limit ?? PROJECT_LIST_DEFAULT_LIMIT;
+  return {
+    offset,
+    limit: Math.min(requestedLimit, PROJECT_LIST_MAX_LIMIT),
+    includeDetails: intent.includeDetails ?? true,
+  };
+}
+
+function serializeFileSearchProjectEntry(entry: FileSearchProjectEntry, options: { includeDetails?: boolean } = {}) {
+  if (options.includeDetails === false) {
+    return {
+      project_key: entry.projectKey,
+      base_dir: entry.baseDir,
+      display_name: entry.displayName,
+      state: entry.state,
+      source: entry.source,
+      polling_enabled: entry.pollingEnabled,
+      polling_disabled_reason: entry.pollingDisabledReason,
+    };
+  }
   return {
     project_key: entry.projectKey,
     base_dir: entry.baseDir,
@@ -423,12 +466,25 @@ function serializeFileSearchProjectEntry(entry: FileSearchProjectEntry) {
     last_seen_at: entry.lastSeenAt,
     registered_at: entry.registeredAt,
     last_scan_at: entry.lastScanAt,
-    last_error: entry.lastError,
+    last_error: truncateProjectListText(entry.lastError),
   };
 }
 
-function serializeFileSearchProjectEntries(entries: FileSearchProjectEntry[]) {
-  return entries.map((entry) => serializeFileSearchProjectEntry(entry));
+function serializeFileSearchProjectEntries(entries: FileSearchProjectEntry[], options: { includeDetails?: boolean } = {}) {
+  return entries.map((entry) => serializeFileSearchProjectEntry(entry, options));
+}
+
+function serializeFileSearchProjectList(entries: FileSearchProjectEntry[], intent: ProjectListIntentInput) {
+  const { offset, limit, includeDetails } = normalizeProjectListIntent(intent);
+  const projects = serializeFileSearchProjectEntries(entries.slice(offset, offset + limit), { includeDetails });
+  const pagination = {
+    total: entries.length,
+    offset,
+    limit,
+    returned: projects.length,
+    hasMore: offset + projects.length < entries.length,
+  };
+  return { projects, pagination, ...pagination };
 }
 
 export function registerOperationsTools(
@@ -438,7 +494,7 @@ export function registerOperationsTools(
 ): void {
   const enabledGroups = new Set<OperationsToolGroup>(options.groups ?? ['memory-mutation', 'graph-mutation', 'file-search']);
   if (options.runtimeInfo !== false) {
-    registerRuntimeInfoTool(server, options.runtimeInfo ?? { name: 'byomem-mcp-operations', version: '0.1.0', domain: 'operations' });
+    registerRuntimeInfoTool(server, options.runtimeInfo ?? { name: 'byomem-mcp-operations', version: BYOMEM_RUNTIME_VERSION, domain: 'operations' });
   }
   const registerTool = ((name: string, ...args: any[]) => {
     const group = operationToolGroupForName(name);
@@ -648,18 +704,22 @@ export function registerOperationsTools(
   registerTool(
     'byomem_file_search_project_list',
     {
-      description: 'List registered file-search projects without scanning.',
-      inputSchema: z.object({}).strict(),
+      description: 'List registered file-search projects without scanning. Results are paginated by default to keep MCP worker output bounded.',
+      inputSchema: projectListIntentSchema,
     },
-    async () => {
-      const workerResult = runFileSearchTool('byomem_file_search_project_list', {});
+    async (params: unknown) => {
+      const rawIntent = params ?? {};
+      const workerResult = runFileSearchTool('byomem_file_search_project_list', rawIntent);
       if (workerResult) return workerResult;
       const runtime = getRuntimeContext();
+      const intent = projectListIntentSchema.parse(rawIntent) as ProjectListIntentInput;
       const registryDb = openDirectFileSearchRegistryDb(runtime);
       try {
-        const projects = serializeFileSearchProjectEntries(listFileSearchProjects(registryDb.db));
+        const payload = serializeFileSearchProjectList(listFileSearchProjects(registryDb.db), intent);
         return {
-          content: [{ type: 'text', text: safeJson({ projects }) }],
+          content: [{ type: 'text', text: safeJson(payload) }],
+          details: payload,
+          ...payload,
         };
       } finally {
         registryDb.close();

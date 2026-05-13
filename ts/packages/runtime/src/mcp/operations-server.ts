@@ -4,11 +4,12 @@ import { pathToFileURL } from 'node:url';
 import { registerReadOnlyTools } from './readonly-tools.js';
 import { registerOperationsTools, type OperationsMcpRuntimeContext } from './operations-tools.js';
 import { buildOperationsRuntimeContext } from './split-runtime.js';
+import { BYOMEM_RUNTIME_VERSION } from '../version.js';
 
 export { registerOperationsTools };
 
 export const OPERATIONS_MCP_SERVER_NAME = 'byomem-mcp-operations';
-export const OPERATIONS_MCP_SERVER_VERSION = '0.1.0';
+export const OPERATIONS_MCP_SERVER_VERSION = BYOMEM_RUNTIME_VERSION;
 
 type CachedOperationsRuntimeContext = OperationsMcpRuntimeContext;
 

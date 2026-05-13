@@ -163,6 +163,7 @@ interface HotFileSearchIndexSnapshot {
 }
 
 const BACKEND_VERSION = 'byomem-file-search-index-v1';
+const DEFAULT_HOT_INDEX_MEMORY_MB = 1024;
 
 function parsePositiveIntegerEnv(name: string): number | undefined {
   const raw = process.env[name]?.trim();
@@ -170,6 +171,12 @@ function parsePositiveIntegerEnv(name: string): number | undefined {
   if (!/^[1-9]\d*$/.test(raw)) return undefined;
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+function resolveHotIndexMemoryBudgetMb(): number {
+  return parsePositiveIntegerEnv('BYOMEM_FILE_SEARCH_HOT_INDEX_MEMORY_MB')
+    ?? parsePositiveIntegerEnv('BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB')
+    ?? DEFAULT_HOT_INDEX_MEMORY_MB;
 }
 
 function estimateRowsBytes(rows: FileSearchIndexedRow[]): number {
@@ -184,22 +191,24 @@ function estimateRowsBytes(rows: FileSearchIndexedRow[]): number {
 }
 
 function estimateProjectRowsBytes(fileDb: NonNullable<NativeStore['fileSearchDb']>, projectKey: string): number {
-  const row = fileDb.db.prepare(`
+  const chunkRow = fileDb.db.prepare(`
     SELECT
-      COALESCE(SUM(LENGTH(fc.chunk_text)), 0) AS chunkBytes,
-      COALESCE(SUM(LENGTH(COALESCE(fc.search_text, fc.chunk_text))), 0) AS searchBytes,
-      COALESCE(SUM(LENGTH(fr.path)), 0) AS pathBytes,
+      COALESCE(SUM(LENGTH(chunk_text)), 0) AS chunkBytes,
+      COALESCE(SUM(LENGTH(COALESCE(search_text, chunk_text))), 0) AS searchBytes,
       COUNT(*) AS chunkCount
     FROM indexed_chunks fc
-    JOIN file_records fr ON fr.id = fc.file_record_id
-    WHERE fr.project_key = ?
-  `).get(projectKey) as { chunkBytes?: number; searchBytes?: number; pathBytes?: number; chunkCount?: number };
-  return (row.chunkBytes ?? 0) + (row.searchBytes ?? 0) + (row.pathBytes ?? 0) + ((row.chunkCount ?? 0) * 256);
+    WHERE project_key = ?
+  `).get(projectKey) as { chunkBytes?: number; searchBytes?: number; chunkCount?: number };
+  const pathRow = fileDb.db.prepare(`
+    SELECT COALESCE(SUM(LENGTH(path)), 0) AS pathBytes
+    FROM file_records
+    WHERE project_key = ?
+  `).get(projectKey) as { pathBytes?: number };
+  return (chunkRow.chunkBytes ?? 0) + (chunkRow.searchBytes ?? 0) + (pathRow.pathBytes ?? 0) + ((chunkRow.chunkCount ?? 0) * 256);
 }
 
 function resolveHotIndexMemoryGuard(fileDb: NonNullable<NativeStore['fileSearchDb']>, projectKey: string, rows?: FileSearchIndexedRow[]): FileSearchHotIndexMemoryGuard | undefined {
-  const budgetMb = parsePositiveIntegerEnv('BYOMEM_FILE_SEARCH_HOT_INDEX_MEMORY_MB');
-  if (!budgetMb) return undefined;
+  const budgetMb = resolveHotIndexMemoryBudgetMb();
   const diagnostics = fileDb.getEmbeddingDiagnostics();
   const estimatedBytes = (rows ? estimateRowsBytes(rows) : estimateProjectRowsBytes(fileDb, projectKey)) + (diagnostics.embeddedChunks * diagnostics.configuredDimension * 4);
   const budgetBytes = budgetMb * 1024 * 1024;
@@ -523,6 +532,92 @@ function queryLexicalBm25(
   return queryLexicalBm25Rows(loadAllChunks(db, projectKey), query, limit, options);
 }
 
+function normalizeFtsQuery(query: string): string | undefined {
+  const tokens = tokenize(query);
+  if (!tokens.length) return undefined;
+  return tokens.map((token) => `"${token.replace(/"/g, '""')}"`).join(' OR ');
+}
+
+function escapeLikeTerm(term: string): string {
+  return term.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
+type LexicalDbRow = {
+  project_key: string;
+  path: string;
+  chunk_index: number;
+  chunk_text: string;
+  search_text: string;
+  chunk_hash: string;
+  start_line?: number | null;
+  end_line?: number | null;
+};
+
+function toLexicalRows(
+  rows: LexicalDbRow[],
+  limit: number,
+  options: FileSearchIndexSearchOptions | FileSearchIndexFindRelatedOptions,
+): FileSearchChunkRow[] {
+  return rows
+    .map((row) => ({
+      projectKey: row.project_key,
+      filePath: row.path,
+      content: row.chunk_text,
+      searchText: row.search_text ?? row.chunk_text,
+      startLine: typeof row.start_line === 'number' ? row.start_line : row.chunk_index + 1,
+      endLine: typeof row.end_line === 'number' ? row.end_line : row.chunk_index + 1,
+      hasLineMetadata: typeof row.start_line === 'number' && typeof row.end_line === 'number',
+      chunkIndex: row.chunk_index,
+      chunkHash: row.chunk_hash,
+      language: inferFileSearchLanguage(row.path),
+    }))
+    .filter((row) => shouldIncludeRow(row, options))
+    .slice(0, limit)
+    .map((row, index) => withScores(row, { lexicalScore: 1 / (index + 1), score: 1 / (index + 1) }));
+}
+
+function queryLexicalFtsRows(
+  fileDb: NonNullable<NativeStore['fileSearchDb']>,
+  projectKey: string,
+  query: string,
+  limit: number,
+  options: FileSearchIndexSearchOptions | FileSearchIndexFindRelatedOptions = {},
+): FileSearchChunkRow[] {
+  const ftsQuery = normalizeFtsQuery(query);
+  const candidateLimit = Math.max(limit * 8, 50);
+  if (ftsQuery) {
+    try {
+      const rows = fileDb.db.prepare(`
+        SELECT fr.project_key, fr.path, fc.chunk_index, fc.chunk_text, fc.search_text, fc.chunk_hash, fc.start_line, fc.end_line, bm25(indexed_chunks_fts) AS rank
+        FROM indexed_chunks_fts
+        JOIN indexed_chunks fc ON fc.rowid = indexed_chunks_fts.rowid
+        JOIN file_records fr ON fr.id = fc.file_record_id
+        WHERE indexed_chunks_fts MATCH ?
+          AND indexed_chunks_fts.project_key = ?
+        ORDER BY rank ASC, fr.path ASC, fc.chunk_index ASC
+        LIMIT ?
+      `).all(ftsQuery, projectKey, candidateLimit) as LexicalDbRow[];
+      const ftsRows = toLexicalRows(rows, limit, options);
+      if (ftsRows.length) return ftsRows;
+    } catch {
+      // Fall through to bounded LIKE below for older or damaged FTS indexes.
+    }
+  }
+  const likeTerms = tokenize(query).slice(0, 3);
+  if (!likeTerms.length) return [];
+  const clauses = likeTerms.map(() => 'COALESCE(fc.search_text, fc.chunk_text) LIKE ? ESCAPE \'\\\'').join(' OR ');
+  const rows = fileDb.db.prepare(`
+    SELECT fr.project_key, fr.path, fc.chunk_index, fc.chunk_text, fc.search_text, fc.chunk_hash, fc.start_line, fc.end_line
+    FROM indexed_chunks fc
+    JOIN file_records fr ON fr.id = fc.file_record_id
+    WHERE fr.project_key = ?
+      AND (${clauses})
+    ORDER BY fr.path ASC, fc.chunk_index ASC
+    LIMIT ?
+  `).all(projectKey, ...likeTerms.map((term) => `%${escapeLikeTerm(term)}%`), candidateLimit) as LexicalDbRow[];
+  return toLexicalRows(rows, limit, options);
+}
+
 async function querySemanticSnapshot(
   fileDb: NonNullable<NativeStore['fileSearchDb']>,
   snapshot: HotFileSearchIndexSnapshot,
@@ -669,6 +764,28 @@ function emptyStats(identity: FileSearchIndexIdentity, build: FileSearchIndexBui
   };
 }
 
+function readDbIndexStats(fileDb: NonNullable<NativeStore['fileSearchDb']>, projectKey: string): {
+  indexedFiles: number;
+  chunkCount: number;
+  perLanguageCounts: Record<string, number>;
+} {
+  const indexedFiles = (fileDb.db.prepare('SELECT COUNT(*) AS count FROM indexed_files WHERE project_key = ?').get(projectKey) as { count: number }).count;
+  const chunkCount = (fileDb.db.prepare('SELECT COUNT(*) AS count FROM indexed_chunks WHERE project_key = ?').get(projectKey) as { count: number }).count;
+  const pathRows = fileDb.db.prepare(`
+    SELECT fr.path, COUNT(*) AS count
+    FROM indexed_chunks fc
+    JOIN file_records fr ON fr.id = fc.file_record_id
+    WHERE fr.project_key = ?
+    GROUP BY fr.path
+  `).all(projectKey) as Array<{ path: string; count: number }>;
+  const perLanguageCounts: Record<string, number> = {};
+  for (const row of pathRows) {
+    const language = (inferFileSearchLanguage(row.path) ?? 'text').toLowerCase();
+    perLanguageCounts[language] = (perLanguageCounts[language] ?? 0) + row.count;
+  }
+  return { indexedFiles, chunkCount, perLanguageCounts };
+}
+
 export class FileSearchIndexBuilder {
   private constructor(private readonly identity: FileSearchIndexIdentity) {}
 
@@ -740,6 +857,7 @@ export class FileSearchIndex {
   private lastBuiltAt?: string;
   private lastError?: string;
   private lastHydrateMs?: number;
+  private lastMemoryGuard?: FileSearchHotIndexMemoryGuard;
 
   constructor(
     private readonly store: NativeStore,
@@ -790,6 +908,7 @@ export class FileSearchIndex {
     const revision = fileDb?.indexRevision ?? 0;
     const snapshot = this.snapshot;
     const stale = snapshot && snapshot.revision !== revision;
+    const memoryGuard = snapshot?.memoryGuard ?? this.lastMemoryGuard;
     return {
       state: stale ? 'stale' : this.hotState,
       source: snapshot?.source ?? 'none',
@@ -804,7 +923,7 @@ export class FileSearchIndex {
       ...(this.lastError ? { lastError: this.lastError } : {}),
       ...(this.lastHydrateMs !== undefined ? { hydrateMs: this.lastHydrateMs } : {}),
       ...(snapshot ? { hydrate: { startedAt: snapshot.hydrateStartedAt, completedAt: snapshot.hydratedAt, elapsedMs: snapshot.hydrateMs } } : {}),
-      ...(snapshot?.memoryGuard ? { memoryGuard: snapshot.memoryGuard } : {}),
+      ...(memoryGuard ? { memoryGuard } : {}),
     };
   }
 
@@ -828,6 +947,7 @@ export class FileSearchIndex {
     this.hotState = 'hydrating';
     try {
       const preflightMemoryGuard = resolveHotIndexMemoryGuard(fileDb, this.projectKey);
+      this.lastMemoryGuard = preflightMemoryGuard;
       if (preflightMemoryGuard?.degraded) {
         const hydrateMs = performance.now() - startedAt;
         const hydratedAt = new Date().toISOString();
@@ -858,6 +978,7 @@ export class FileSearchIndex {
       const rows = loadAllChunks(fileDb.db, this.projectKey);
       const bm25 = buildBm25Index(rows);
       const memoryGuard = resolveHotIndexMemoryGuard(fileDb, this.projectKey, rows);
+      this.lastMemoryGuard = memoryGuard;
       const vectors = memoryGuard?.vectorsSkipped ? new Map<string, HotFileSearchVector>() : loadReadyEmbeddingVectors(fileDb, this.projectKey, bm25.rowByKey);
       const hydrateMs = performance.now() - startedAt;
       const hydratedAt = new Date().toISOString();
@@ -906,13 +1027,21 @@ export class FileSearchIndex {
     }
 
     const embeddingDiagnostics = fileDb.getEmbeddingDiagnostics();
-    const snapshot = this.currentSnapshot() ?? this.hydrate();
-    const dbChunkCount = () => (fileDb.db.prepare('SELECT COUNT(*) AS count FROM indexed_chunks WHERE project_key = ?').get(this.projectKey) as { count: number }).count;
+    const snapshot = this.currentSnapshot();
+    const dbStats = snapshot && !snapshot.memoryGuard?.degraded
+      ? {
+          indexedFiles: snapshot.indexedFiles,
+          chunkCount: snapshot.rows.length,
+          perLanguageCounts: snapshot.perLanguageCounts,
+        }
+      : readDbIndexStats(fileDb, this.projectKey);
+    const memoryGuard = snapshot?.memoryGuard ?? resolveHotIndexMemoryGuard(fileDb, this.projectKey);
+    this.lastMemoryGuard = memoryGuard;
     return {
       index: {
-        indexedFiles: snapshot?.indexedFiles ?? (fileDb.db.prepare('SELECT COUNT(*) AS count FROM indexed_files WHERE project_key = ?').get(this.projectKey) as { count: number }).count,
-        chunkCount: snapshot?.memoryGuard?.degraded ? dbChunkCount() : snapshot?.rows.length ?? dbChunkCount(),
-        perLanguageCounts: snapshot?.perLanguageCounts ?? {},
+        indexedFiles: dbStats.indexedFiles,
+        chunkCount: dbStats.chunkCount,
+        perLanguageCounts: dbStats.perLanguageCounts,
         projectKey: this.projectKey,
         baseDir: this.projectBaseDir,
         sourceFingerprint: this.identity.sourceFingerprint,
@@ -941,6 +1070,12 @@ export class FileSearchIndex {
     const snapshot = this.hydrate();
     if (!snapshot) return [];
     const overFetch = mode === 'hybrid' || mode === 'bm25' ? limit * 5 : limit;
+    if (snapshot.memoryGuard?.degraded) {
+      const fallbackRows = queryLexicalFtsRows(fileDb, this.projectKey, query, overFetch, options)
+        .filter(isSafeFileSearchRow)
+        .slice(0, limit);
+      return fallbackRows.map((row) => buildHit(row, 'bm25'));
+    }
     const filteredRows = filterSnapshotRows(snapshot, options);
     const lexicalRows = queryLexicalBm25Prepared(ensureBm25Index(snapshot), query, overFetch, filteredRows);
     let safeLexicalRows = lexicalRows.filter(isSafeFileSearchRow);
