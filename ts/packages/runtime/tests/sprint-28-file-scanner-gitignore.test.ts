@@ -92,6 +92,29 @@ describe('file scanner honors .gitignore', () => {
     expect(paths).toEqual(expect.not.arrayContaining([expect.stringContaining('generated.tmp')]));
   });
 
+  it('honors double-star directory patterns for generated nested outputs', () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    mkdirSync(join(dir, 'project-a', 'runs'), { recursive: true });
+    mkdirSync(join(dir, 'project-b', 'remote-artifacts', 'snapshot'), { recursive: true });
+    writeFileSync(join(dir, '.gitignore'), '**/runs/\n**/remote-artifacts/\n', 'utf8');
+    writeFileSync(join(dir, 'keep.txt'), 'keep visible content\n', 'utf8');
+    writeFileSync(join(dir, 'project-a', 'runs', 'metrics.json'), 'ignored run metrics\n', 'utf8');
+    writeFileSync(join(dir, 'project-b', 'remote-artifacts', 'snapshot', 'result.json'), 'ignored remote artifact\n', 'utf8');
+
+    const fileDb = openFileDb(dir);
+    const paths = indexedPaths(fileDb);
+    const chunks = indexedChunks(fileDb);
+
+    expect(paths).toEqual(expect.arrayContaining([expect.stringContaining('keep.txt')]));
+    expect(paths).toEqual(expect.not.arrayContaining([
+      expect.stringContaining('metrics.json'),
+      expect.stringContaining('result.json'),
+    ]));
+    expect(chunks).toEqual(expect.arrayContaining(['keep visible content']));
+    expect(chunks).toEqual(expect.not.arrayContaining(['ignored run metrics', 'ignored remote artifact']));
+  });
+
   it('excludes BYOMem runtime artifacts and raw session support fields from indexing', () => {
     const dir = tempDir();
     dirs.push(dir);

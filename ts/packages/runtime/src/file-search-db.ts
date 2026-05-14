@@ -193,7 +193,27 @@ type FileSearchScannerChunkerAccumulator = {
 };
 
 const DEFAULT_FILE_SEARCH_DB_FILE = 'byomem-file-search.sqlite';
-const IGNORED_DIRS = new Set(['node_modules', '.git']);
+const IGNORED_DIRS = new Set([
+  '.cache',
+  '.git',
+  '.hg',
+  '.mypy_cache',
+  '.next',
+  '.nuxt',
+  '.pytest_cache',
+  '.ruff_cache',
+  '.svn',
+  '.turbo',
+  '.venv',
+  '__pycache__',
+  'build',
+  'coverage',
+  'dist',
+  'node_modules',
+  'third_party',
+  'vendor',
+  'venv',
+]);
 const ROOT_RUNTIME_IGNORED_DIRS = new Set(['queue', '.byomem']);
 const IGNORED_BASENAMES = new Set(['byomem-index.sqlite', 'byomem-file-search.sqlite', 'native-store.json', 'native-store.json.migrated', 'queue.json', 'worker.json', 'session-capture-state.json', 'byomem-turn-end.jsonl']);
 const SENSITIVE_CONTENT_MARKERS = ['thinkingSignature', 'textSignature', 'encrypted_content', 'encryptedContent'];
@@ -308,10 +328,21 @@ function escapeRegex(value: string): string {
 }
 
 function globToRegex(pattern: string): RegExp {
-  const source = pattern
-    .split('*')
-    .map((part) => escapeRegex(part))
-    .join('[^/]*');
+  let source = '';
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index];
+    if (char !== '*') {
+      source += escapeRegex(char);
+      continue;
+    }
+    if (pattern[index + 1] === '*') {
+      const followedBySlash = pattern[index + 2] === '/';
+      source += followedBySlash ? '(?:.*/)?' : '.*';
+      index += followedBySlash ? 2 : 1;
+      continue;
+    }
+    source += '[^/]*';
+  }
   return new RegExp(`^${source}$`);
 }
 
@@ -359,7 +390,7 @@ function gitignoreRuleMatches(rule: GitignoreRule, relativePath: string, isDirec
 
   if (rule.directoryOnly) {
     if (rule.hasSlash || rule.anchored) {
-      return path === rule.pattern || path.startsWith(`${rule.pattern}/`);
+      return rule.regex.test(path);
     }
     return segments.some((segment) => rule.regex.test(segment));
   }
@@ -1569,7 +1600,7 @@ async function refreshSemanticIndex(db: BetterSqliteDatabase, options: FileSearc
     }
   }
   if (missing.length) {
-    const batchSize = Math.max(1, Math.min(refreshOptions.concurrency ?? options.embeddingConcurrency ?? missing.length, missing.length));
+    const batchSize = Math.max(1, Math.min(refreshOptions.concurrency ?? options.embeddingConcurrency ?? options.embeddingBatchSize ?? 100, missing.length));
     for (let start = 0; start < missing.length; start += batchSize) {
       const batch = missing.slice(start, start + batchSize);
       const vectors = await embeddingClient.embedMany(batch.map((entry) => entry.embeddingText));

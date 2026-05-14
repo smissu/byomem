@@ -26,6 +26,7 @@ export const FILE_SEARCH_EMBEDDING_IDENTITY_VERSION = 'file-search-embedding-v1'
 export const MEMORY_SEARCH_EMBEDDING_IDENTITY_VERSION = 'memory-search-embedding-v1';
 export const FALLBACK_EMBEDDING_PROVIDER_KEY = 'fallback:deterministic-v1';
 export const SEMBLE_EMBEDDING_MODEL = 'minishlab/potion-code-16M';
+const MODEL2VEC_STDOUT_BUFFER_MAX_BYTES = 16 * 1024 * 1024;
 
 export function resolveEmbeddingProviderKey(baseUrl?: string, model?: string): string {
   if (baseUrl) return `remote:${new URL('/api/embeddings', baseUrl).toString()}`;
@@ -83,6 +84,13 @@ class Model2VecEmbeddingServer {
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
       this.stdoutBuffer += chunk;
+      if (Buffer.byteLength(this.stdoutBuffer, 'utf8') > MODEL2VEC_STDOUT_BUFFER_MAX_BYTES) {
+        this.stdoutBuffer = '';
+        this.closingChildren.add(child);
+        child.kill('SIGKILL');
+        this.failAll(new Error('Model2Vec embedding server stdout exceeded the maximum buffered response size'));
+        return;
+      }
       while (true) {
         const newline = this.stdoutBuffer.indexOf('\n');
         if (newline < 0) break;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildFileSearchIndex } from '../src/file-search-index.js';
@@ -91,6 +91,42 @@ describe('Sprint 70 file-search memory guards', () => {
         errorFiles: 0,
       });
       expect(indexedRows).toEqual([]);
+    } finally {
+      fileSearchDb.close();
+    }
+  });
+
+  it('skips common vendored and generated directories before indexing', () => {
+    const runtimeDir = mkdtempSync(join(tmpdir(), 'byomem-s70-vendor-runtime-'));
+    const projectDir = mkdtempSync(join(tmpdir(), 'byomem-s70-vendor-project-'));
+    dirs.push(runtimeDir, projectDir);
+    mkdirSync(join(projectDir, 'third_party', 'vendored'), { recursive: true });
+    mkdirSync(join(projectDir, 'vendor'), { recursive: true });
+    mkdirSync(join(projectDir, '.pytest_cache'), { recursive: true });
+    writeFileSync(join(projectDir, 'source.txt'), 'source body\n', 'utf8');
+    writeFileSync(join(projectDir, 'third_party', 'vendored', 'dependency.py'), 'dependency body\n', 'utf8');
+    writeFileSync(join(projectDir, 'vendor', 'dependency.py'), 'vendor body\n', 'utf8');
+    writeFileSync(join(projectDir, '.pytest_cache', 'cache.txt'), 'cache body\n', 'utf8');
+
+    const fileSearchDb = openFileSearchDb({
+      baseDir: projectDir,
+      projectBaseDir: projectDir,
+      dbBaseDir: runtimeDir,
+      scanOnOpen: false,
+      schedulerEnabled: false,
+      semanticSearchEnabled: false,
+      scannerIncludeTextFiles: true,
+    });
+    try {
+      const status = fileSearchDb.scanAndIndex({ trigger: 'manual' });
+      const indexedRows = fileSearchDb.db.prepare('SELECT path FROM indexed_files WHERE project_key = ?').all(resolveFileSearchProjectKey(projectDir));
+
+      expect(status.progress).toMatchObject({
+        discoveredFiles: 1,
+        ignoredFiles: 3,
+        errorFiles: 0,
+      });
+      expect(indexedRows).toEqual([{ path: join(projectDir, 'source.txt') }]);
     } finally {
       fileSearchDb.close();
     }
