@@ -1,0 +1,17 @@
+title = "BYOMem gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Intentional secret-sanitizer test fixtures"
+paths = [
+  '''ts/packages/runtime/tests/.*''',
+]
+regexes = [
+  '''archive-secret''',
+  '''ignored secret content''',
+  '''secret-user''',
+  '''top-secret-token''',
+  '''user-secret''',
+]
