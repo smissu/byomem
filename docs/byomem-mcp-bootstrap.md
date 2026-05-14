@@ -28,6 +28,7 @@ mcp_servers:
 ```
 
 Available tools:
+- `byomem_runtime_info` — returns structured BYOMem runtime, build, feature, and bootstrap server metadata
 - `ping` — returns `pong`
 - `version` — returns the bootstrap server name and version
 

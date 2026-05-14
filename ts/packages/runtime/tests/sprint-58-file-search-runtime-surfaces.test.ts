@@ -507,8 +507,19 @@ describe('Sprint 58 runtime surface integration', () => {
     const piSearchHotIndex = expectHotIndex(piSearchPayload, 'Pi search');
     const directHotIndex = expectHotIndex(directPayload as Record<string, unknown>, 'direct search');
 
-    for (const hotIndex of [cliStatusHotIndex, cliSearchHotIndex, mcpSearchHotIndex, piStatusHotIndex, piSearchHotIndex, directHotIndex]) {
+    for (const hotIndex of [cliStatusHotIndex, piStatusHotIndex]) {
       expect(hotIndex).toEqual(expect.objectContaining({
+        state: 'cold',
+        source: 'none',
+        revision: 0,
+        buildCount: 0,
+        hydrateCount: 0,
+      }));
+    }
+
+    for (const hotIndex of [cliSearchHotIndex, mcpSearchHotIndex, piSearchHotIndex, directHotIndex]) {
+      expect(hotIndex).toEqual(expect.objectContaining({
+        state: 'ready',
         source: 'sqlite',
         revision: 0,
       }));

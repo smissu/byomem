@@ -117,8 +117,9 @@ async function collectHotIndexBenchmarkReport(): Promise<HotIndexBenchmarkReport
       embeddingRequireRemote: true,
     });
 
-    const hydrateStartedAt = performance.now();
     const index = buildFileSearchIndex(storeB);
+    const hydrateStartedAt = performance.now();
+    index.hydrate();
     const stats = index.stats();
     const hydrateMs = performance.now() - hydrateStartedAt;
 

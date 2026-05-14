@@ -115,12 +115,13 @@ describe('session capture', () => {
 
     await captureSessionCheckpoint(store, {
       baseDir: dir,
-      thresholdTurns: 2,
-      minTurns: 2,
+      thresholdTurns: 3,
+      minTurns: 3,
       generation: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:8b' },
     }, { sessionId: 'session-alpha', transcriptPath, event: 'turn_end', final: false, idle: false });
 
     expect(store.list().filter((record) => record.content.structured?.kind === 'checkpoint')).toHaveLength(0);
+    expect(store.list().filter((record) => record.content.structured?.kind === 'rollup')).toHaveLength(0);
   }, 10000);
 
   it('summarizes and writes a rollup once the threshold is reached', async () => {
