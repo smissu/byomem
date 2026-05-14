@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { normalizeIdentity, normalizeStableKey, resolveActiveProjectContext } from '../src/identity.js';
 import { stableIdentityFixtures } from '../src/identity-fixtures.js';
@@ -41,10 +42,11 @@ describe('identity normalization', () => {
   });
 
   it('keeps active project identity tied to cwd instead of runtime base dir override', () => {
-    const ctx = resolveActiveProjectContext({ BYOMEM_RUNTIME_BASE_DIR: '/tmp/byomem-global-store' } as NodeJS.ProcessEnv, '/Users/ericsmith/Documents/byomem/ts/packages/runtime');
-    expect(ctx.repoRoot).toBe('/Users/ericsmith/Documents/byomem');
+    const repoRoot = process.cwd();
+    const ctx = resolveActiveProjectContext({ BYOMEM_RUNTIME_BASE_DIR: '/tmp/byomem-global-store' } as NodeJS.ProcessEnv, join(repoRoot, 'ts/packages/runtime'));
+    expect(ctx.repoRoot).toBe(repoRoot);
     expect(ctx.projectKey).toBe('byomem');
     expect(ctx.activeProjectMetadata.source).toBe('git');
-    expect(ctx.activeProjectMetadata.path).toBe('/Users/ericsmith/Documents/byomem');
+    expect(ctx.activeProjectMetadata.path).toBe(repoRoot);
   });
 });

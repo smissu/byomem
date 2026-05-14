@@ -1,8 +1,8 @@
 # BYOMem
 
-BYOMem is a TypeScript-native memory, file-search, and graph runtime for agentic coding tools. It gives Codex CLI, Hermes, Pi/Gemini-style extensions, and other MCP clients a shared project memory layer plus fast indexed source lookup and architecture-aware graph context.
+BYOMem means Bring Your Own Memory. It is a TypeScript-native memory, file-search, and graph runtime for agentic coding tools. It gives Codex CLI, Hermes, Pi/Gemini-style extensions, and other MCP clients a shared project memory layer plus fast indexed source lookup and architecture-aware graph context.
 
-The current implementation is canonical in `ts/packages/runtime`. The older Python implementation lives outside this repo at `/Users/ericsmith/Documents/byomem-python`; Python content in this repo should be treated as compatibility notes, fixtures, or helper scripts only.
+The current implementation is canonical in `ts/packages/runtime`.
 
 ## What It Provides
 
@@ -62,20 +62,20 @@ npm run byomem:mcp-file-search
 
 ## MCP Configuration
 
-Use split MCP servers for normal Codex or Hermes operation:
+Use split MCP servers for normal Codex or Hermes operation. Replace `<HOME>` with your home directory, for example `/home/alex`, `/Users/alex`, or the absolute path where you keep this repo.
 
 ```toml
 [mcp_servers.byomem-memory]
 command = "node"
-args = ["/Users/ericsmith/Documents/byomem/ts/packages/runtime/dist/mcp/memory.js"]
+args = ["<HOME>/Documents/byomem/ts/packages/runtime/dist/mcp/memory.js"]
 
 [mcp_servers.byomem-graph]
 command = "node"
-args = ["/Users/ericsmith/Documents/byomem/ts/packages/runtime/dist/mcp/graph.js"]
+args = ["<HOME>/Documents/byomem/ts/packages/runtime/dist/mcp/graph.js"]
 
 [mcp_servers.byomem-file-search]
 command = "node"
-args = ["/Users/ericsmith/Documents/byomem/ts/packages/runtime/dist/mcp/file-search.js"]
+args = ["<HOME>/Documents/byomem/ts/packages/runtime/dist/mcp/file-search.js"]
 ```
 
 The compatibility all-in-one operations server is still available:
@@ -83,7 +83,7 @@ The compatibility all-in-one operations server is still available:
 ```toml
 [mcp_servers.byomem-operations]
 command = "node"
-args = ["/Users/ericsmith/Documents/byomem/ts/packages/runtime/dist/mcp/operations.js"]
+args = ["<HOME>/Documents/byomem/ts/packages/runtime/dist/mcp/operations.js"]
 ```
 
 Prefer the split servers. File search can be memory-heavy, so isolating it keeps memory and graph tools alive if a worker fails. See [docs/byomem-mcp-process-isolation.md](docs/byomem-mcp-process-isolation.md).
@@ -107,18 +107,18 @@ Example MCP-style file search:
   "query": "how file-search graph context is attached",
   "mode": "hybrid",
   "includeGraph": true,
-  "baseDir": "/Users/ericsmith/Documents/byomem"
+  "baseDir": "<HOME>/Documents/byomem"
 }
 ```
 
 Equivalent CLI examples:
 
 ```bash
-npm run byomem:cli -- file-search-scan --base-dir /Users/ericsmith/Documents/byomem
-npm run byomem:cli -- file-search --base-dir /Users/ericsmith/Documents/byomem --query "graph context" --mode hybrid --include-graph
-npm run byomem:cli -- file-search-related --base-dir /Users/ericsmith/Documents/byomem --file-path README.md --line 1
-npm run byomem:cli -- graph-update --base-dir /Users/ericsmith/Documents/byomem --graph-mode native-source
-npm run byomem:cli -- graph-query --base-dir /Users/ericsmith/Documents/byomem --query "file search graph context"
+npm run byomem:cli -- file-search-scan --base-dir <HOME>/Documents/byomem
+npm run byomem:cli -- file-search --base-dir <HOME>/Documents/byomem --query "graph context" --mode hybrid --include-graph
+npm run byomem:cli -- file-search-related --base-dir <HOME>/Documents/byomem --file-path README.md --line 1
+npm run byomem:cli -- graph-update --base-dir <HOME>/Documents/byomem --graph-mode native-source
+npm run byomem:cli -- graph-query --base-dir <HOME>/Documents/byomem --query "file search graph context"
 ```
 
 ## Hermes Usage
@@ -136,12 +136,12 @@ Suggested Hermes hook shape:
 ```yaml
 hooks:
   pre_llm_call:
-    - command: /Users/ericsmith/.hermes/agent-hooks/byomem-hook.py
+    - command: <HOME>/.hermes/agent-hooks/byomem-hook.py
       timeout: 10
 
   post_tool_call:
     - matcher: "^(write_file|patch)$"
-      command: /Users/ericsmith/.hermes/agent-hooks/byomem-hook.py
+      command: <HOME>/.hermes/agent-hooks/byomem-hook.py
       timeout: 10
 
 hooks_auto_accept: true
@@ -153,7 +153,7 @@ Hooks should remind and guide; they should not run expensive scans or graph buil
 
 BYOMem works best when agents are reminded at the start of a turn which context systems are available.
 
-The Codex repo-local hooks in `.codex/hooks.json` currently provide:
+A Codex repo-local `.codex/hooks.json` can provide:
 
 - `UserPromptSubmit` reminder for BYOMem graph tools.
 - `UserPromptSubmit` reminder for BYOMem memory lookup and storage.
@@ -188,8 +188,8 @@ The main enhancement is that BYOMem can combine both layers. File-search remains
 For this repo and other BYOMem-registered projects:
 
 ```bash
-npm run byomem:cli -- file-search-scan --base-dir /Users/ericsmith/Documents/byomem
-npm run byomem:cli -- graph-update --base-dir /Users/ericsmith/Documents/byomem --graph-mode native-source
+npm run byomem:cli -- file-search-scan --base-dir <PROJECT_ROOT>
+npm run byomem:cli -- graph-update --base-dir <PROJECT_ROOT> --graph-mode native-source
 ```
 
 Use `graphify-out/graph.json` only for one-time migration or repair imports. If graph state looks empty, stale, unexpectedly sparse, or still depends on legacy Graphify exports, use the repair workflow instead of overwriting a richer graph with a weaker one.

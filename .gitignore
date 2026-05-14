@@ -27,6 +27,9 @@ byomem-file-search.sqlite
 byomem-file-search.sqlite-shm
 byomem-file-search.sqlite-wal
 native-store.json
+native/records.jsonl
+queue.json
+worker.json
 node_modules/
 google-styleguide/
 mcp-context-forge/

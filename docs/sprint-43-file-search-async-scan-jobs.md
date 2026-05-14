@@ -291,7 +291,7 @@ Rationale: this sprint is intentionally smaller than the original durable-job de
   - Depends on: 3.2
   - Verify:
     ```bash
-    cd /Users/ericsmith/Documents/byomem
+    cd <PROJECT_ROOT>
     npm test -- --run \
       ts/packages/runtime/tests/sprint-33-file-search-scanner-status.test.ts \
       ts/packages/runtime/tests/sprint-36-global-file-search-db-decoupling.test.ts \
@@ -309,7 +309,7 @@ Rationale: this sprint is intentionally smaller than the original durable-job de
   - Depends on: 3.3
   - Verify:
     ```bash
-    cd /Users/ericsmith/Documents/byomem
+    cd <PROJECT_ROOT>
     npm test -- --run
     npm run build
     git diff --check

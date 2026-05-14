@@ -58,7 +58,7 @@ After rollout:
 3. Confirm there is no project-local `index.ts` left under `.pi/extensions/byomem/`.
 
 ### byomem repo validation
-1. Reload Pi in `/Users/ericsmith/Documents/byomem`.
+1. Reload Pi in `<HOME>/Documents/byomem`.
 2. Confirm there are no duplicate BYOMem extension/tool conflicts.
 3. Confirm BYOMem tools/command are available through the global extension.
 4. Confirm `/byomem-status` reports a store base directory rooted in the active project, not `~/.pi/agent/extensions/...`.

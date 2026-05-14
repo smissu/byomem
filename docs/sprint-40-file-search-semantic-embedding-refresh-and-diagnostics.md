@@ -196,38 +196,38 @@ Provider key rules:
   - Role: test-engineer
   - Deliverable: failing cases in `ts/packages/runtime/tests/sprint-40-file-search-semantic-refresh-and-diagnostics.test.ts` for project-only counts, required diagnostics fields, and basename collision isolation.
   - Depends on: none
-  - Verify: `cd /Users/ericsmith/Documents/byomem && npm test -- ts/packages/runtime/tests/sprint-40-file-search-semantic-refresh-and-diagnostics.test.ts`
+  - Verify: `cd <PROJECT_ROOT> && npm test -- ts/packages/runtime/tests/sprint-40-file-search-semantic-refresh-and-diagnostics.test.ts`
 
 - [x] **0.2** Add RED tests for no hidden refresh in `status`/`scan` and explicit refresh contract
   - Role: test-engineer
   - Deliverable: failing cases in `ts/packages/runtime/tests/sprint-33-file-search-scanner-status.test.ts`, `ts/packages/runtime/tests/sprint-38-file-search-extension-tools.test.ts`, and `ts/packages/runtime/tests/cli.test.ts`.
   - Depends on: none
-  - Verify: `cd /Users/ericsmith/Documents/byomem && npm test -- ts/packages/runtime/tests/sprint-33-file-search-scanner-status.test.ts ts/packages/runtime/tests/sprint-38-file-search-extension-tools.test.ts ts/packages/runtime/tests/cli.test.ts`
+  - Verify: `cd <PROJECT_ROOT> && npm test -- ts/packages/runtime/tests/sprint-33-file-search-scanner-status.test.ts ts/packages/runtime/tests/sprint-38-file-search-extension-tools.test.ts ts/packages/runtime/tests/cli.test.ts`
 
 - [x] **0.3** Add RED tests for dimension filtering, stale cache invalidation, and Pi config propagation
   - Role: test-engineer
   - Deliverable: failing cases in `ts/packages/runtime/tests/sprint-32-file-search-semantic-query.test.ts`, `ts/packages/runtime/tests/sprint-32-file-search-semantic-schema.test.ts`, and `ts/packages/runtime/tests/byomem-extension-wiring.test.ts`.
   - Depends on: none
-  - Verify: `cd /Users/ericsmith/Documents/byomem && npm test -- ts/packages/runtime/tests/sprint-32-file-search-semantic-query.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-schema.test.ts ts/packages/runtime/tests/byomem-extension-wiring.test.ts`
+  - Verify: `cd <PROJECT_ROOT> && npm test -- ts/packages/runtime/tests/sprint-32-file-search-semantic-query.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-schema.test.ts ts/packages/runtime/tests/byomem-extension-wiring.test.ts`
 
 ### Phase 1 — Shared-kernel DB work (serialize before parallelization)
 - [x] **1.1** Scope diagnostics to one project in `ts/packages/runtime/src/file-search-db.ts`
   - Role: typescript-coder
   - Deliverable: `embeddingDiagnostics()` returns only targeted project counts/fields: `embeddedChunks`, `missingChunks`, `incompatibleChunks`, `failedChunks` or `failures`, `configuredDimension`, `actualDimensions` or equivalent summary, and `lastError` when available.
   - Depends on: 0.1
-  - Verify: `cd /Users/ericsmith/Documents/byomem && npm test -- ts/packages/runtime/tests/sprint-40-file-search-semantic-refresh-and-diagnostics.test.ts`
+  - Verify: `cd <PROJECT_ROOT> && npm test -- ts/packages/runtime/tests/sprint-40-file-search-semantic-refresh-and-diagnostics.test.ts`
 
 - [x] **1.2** Enforce same-project targeting for refresh in `ts/packages/runtime/src/file-search-db.ts`
   - Role: typescript-coder
   - Deliverable: `refreshSemanticIndex()` updates only rows/files for the requested project identity, including same-basename isolation.
   - Depends on: 1.1
-  - Verify: `cd /Users/ericsmith/Documents/byomem && npm test -- ts/packages/runtime/tests/sprint-40-file-search-semantic-refresh-and-diagnostics.test.ts`
+  - Verify: `cd <PROJECT_ROOT> && npm test -- ts/packages/runtime/tests/sprint-40-file-search-semantic-refresh-and-diagnostics.test.ts`
 
 - [x] **1.3** Preserve read-only `status`/`scan` semantics in `ts/packages/runtime/src/file-search-db.ts` and dependent call paths
   - Role: typescript-coder
   - Deliverable: status-facing diagnostics/reporting that detects refresh-needed state without generating embeddings or triggering semantic refresh.
   - Depends on: 1.1, 1.2
-  - Verify: `cd /Users/ericsmith/Documents/byomem && npm test -- ts/packages/runtime/tests/sprint-33-file-search-scanner-status.test.ts ts/packages/runtime/tests/cli.test.ts`
+  - Verify: `cd <PROJECT_ROOT> && npm test -- ts/packages/runtime/tests/sprint-33-file-search-scanner-status.test.ts ts/packages/runtime/tests/cli.test.ts`
 
 ### Phase 2 — Parallel work after DB kernel lands
 
@@ -236,39 +236,39 @@ Provider key rules:
   - Role: typescript-coder
   - Deliverable: semantic ranking uses only rows matching the active configured dimension and actual query vector dimension; stale `3`/`1536` rows are excluded under `768`.
   - Depends on: 1.3, 0.3
-  - Verify: `cd /Users/ericsmith/Documents/byomem && npm test -- ts/packages/runtime/tests/sprint-32-file-search-semantic-query.test.ts ts/packages/runtime/tests/sprint-40-file-search-semantic-refresh-and-diagnostics.test.ts`
+  - Verify: `cd <PROJECT_ROOT> && npm test -- ts/packages/runtime/tests/sprint-32-file-search-semantic-query.test.ts ts/packages/runtime/tests/sprint-40-file-search-semantic-refresh-and-diagnostics.test.ts`
 
 - [x] **2.2** Fix cache/vector invalidation in `ts/packages/runtime/src/embedding-client.ts` and `ts/packages/runtime/src/embedding-vector.ts`
   - Role: typescript-coder
   - Deliverable: cache keys and fallback/mock reuse vary by provider/model/dimension so stale vectors cannot leak across config changes.
   - Depends on: 1.3, 0.3
-  - Verify: `cd /Users/ericsmith/Documents/byomem && npm test -- ts/packages/runtime/tests/sprint-32-file-search-semantic-query.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-schema.test.ts`
+  - Verify: `cd <PROJECT_ROOT> && npm test -- ts/packages/runtime/tests/sprint-32-file-search-semantic-query.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-schema.test.ts`
 
 #### Workstream C — CLI and Pi extension wiring
 - [x] **2.3** Propagate resolved embedding config through `ts/packages/runtime/src/store.ts` and `ts/packages/runtime/src/pi-extension.ts`
   - Role: typescript-coder
   - Deliverable: Pi direct file-search DB/query execution receives resolved provider/model/dimension config from BYOMem runtime state.
   - Depends on: 1.3, 0.3
-  - Verify: `cd /Users/ericsmith/Documents/byomem && npm test -- ts/packages/runtime/tests/byomem-extension-wiring.test.ts`
+  - Verify: `cd <PROJECT_ROOT> && npm test -- ts/packages/runtime/tests/byomem-extension-wiring.test.ts`
 
 - [x] **2.4** Add explicit project-scoped refresh surface in `ts/packages/runtime/src/cli.ts` and `ts/packages/runtime/src/pi-extension.ts`
   - Role: typescript-coder
   - Deliverable: CLI and Pi tool/command that refresh only the targeted project’s semantic embeddings and report updated diagnostics; no hidden refresh added to semantic/hybrid search.
   - Depends on: 1.3, 0.2, 2.3
-  - Verify: `cd /Users/ericsmith/Documents/byomem && npm test -- ts/packages/runtime/tests/sprint-38-file-search-extension-tools.test.ts ts/packages/runtime/tests/cli.test.ts`
+  - Verify: `cd <PROJECT_ROOT> && npm test -- ts/packages/runtime/tests/sprint-38-file-search-extension-tools.test.ts ts/packages/runtime/tests/cli.test.ts`
 
 ### Phase 3 — Integration and validation
 - [x] **3.1** Integrate semantic query behavior with explicit refresh-needed reporting
   - Role: builder
   - Deliverable: semantic/hybrid search surfaces use ready embeddings only, report refresh-needed/incompatible state clearly, and honor project-scoped diagnostics.
   - Depends on: 2.1, 2.2, 2.3, 2.4
-  - Verify: `cd /Users/ericsmith/Documents/byomem && npm test -- ts/packages/runtime/tests/sprint-40-file-search-semantic-refresh-and-diagnostics.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-query.test.ts ts/packages/runtime/tests/sprint-38-file-search-extension-tools.test.ts ts/packages/runtime/tests/cli.test.ts`
+  - Verify: `cd <PROJECT_ROOT> && npm test -- ts/packages/runtime/tests/sprint-40-file-search-semantic-refresh-and-diagnostics.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-query.test.ts ts/packages/runtime/tests/sprint-38-file-search-extension-tools.test.ts ts/packages/runtime/tests/cli.test.ts`
 
 - [x] **3.2** Run focused Sprint 40 verification and build
   - Role: test-engineer
   - Deliverable: passing focused Sprint 40 test evidence and successful TypeScript build.
   - Depends on: 3.1
-  - Verify: `cd /Users/ericsmith/Documents/byomem && npm test -- ts/packages/runtime/tests/sprint-40-file-search-semantic-refresh-and-diagnostics.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-schema.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-query.test.ts ts/packages/runtime/tests/sprint-33-file-search-scanner-status.test.ts ts/packages/runtime/tests/sprint-38-file-search-extension-tools.test.ts ts/packages/runtime/tests/byomem-extension-wiring.test.ts ts/packages/runtime/tests/cli.test.ts && npm run build`
+  - Verify: `cd <PROJECT_ROOT> && npm test -- ts/packages/runtime/tests/sprint-40-file-search-semantic-refresh-and-diagnostics.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-schema.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-query.test.ts ts/packages/runtime/tests/sprint-33-file-search-scanner-status.test.ts ts/packages/runtime/tests/sprint-38-file-search-extension-tools.test.ts ts/packages/runtime/tests/byomem-extension-wiring.test.ts ts/packages/runtime/tests/cli.test.ts && npm run build`
 
 - [x] **3.3** Independent review of scope boundaries and hidden-work guarantees
   - Role: code-reviewer
@@ -305,8 +305,8 @@ Provider key rules:
 - `ts/packages/runtime/src/embedding-client.ts` and `ts/packages/runtime/src/embedding-vector.ts` do not reuse stale fallback/mock vectors across provider/model/dimension changes.
 - Out-of-scope boundaries remain intact: no scheduler/polling changes, no non-project-scoped refresh, no unrelated provider UX changes, no hidden work in `status`/`scan`, no on-query auto-refresh.
 - Verification passes:
-  - `cd /Users/ericsmith/Documents/byomem && npm test -- ts/packages/runtime/tests/sprint-40-file-search-semantic-refresh-and-diagnostics.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-schema.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-query.test.ts ts/packages/runtime/tests/sprint-33-file-search-scanner-status.test.ts ts/packages/runtime/tests/sprint-38-file-search-extension-tools.test.ts ts/packages/runtime/tests/byomem-extension-wiring.test.ts ts/packages/runtime/tests/cli.test.ts`
-  - `cd /Users/ericsmith/Documents/byomem && npm run build`
+  - `cd <PROJECT_ROOT> && npm test -- ts/packages/runtime/tests/sprint-40-file-search-semantic-refresh-and-diagnostics.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-schema.test.ts ts/packages/runtime/tests/sprint-32-file-search-semantic-query.test.ts ts/packages/runtime/tests/sprint-33-file-search-scanner-status.test.ts ts/packages/runtime/tests/sprint-38-file-search-extension-tools.test.ts ts/packages/runtime/tests/byomem-extension-wiring.test.ts ts/packages/runtime/tests/cli.test.ts`
+  - `cd <PROJECT_ROOT> && npm run build`
 
 ## Implementation Closeout
 - Completed Sprint 40 implementation for project-scoped semantic diagnostics and explicit project-scoped refresh.

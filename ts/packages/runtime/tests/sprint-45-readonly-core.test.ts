@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { buildByomemRuntimeStatus, safeJson, shapeByomemSearchResult } from '../src/readonly-core.js';
 
 const activeProject = {
-  cwd: '/Users/ericsmith/Documents/byomem',
-  repoRoot: '/Users/ericsmith/Documents/byomem',
+  cwd: '/Users/example/Documents/byomem',
+  repoRoot: '/Users/example/Documents/byomem',
   projectKey: 'byomem',
   activeProjectMetadata: {
     source: 'git' as const,
-    path: '/Users/ericsmith/Documents/byomem',
+    path: '/Users/example/Documents/byomem',
     leafName: 'byomem',
     normalizedLeafName: 'byomem',
   },

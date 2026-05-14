@@ -9,15 +9,15 @@ Use separate MCP server entries for each failure domain:
 ```toml
 [mcp_servers.byomem_memory]
 command = "node"
-args = ["/Users/ericsmith/Documents/byomem/ts/packages/runtime/dist/mcp/memory.js"]
+args = ["<HOME>/Documents/byomem/ts/packages/runtime/dist/mcp/memory.js"]
 
 [mcp_servers.byomem_graph]
 command = "node"
-args = ["/Users/ericsmith/Documents/byomem/ts/packages/runtime/dist/mcp/graph.js"]
+args = ["<HOME>/Documents/byomem/ts/packages/runtime/dist/mcp/graph.js"]
 
 [mcp_servers.byomem_file_search]
 command = "node"
-args = ["/Users/ericsmith/Documents/byomem/ts/packages/runtime/dist/mcp/file-search.js"]
+args = ["<HOME>/Documents/byomem/ts/packages/runtime/dist/mcp/file-search.js"]
 ```
 
 The legacy all-in-one operations server remains available for compatibility:
@@ -25,7 +25,7 @@ The legacy all-in-one operations server remains available for compatibility:
 ```toml
 [mcp_servers.byomem_operations]
 command = "node"
-args = ["/Users/ericsmith/Documents/byomem/ts/packages/runtime/dist/mcp/operations.js"]
+args = ["<HOME>/Documents/byomem/ts/packages/runtime/dist/mcp/operations.js"]
 ```
 
 Prefer the split servers for normal Codex use. The compatibility operations server emits a startup warning and should not be treated as the default file-search path.

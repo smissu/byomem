@@ -31,7 +31,7 @@ function writeTranscript(path: string): void {
 
 function hookPayload(transcriptPath: string, overrides: Record<string, unknown> = {}) {
   return {
-    cwd: '/Users/ericsmith/Documents/byomem',
+    cwd: '/Users/example/Documents/byomem',
     hook_event_name: 'Stop',
     last_assistant_message: 'done',
     model: 'gpt-5.4',
