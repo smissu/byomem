@@ -26,7 +26,25 @@ describe('sprint 44 MCP bootstrap', () => {
     await client.connect(transport);
 
     const toolList = await client.listTools();
-    expect(toolList.tools.map((tool) => tool.name)).toEqual(['ping', 'version']);
+    expect(toolList.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      'byomem_runtime_info',
+      'ping',
+      'version',
+    ]));
+
+    const runtimeInfoResult = await client.callTool({ name: 'byomem_runtime_info' });
+    const runtimeInfo = JSON.parse(String((runtimeInfoResult.content as Array<{ text?: string }>)[0]?.text ?? '{}')) as {
+      runtime?: { name?: string; protocolVersion?: number; features?: string[] };
+      server?: { domain?: string };
+    };
+    expect(runtimeInfo).toMatchObject({
+      runtime: {
+        name: 'byomem',
+        protocolVersion: 1,
+        features: expect.arrayContaining(['byomem-runtime-info']),
+      },
+      server: { domain: 'bootstrap' },
+    });
 
     const pingResult = await client.callTool({ name: 'ping' });
     expect(pingResult.content).toEqual([

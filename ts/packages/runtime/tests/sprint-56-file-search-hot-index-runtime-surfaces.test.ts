@@ -154,15 +154,22 @@ describe('Sprint 56 hot-index runtime surfaces', () => {
     const scanHotIndex = expectHotIndexDiagnostics(scan, 'Pi scan');
     expect(scan.scanner).toMatchObject({ database: expect.objectContaining({ indexedFiles: 1 }) });
     expect(indexedFileCount(projectDir, runtimeDir)).toBe(1);
+    expect(scanHotIndex).toEqual(expect.objectContaining({
+      state: 'cold',
+      source: 'none',
+      buildCount: 0,
+      hydrateCount: 0,
+    }));
 
     const search = await searchTool!.execute('3', { baseDir: projectDir, mode: 'bm25', query: 'needle', limit: 5 }) as { index?: Record<string, unknown>; results?: unknown[] };
     const searchHotIndex = expectHotIndexDiagnostics(search, 'Pi search');
     expect(search.results).not.toEqual([]);
     expect(searchHotIndex).toEqual(expect.objectContaining({
-      state: scanHotIndex.state,
-      source: scanHotIndex.source,
+      state: 'ready',
+      source: 'sqlite',
       revision: scanHotIndex.revision,
-      buildCount: scanHotIndex.buildCount,
+      buildCount: 1,
+      hydrateCount: 1,
     }));
   }, 15_000);
 });
