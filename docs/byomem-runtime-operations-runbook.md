@@ -9,11 +9,12 @@ Use the existing runtime CLI binary:
 ```bash
 npm run byomem:cli -- status --base-dir /path/to/runtime-or-project
 npm run byomem:cli -- doctor --base-dir /path/to/runtime-or-project
+npm run byomem:cli -- connect codex --runtime-entrypoint /path/to/byomem/ts/packages/runtime/dist
 npm run byomem:cli -- cleanup --base-dir /path/to/runtime
 npm run byomem:cli -- stop --base-dir /path/to/runtime
 ```
 
-`status`, `doctor`, `cleanup`, and `stop` are JSON-first commands.
+`status`, `doctor`, `connect codex`, `cleanup`, and `stop` are JSON-first commands.
 
 ## Status
 
@@ -50,6 +51,18 @@ Process liveness evidence uses this confidence vocabulary:
 Set `BYOMEM_DOCTOR_PROCESS_EVIDENCE_CONFIDENCE=constrained` when running the CLI in an environment where PID liveness probes are known to be namespace-limited or otherwise incomplete.
 
 Every suggested action is marked `"mode": "read-only"`. `doctor` must not open SQLite handles, create DBs, scan files, update graphs, call embedding providers, remove runtime-state files, or terminate processes.
+
+## Connect Codex
+
+`connect codex` bootstraps Codex to use BYOMem without disturbing running MCP processes. The default mode is dry-run; add `--apply` only after reviewing the JSON report.
+
+It manages:
+
+- `~/.codex/config.toml`, or `--codex-config-path`
+- `<project>/AGENTS.md`, or `--project-dir`
+- split BYOMem MCP entries for memory, graph, and file-search using `--runtime-entrypoint`
+
+The command creates backups before changing existing files. It refuses stale, duplicate, or conflicting BYOMem MCP entries and reports them as `refusals` for manual cleanup.
 
 ## Runtime State
 

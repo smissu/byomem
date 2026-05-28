@@ -64,6 +64,15 @@ npm run byomem:mcp-file-search
 
 Use split MCP servers for normal Codex or Hermes operation. Replace `<HOME>` with your home directory, for example `/home/alex`, `/Users/alex`, or the absolute path where you keep this repo.
 
+For Codex, preview the config and guidance changes first:
+
+```bash
+npm run byomem:cli -- connect codex --runtime-entrypoint <HOME>/Documents/byomem/ts/packages/runtime/dist
+npm run byomem:cli -- connect codex --runtime-entrypoint <HOME>/Documents/byomem/ts/packages/runtime/dist --apply
+```
+
+`connect codex` writes only canonical split BYOMem MCP entries and a marked project guidance block. It refuses duplicate, stale, or conflicting BYOMem MCP entries so those can be reviewed manually instead of being silently overwritten.
+
 ```toml
 [mcp_servers.byomem-memory]
 command = "node"

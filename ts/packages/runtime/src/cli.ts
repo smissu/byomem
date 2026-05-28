@@ -21,6 +21,7 @@ import { buildByomemStatusReport } from './status-report.js';
 import { buildByomemDoctorReport } from './doctor.js';
 import { buildProcessCleanupReport } from './process-cleanup.js';
 import { runCodexSessionCaptureCommand } from './codex-session-capture.js';
+import { runConnectCodex } from './codex-connect.js';
 
 const GENERATION_COMMANDS = new Set(['generate', 'summarize', 'reason', 'chat']);
 const OBSERVER_COMMANDS = new Set(['queue-observe']);
@@ -52,7 +53,7 @@ type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
 type NativeStoreRepairAuthority = 'sqlite' | 'json' | 'abort';
 
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'codex-session-capture', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'graph-status', 'graph-query', 'graph-explain', 'graph-path', 'graph-update', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'status', 'doctor', 'cleanup', 'stop', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'codex-session-capture', 'connect codex', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'graph-status', 'graph-query', 'graph-explain', 'graph-path', 'graph-update', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'status', 'doctor', 'cleanup', 'stop', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
@@ -204,6 +205,7 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     const arg = argv[i];
     const next = argv[i + 1];
     if (!command && !arg.startsWith('--')) { command = arg; continue; }
+    if (command === 'connect' && !arg.startsWith('--') && !payload.connectTarget) { payload.connectTarget = arg; continue; }
     if (arg === '--help' || arg === '-h') return { command: 'help', options, payload, flags };
     if (arg === '--base-dir') { options.baseDir = requireValue(next, '--base-dir'); flags.baseDirProvided = true; i += 1; }
     else if (arg === '--embedding-base-url') { options.embeddingBaseUrl = requireValue(next, '--embedding-base-url'); i += 1; }
@@ -241,6 +243,9 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--graph-json') { payload.graphJsonPath = requireValue(next, '--graph-json'); i += 1; }
     else if (arg === '--report') { payload.reportPath = requireValue(next, '--report'); i += 1; }
     else if (arg === '--graph-mode') { payload.graphMode = requireValue(next, '--graph-mode'); i += 1; }
+    else if (arg === '--codex-config-path') { payload.codexConfigPath = requireValue(next, '--codex-config-path'); i += 1; }
+    else if (arg === '--project-dir') { payload.projectDir = requireValue(next, '--project-dir'); i += 1; }
+    else if (arg === '--runtime-entrypoint') { payload.runtimeEntrypoint = requireValue(next, '--runtime-entrypoint'); i += 1; }
     else if (arg === '--allow-native-downgrade') { payload.allowNativeDowngrade = 'true'; }
     else if (arg === '--include-graph') { payload.includeGraph = 'true'; }
     else if (arg === '--semantic-file-search') { options.fileSearchSemanticEnabled = true; }
@@ -262,6 +267,7 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     }
     else if (arg === '--prompt') { payload.prompt = requireValue(next, '--prompt'); i += 1; }
     else if (arg === '--text') { payload.text = requireValue(next, '--text'); i += 1; }
+    else if (arg.startsWith('--')) throw new Error(`Unknown flag ${arg}`);
   }
   return { command, options, payload, flags };
 }
@@ -404,6 +410,28 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
   if (command === 'help') {
     console.log(JSON.stringify(usage(), null, 2));
+    return;
+  }
+
+  if (command === 'connect') {
+    if (payload.connectTarget !== 'codex') {
+      jsonError('Missing connect target codex', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.apply && flags.dryRun) {
+      jsonError('connect codex does not support --apply with --dry-run', command);
+      process.exitCode = 1;
+      return;
+    }
+    const report = runConnectCodex({
+      mode: flags.apply ? 'apply' : 'dry-run',
+      codexConfigPath: payload.codexConfigPath,
+      projectDir: payload.projectDir,
+      runtimeEntrypoint: payload.runtimeEntrypoint,
+    });
+    console.log(JSON.stringify(report, null, 2));
+    if (report.refusals.length) process.exitCode = 1;
     return;
   }
 
