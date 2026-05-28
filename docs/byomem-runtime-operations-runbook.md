@@ -8,11 +8,12 @@ Use the existing runtime CLI binary:
 
 ```bash
 npm run byomem:cli -- status --base-dir /path/to/runtime-or-project
+npm run byomem:cli -- doctor --base-dir /path/to/runtime-or-project
 npm run byomem:cli -- cleanup --base-dir /path/to/runtime
 npm run byomem:cli -- stop --base-dir /path/to/runtime
 ```
 
-`status`, `cleanup`, and `stop` are JSON-first commands.
+`status`, `doctor`, `cleanup`, and `stop` are JSON-first commands.
 
 ## Status
 
@@ -25,6 +26,30 @@ npm run byomem:cli -- stop --base-dir /path/to/runtime
 - runtime-state MCP process inventory summary
 
 It must not open SQLite handles, create DBs, scan files, update graphs, or inspect host process tables.
+
+## Doctor
+
+`doctor` is a read-only diagnostic report. It builds on the stat-only status surface and adds check records with stable ids, severity, evidence confidence, and read-only suggested commands.
+
+It reports:
+
+- runtime version alignment
+- memory, file-search, and graph artifact readiness
+- Codex config presence when readable
+- runtime-state inventory readability
+- MCP process liveness evidence, stale records, and duplicate active roles
+- explicit skips for diagnostics that would require opening stores or calling providers
+- a read-only boundary check confirming mutation modes are unavailable
+
+Process liveness evidence uses this confidence vocabulary:
+
+- `definite`: the PID and runtime-state evidence was checked directly in the current environment
+- `constrained`: the evidence is useful but should be confirmed in an isolated canary before cleanup
+- `not-applicable`: the check does not rely on process liveness
+
+Set `BYOMEM_DOCTOR_PROCESS_EVIDENCE_CONFIDENCE=constrained` when running the CLI in an environment where PID liveness probes are known to be namespace-limited or otherwise incomplete.
+
+Every suggested action is marked `"mode": "read-only"`. `doctor` must not open SQLite handles, create DBs, scan files, update graphs, call embedding providers, remove runtime-state files, or terminate processes.
 
 ## Runtime State
 
@@ -79,9 +104,10 @@ Summary counters for dry-run action are always zero:
 ```bash
 npm run byomem:cli -- cleanup --base-dir /path/to/runtime --apply
 npm run byomem:cli -- stop --base-dir /path/to/runtime --apply
+npm run byomem:cli -- doctor --base-dir /path/to/runtime --apply
 ```
 
-Both commands fail with a JSON error. No process termination or runtime-state deletion is performed.
+All three commands fail with a JSON error. No process termination or runtime-state deletion is performed.
 
 ## Safe Canary Pattern
 
@@ -103,6 +129,9 @@ Then inspect:
 
 ```bash
 BYOMEM_RUNTIME_BASE_DIR=/tmp/byomem-ops-polish-runtime \
+  node ts/packages/runtime/dist/cli.js doctor --base-dir /tmp/byomem-ops-polish-runtime
+
+BYOMEM_RUNTIME_BASE_DIR=/tmp/byomem-ops-polish-runtime \
   node ts/packages/runtime/dist/cli.js status --base-dir /tmp/byomem-ops-polish-runtime
 
 BYOMEM_RUNTIME_BASE_DIR=/tmp/byomem-ops-polish-runtime \
@@ -110,4 +139,3 @@ BYOMEM_RUNTIME_BASE_DIR=/tmp/byomem-ops-polish-runtime \
 ```
 
 Do not point canary commands at `~/.byomem/runtime` unless you are intentionally inspecting the live runtime.
-

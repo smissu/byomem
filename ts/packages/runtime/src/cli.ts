@@ -18,6 +18,7 @@ import { openGenerationClient } from './generation-client.js';
 import { observeQueue, renderQueueObserver } from './queue-observer.js';
 import { resolveDefaultRuntimeBaseDir } from './readonly-core.js';
 import { buildByomemStatusReport } from './status-report.js';
+import { buildByomemDoctorReport } from './doctor.js';
 import { buildProcessCleanupReport } from './process-cleanup.js';
 import { runCodexSessionCaptureCommand } from './codex-session-capture.js';
 
@@ -51,7 +52,7 @@ type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
 type NativeStoreRepairAuthority = 'sqlite' | 'json' | 'abort';
 
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'codex-session-capture', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'graph-status', 'graph-query', 'graph-explain', 'graph-path', 'graph-update', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'status', 'cleanup', 'stop', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'codex-session-capture', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'graph-status', 'graph-query', 'graph-explain', 'graph-path', 'graph-update', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'status', 'doctor', 'cleanup', 'stop', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
@@ -288,6 +289,13 @@ function parseStorageMode(value: string | undefined, flag: string): 'disk' | 'me
   throw new Error(`${flag} must be disk or memory`);
 }
 
+function parseDoctorEvidenceConfidence(value: string | undefined): 'definite' | 'constrained' | 'not-applicable' | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'definite' || normalized === 'constrained' || normalized === 'not-applicable') return normalized;
+  throw new Error('BYOMEM_DOCTOR_PROCESS_EVIDENCE_CONFIDENCE must be definite, constrained, or not-applicable');
+}
+
 function parseExtensionList(value: string | undefined): string[] | undefined {
   if (value === undefined) return undefined;
   return value.split(',').map((part) => part.trim()).filter(Boolean);
@@ -405,6 +413,29 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       cwd: process.cwd(),
       projectBaseDir: flags.baseDirProvided ? options.baseDir : undefined,
       runtimeBaseDir: flags.baseDirProvided ? options.baseDir : undefined,
+    }), null, 2));
+    return;
+  }
+  if (command === 'doctor') {
+    if (flags.apply) {
+      jsonError('doctor is read-only; --apply is not supported', command);
+      process.exitCode = 1;
+      return;
+    }
+    let processEvidenceConfidence: 'definite' | 'constrained' | 'not-applicable' | undefined;
+    try {
+      processEvidenceConfidence = parseDoctorEvidenceConfidence(process.env.BYOMEM_DOCTOR_PROCESS_EVIDENCE_CONFIDENCE);
+    } catch (error) {
+      jsonError(error instanceof Error ? error.message : String(error), command);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(JSON.stringify(buildByomemDoctorReport({
+      env: process.env,
+      cwd: process.cwd(),
+      projectBaseDir: flags.baseDirProvided ? options.baseDir : undefined,
+      runtimeBaseDir: flags.baseDirProvided ? options.baseDir : resolveDefaultRuntimeBaseDir(process.env),
+      processEvidenceConfidence,
     }), null, 2));
     return;
   }

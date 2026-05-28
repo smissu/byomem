@@ -52,7 +52,7 @@ describe('runtime cli', () => {
   it('prints JSON usage for --help', async () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     await main(['--help']);
-    expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({ error: 'Usage', commands: expect.arrayContaining(['store', 'search', 'file-search-scan', 'prune', 'generate', 'status']) });
+    expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({ error: 'Usage', commands: expect.arrayContaining(['store', 'search', 'file-search-scan', 'prune', 'generate', 'status', 'doctor']) });
   });
 
   it('prints JSON usage for generation errors', async () => {

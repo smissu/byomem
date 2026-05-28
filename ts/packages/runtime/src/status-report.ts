@@ -75,6 +75,9 @@ type BuildStatusReportOptions = {
   projectBaseDir?: string;
   runtimeBaseDir?: string;
   generatedAt?: Date | string;
+  now?: Date | string;
+  staleAfterMs?: number;
+  processExists?: (pid: number) => boolean;
 };
 
 function normalizeTimestamp(value?: Date | string): string {
@@ -171,7 +174,12 @@ export function buildByomemStatusReport(options: BuildStatusReportOptions = {}):
     degradedComponents.push('graph');
   }
 
-  const processInventory = readRuntimeProcessInventory({ runtimeBaseDir });
+  const processInventory = readRuntimeProcessInventory({
+    runtimeBaseDir,
+    now: options.now,
+    staleAfterMs: options.staleAfterMs,
+    processExists: options.processExists,
+  });
   const mcpProcesses: StatusMcpProcesses = {
     source: 'runtime-state',
     count: processInventory.counts.total,
