@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { mkdtempSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { inspectNativeStoreConflict, openNativeStore, repairNativeStoreConflict } from './store.js';
 import { openFileSearchDb } from './file-search-db.js';
 import { openFileSearchRegistryDb } from './file-search-db.js';
@@ -16,6 +16,9 @@ import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searc
 import { refreshSemanticIndexAfterManualScan } from './file-search-semantic-refresh.js';
 import { openGenerationClient } from './generation-client.js';
 import { observeQueue, renderQueueObserver } from './queue-observer.js';
+import { resolveDefaultRuntimeBaseDir } from './readonly-core.js';
+import { buildByomemStatusReport } from './status-report.js';
+import { buildProcessCleanupReport } from './process-cleanup.js';
 import { runCodexSessionCaptureCommand } from './codex-session-capture.js';
 
 const GENERATION_COMMANDS = new Set(['generate', 'summarize', 'reason', 'chat']);
@@ -48,7 +51,7 @@ type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
 type NativeStoreRepairAuthority = 'sqlite' | 'json' | 'abort';
 
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'codex-session-capture', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'graph-status', 'graph-query', 'graph-explain', 'graph-path', 'graph-update', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'codex-session-capture', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'graph-status', 'graph-query', 'graph-explain', 'graph-path', 'graph-update', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'status', 'cleanup', 'stop', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
@@ -169,11 +172,11 @@ function openDirectFileSearchCliStore(options: CliOptions): DirectFileSearchCliS
   };
 }
 
-function parseArgs(argv: string[]): { command?: string; options: CliOptions; payload: Record<string, string>; flags: { watch: boolean; watchInterval?: string; baseDirProvided: boolean; dryRun: boolean } } {
+function parseArgs(argv: string[]): { command?: string; options: CliOptions; payload: Record<string, string>; flags: { watch: boolean; watchInterval?: string; baseDirProvided: boolean; dryRun: boolean; apply: boolean } } {
   const payload: Record<string, string> = {};
-  const flags = { watch: false, watchInterval: undefined as string | undefined, baseDirProvided: false, dryRun: false };
+  const flags = { watch: false, watchInterval: undefined as string | undefined, baseDirProvided: false, dryRun: false, apply: false };
   const options: CliOptions = {
-    baseDir: mkdtempSync(join(tmpdir(), 'byomem-cli-')),
+    baseDir: resolve(tmpdir(), `byomem-cli-${randomUUID()}`),
     fileSearchScannerExcludedExtensions: parseExtensionList(process.env.BYOMEM_FILE_SEARCH_EXCLUDED_EXTENSIONS),
     fileSearchBinaryDetectionEnabled: parseBooleanFlag(process.env.BYOMEM_FILE_SEARCH_BINARY_DETECTION, 'BYOMEM_FILE_SEARCH_BINARY_DETECTION'),
     fileSearchIncludeTextFiles: parseBooleanFlag(process.env.BYOMEM_FILE_SEARCH_INCLUDE_TEXT_FILES, 'BYOMEM_FILE_SEARCH_INCLUDE_TEXT_FILES'),
@@ -218,6 +221,7 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--watch') { flags.watch = true; }
     else if (arg === '--watch-interval') { flags.watchInterval = requireValue(next, '--watch-interval'); i += 1; }
     else if (arg === '--dry-run') { flags.dryRun = true; }
+    else if (arg === '--apply') { flags.apply = true; }
     else if (arg === '--poll-interval-seconds') { payload.pollIntervalSeconds = requireValue(next, '--poll-interval-seconds'); i += 1; }
     else if (arg === '--idle-disable-after-polls') { payload.idleDisableAfterPolls = requireValue(next, '--idle-disable-after-polls'); i += 1; }
     else if (arg === '--reason') { payload.reason = requireValue(next, '--reason'); i += 1; }
@@ -392,6 +396,28 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
   if (command === 'help') {
     console.log(JSON.stringify(usage(), null, 2));
+    return;
+  }
+
+  if (command === 'status') {
+    console.log(JSON.stringify(buildByomemStatusReport({
+      env: process.env,
+      cwd: process.cwd(),
+      projectBaseDir: flags.baseDirProvided ? options.baseDir : undefined,
+      runtimeBaseDir: flags.baseDirProvided ? options.baseDir : undefined,
+    }), null, 2));
+    return;
+  }
+  if (command === 'cleanup' || command === 'stop') {
+    if (flags.apply) {
+      jsonError(`${command} apply mode is not implemented; rerun without --apply for dry-run`, command);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(JSON.stringify(buildProcessCleanupReport({
+      command,
+      runtimeBaseDir: flags.baseDirProvided ? options.baseDir : resolveDefaultRuntimeBaseDir(process.env),
+    }), null, 2));
     return;
   }
 
