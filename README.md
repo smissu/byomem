@@ -69,9 +69,12 @@ For Codex, preview the config and guidance changes first:
 ```bash
 npm run byomem:cli -- connect codex --runtime-entrypoint <HOME>/Documents/byomem/ts/packages/runtime/dist
 npm run byomem:cli -- connect codex --runtime-entrypoint <HOME>/Documents/byomem/ts/packages/runtime/dist --apply
+npm run byomem:cli -- remove codex --runtime-entrypoint <HOME>/Documents/byomem/ts/packages/runtime/dist
+npm run byomem:cli -- remove codex --runtime-entrypoint <HOME>/Documents/byomem/ts/packages/runtime/dist --apply
 ```
 
 `connect codex` writes only canonical split BYOMem MCP entries and a marked project guidance block. It refuses duplicate, stale, or conflicting BYOMem MCP entries so those can be reviewed manually instead of being silently overwritten.
+`remove codex` is the conservative inverse: dry-run by default, explicit `--apply`, and no durable BYOMem data deletion in this sprint.
 
 ```toml
 [mcp_servers.byomem-memory]
@@ -170,6 +173,7 @@ A Codex repo-local `.codex/hooks.json` can provide:
 - `Stop` hook for optional Codex session capture through `codex-session-capture`.
 
 The hook details and safe activation notes are documented in [docs/codex-hooks-reference.md](docs/codex-hooks-reference.md). Session capture should stay project-local and opt-in; it writes compact `byomem-session` rollups and should not persist raw transcripts, tool traces, signatures, encrypted fields, or binary payloads.
+Use `byomem remove codex` to roll back the canonical hook commands and the marked AGENTS guidance block when you no longer want the repo-local reminder setup.
 
 Related skills and setup workflows:
 

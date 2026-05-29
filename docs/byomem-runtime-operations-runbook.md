@@ -10,11 +10,12 @@ Use the existing runtime CLI binary:
 npm run byomem:cli -- status --base-dir /path/to/runtime-or-project
 npm run byomem:cli -- doctor --base-dir /path/to/runtime-or-project
 npm run byomem:cli -- connect codex --runtime-entrypoint /path/to/byomem/ts/packages/runtime/dist
+npm run byomem:cli -- remove codex --runtime-entrypoint /path/to/byomem/ts/packages/runtime/dist
 npm run byomem:cli -- cleanup --base-dir /path/to/runtime
 npm run byomem:cli -- stop --base-dir /path/to/runtime
 ```
 
-`status`, `doctor`, `connect codex`, `cleanup`, and `stop` are JSON-first commands.
+`status`, `doctor`, `connect codex`, `remove codex`, `cleanup`, and `stop` are JSON-first commands.
 
 ## Status
 
@@ -63,6 +64,21 @@ It manages:
 - split BYOMem MCP entries for memory, graph, and file-search using `--runtime-entrypoint`
 
 The command creates backups before changing existing files. It refuses stale, duplicate, or conflicting BYOMem MCP entries and reports them as `refusals` for manual cleanup.
+
+## Remove Codex
+
+`remove codex` is the conservative inverse of `connect codex`. The default mode is dry-run; add `--apply` only after reviewing the JSON report.
+
+It manages:
+
+- `~/.codex/config.toml`, or `--codex-config-path`
+- `<project>/AGENTS.md`, or `--project-dir`
+- `<project>/.codex/hooks.json`, or `--project-dir`
+- stale BYOMem-owned runtime-state records under `--base-dir`
+
+The command creates `.byomem-remove-backup-{timestamp}` backups before changing existing config, AGENTS, or hooks files. It refuses ambiguous or edited BYOMem-looking MCP sections, guidance blocks, and hooks, and it preserves durable data such as memory, file-search, graph, queue, and runtime artifacts by default.
+
+`--delete-data`, `--kill-processes`, and `--force` are intentionally rejected in this sprint. `remove codex` does not terminate processes.
 
 ## Runtime State
 

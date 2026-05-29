@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { mergeGuidance, mergeMcpConfig, resolveDefaultCodexConfigPath, resolveDefaultRuntimeEntrypoint, type ConnectCodexRefusal } from './codex-config.js';
 
 export type ConnectCodexMode = 'dry-run' | 'apply';
 
@@ -15,12 +16,6 @@ export type ConnectCodexChange = {
   path: string;
   kind: 'create' | 'update';
   description: string;
-};
-
-export type ConnectCodexRefusal = {
-  path: string;
-  reason: 'conflicting-mcp-entry' | 'duplicate-mcp-entry' | 'malformed-guidance-block' | 'stale-mcp-entry';
-  detail: string;
 };
 
 export type ConnectCodexReport = {
@@ -47,26 +42,6 @@ type TextPlan = {
   change: ConnectCodexChange;
 };
 
-type McpRole = 'memory' | 'graph' | 'file-search';
-
-type McpSection = {
-  name: string;
-  start: number;
-  end: number;
-  lines: string[];
-};
-
-const CODEX_CONFIG_DEFAULT = resolve(process.env.HOME ?? process.cwd(), '.codex', 'config.toml');
-const RUNTIME_ENTRYPOINT_DEFAULT = resolve(process.cwd(), 'ts', 'packages', 'runtime', 'dist');
-const GUIDANCE_START = '<!-- BYOMEM-CODEX-CONNECT:START -->';
-const GUIDANCE_END = '<!-- BYOMEM-CODEX-CONNECT:END -->';
-
-const MCP_ROLES: Array<{ role: McpRole; section: string; script: string }> = [
-  { role: 'memory', section: 'byomem-memory', script: 'memory.js' },
-  { role: 'graph', section: 'byomem-graph', script: 'graph.js' },
-  { role: 'file-search', section: 'byomem-file-search', script: 'file-search.js' },
-];
-
 function timestamp(now: Date): string {
   return now.toISOString().replace(/[:.]/g, '-');
 }
@@ -80,136 +55,6 @@ function backupPath(path: string, now: Date): string {
   return `${path}.byomem-connect-backup-${timestamp(now)}`;
 }
 
-function activeLine(line: string): string {
-  const trimmed = line.trimStart();
-  if (trimmed.startsWith('#')) return '';
-  return line;
-}
-
-function parseTomlTableName(line: string): string | null {
-  const match = /^\s*\[([^\]]+)](?:\s*(?:#.*)?)$/.exec(line);
-  if (!match) return null;
-  return match[1]
-    .split('.')
-    .map((part) => {
-      const trimmed = part.trim();
-      const quoted = /^"((?:\\"|[^"])*)"$/.exec(trimmed);
-      return quoted ? quoted[1].replace(/\\"/g, '"') : trimmed;
-    })
-    .join('.');
-}
-
-function parseMcpSections(text: string): McpSection[] {
-  const lines = text.split(/\r?\n/);
-  const sections: McpSection[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const tableName = parseTomlTableName(lines[index]);
-    if (!tableName?.startsWith('mcp_servers.')) continue;
-    let end = lines.length;
-    for (let next = index + 1; next < lines.length; next += 1) {
-      if (parseTomlTableName(lines[next]) !== null) {
-        end = next;
-        break;
-      }
-    }
-    sections.push({
-      name: tableName.slice('mcp_servers.'.length),
-      start: index,
-      end,
-      lines: lines.slice(index, end),
-    });
-    index = end - 1;
-  }
-  return sections;
-}
-
-function desiredScriptPath(runtimeEntrypoint: string, role: McpRole): string {
-  const script = MCP_ROLES.find((entry) => entry.role === role)?.script;
-  if (!script) throw new Error(`Unknown MCP role ${role}`);
-  return join(runtimeEntrypoint, 'mcp', script);
-}
-
-function desiredSection(runtimeEntrypoint: string, role: McpRole): string {
-  const entry = MCP_ROLES.find((item) => item.role === role);
-  if (!entry) throw new Error(`Unknown MCP role ${role}`);
-  return [
-    `[mcp_servers.${entry.section}]`,
-    'command = "node"',
-    `args = ["${desiredScriptPath(runtimeEntrypoint, role).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`,
-  ].join('\n');
-}
-
-function sectionMatchesDesired(section: McpSection, runtimeEntrypoint: string, role: McpRole): boolean {
-  const body = section.lines.map(activeLine).join('\n');
-  return /(?:^|\n)\s*command\s*=\s*"node"\s*(?:\n|$)/.test(body)
-    && body.includes(`"${desiredScriptPath(runtimeEntrypoint, role).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
-}
-
-function sectionLooksByomem(section: McpSection): boolean {
-  const body = section.lines.map(activeLine).join('\n').toLowerCase();
-  return section.name.toLowerCase().includes('byomem') || body.includes('byomem');
-}
-
-function mergeMcpConfig(path: string, before: string | null, runtimeEntrypoint: string): { after: string; refusals: ConnectCodexRefusal[] } {
-  const text = before ?? '';
-  const sections = parseMcpSections(text);
-  const refusals: ConnectCodexRefusal[] = [];
-  for (const entry of MCP_ROLES) {
-    const matching = sections.filter((section) => section.name === entry.section);
-    if (matching.length > 1) {
-      refusals.push({ path, reason: 'duplicate-mcp-entry', detail: `Multiple [mcp_servers.${entry.section}] tables already exist.` });
-      continue;
-    }
-    if (matching.length === 1 && !sectionMatchesDesired(matching[0], runtimeEntrypoint, entry.role)) {
-      refusals.push({ path, reason: 'conflicting-mcp-entry', detail: `[mcp_servers.${entry.section}] exists but does not match the canonical BYOMem runtime command.` });
-    }
-  }
-  for (const section of sections) {
-    if (MCP_ROLES.some((entry) => entry.section === section.name)) continue;
-    if (sectionLooksByomem(section)) {
-      refusals.push({ path, reason: 'stale-mcp-entry', detail: `[mcp_servers.${section.name}] appears to reference BYOMem but is not a canonical Sprint 85 entry.` });
-    }
-  }
-  if (refusals.length) return { after: text, refusals };
-
-  const existingNames = new Set(sections.map((section) => section.name));
-  const missing = MCP_ROLES.filter((entry) => !existingNames.has(entry.section)).map((entry) => desiredSection(runtimeEntrypoint, entry.role));
-  let after = text.replace(/\s+$/, '');
-  if (missing.length) after = [after, ...missing].filter(Boolean).join('\n\n');
-  return { after: after ? `${after}\n` : `${missing.join('\n\n')}\n`, refusals };
-}
-
-function guidanceBlock(): string {
-  return [
-    GUIDANCE_START,
-    '# BYOMem Codex MCP',
-    '- Prefer the global BYOMem runtime MCP servers configured in `~/.codex/config.toml`.',
-    '- Run `byomem-runtime doctor` after changing BYOMem runtime configuration.',
-    '- Do not add duplicate project-local BYOMem MCP server entries.',
-    GUIDANCE_END,
-  ].join('\n');
-}
-
-function mergeGuidance(path: string, before: string | null): { after: string; refusals: ConnectCodexRefusal[] } {
-  const text = before ?? '';
-  const starts = [...text.matchAll(new RegExp(GUIDANCE_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))];
-  const ends = [...text.matchAll(new RegExp(GUIDANCE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))];
-  if (starts.length > 1 || ends.length > 1 || starts.length !== ends.length) {
-    return {
-      after: text,
-      refusals: [{ path, reason: 'malformed-guidance-block', detail: 'BYOMem Codex guidance markers are duplicated or unbalanced.' }],
-    };
-  }
-  const block = guidanceBlock();
-  if (starts.length === 1) {
-    const start = starts[0].index ?? 0;
-    const end = (ends[0].index ?? text.length) + GUIDANCE_END.length;
-    return { after: `${text.slice(0, start)}${block}${text.slice(end)}`, refusals: [] };
-  }
-  const after = `${text.replace(/\s+$/, '')}${text.trim() ? '\n\n' : ''}${block}\n`;
-  return { after, refusals: [] };
-}
-
 function planText(path: string, before: string | null, after: string, description: string): TextPlan {
   return {
     path,
@@ -221,10 +66,10 @@ function planText(path: string, before: string | null, after: string, descriptio
 }
 
 export function buildConnectCodexReport(options: ConnectCodexOptions): ConnectCodexReport {
-  const codexConfigPath = resolve(options.codexConfigPath ?? CODEX_CONFIG_DEFAULT);
+  const codexConfigPath = resolve(options.codexConfigPath ?? resolveDefaultCodexConfigPath());
   const projectDir = resolve(options.projectDir ?? process.cwd());
   const projectAgents = join(projectDir, 'AGENTS.md');
-  const runtimeEntrypoint = resolve(options.runtimeEntrypoint ?? RUNTIME_ENTRYPOINT_DEFAULT);
+  const runtimeEntrypoint = resolve(options.runtimeEntrypoint ?? resolveDefaultRuntimeEntrypoint());
   const codexBefore = readText(codexConfigPath);
   const agentsBefore = readText(projectAgents);
   const codexMerge = mergeMcpConfig(codexConfigPath, codexBefore, runtimeEntrypoint);

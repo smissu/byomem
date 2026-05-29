@@ -1,1 +1,1 @@
-export const BYOMEM_RUNTIME_VERSION = '0.1.9';
+export const BYOMEM_RUNTIME_VERSION = '0.1.10';

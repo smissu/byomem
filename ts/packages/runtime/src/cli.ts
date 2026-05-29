@@ -22,6 +22,7 @@ import { buildByomemDoctorReport } from './doctor.js';
 import { buildProcessCleanupReport } from './process-cleanup.js';
 import { runCodexSessionCaptureCommand } from './codex-session-capture.js';
 import { runConnectCodex } from './codex-connect.js';
+import { runRemoveCodex } from './remove.js';
 
 const GENERATION_COMMANDS = new Set(['generate', 'summarize', 'reason', 'chat']);
 const OBSERVER_COMMANDS = new Set(['queue-observe']);
@@ -53,7 +54,7 @@ type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
 type NativeStoreRepairAuthority = 'sqlite' | 'json' | 'abort';
 
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'codex-session-capture', 'connect codex', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'graph-status', 'graph-query', 'graph-explain', 'graph-path', 'graph-update', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'status', 'doctor', 'cleanup', 'stop', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'codex-session-capture', 'connect codex', 'remove codex', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'graph-status', 'graph-query', 'graph-explain', 'graph-path', 'graph-update', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'status', 'doctor', 'cleanup', 'stop', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
@@ -174,9 +175,9 @@ function openDirectFileSearchCliStore(options: CliOptions): DirectFileSearchCliS
   };
 }
 
-function parseArgs(argv: string[]): { command?: string; options: CliOptions; payload: Record<string, string>; flags: { watch: boolean; watchInterval?: string; baseDirProvided: boolean; dryRun: boolean; apply: boolean } } {
+function parseArgs(argv: string[]): { command?: string; options: CliOptions; payload: Record<string, string>; flags: { watch: boolean; watchInterval?: string; baseDirProvided: boolean; dryRun: boolean; apply: boolean; deleteData: boolean; killProcesses: boolean; force: boolean } } {
   const payload: Record<string, string> = {};
-  const flags = { watch: false, watchInterval: undefined as string | undefined, baseDirProvided: false, dryRun: false, apply: false };
+  const flags = { watch: false, watchInterval: undefined as string | undefined, baseDirProvided: false, dryRun: false, apply: false, deleteData: false, killProcesses: false, force: false };
   const options: CliOptions = {
     baseDir: resolve(tmpdir(), `byomem-cli-${randomUUID()}`),
     fileSearchScannerExcludedExtensions: parseExtensionList(process.env.BYOMEM_FILE_SEARCH_EXCLUDED_EXTENSIONS),
@@ -206,6 +207,7 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     const next = argv[i + 1];
     if (!command && !arg.startsWith('--')) { command = arg; continue; }
     if (command === 'connect' && !arg.startsWith('--') && !payload.connectTarget) { payload.connectTarget = arg; continue; }
+    if (command === 'remove' && !arg.startsWith('--') && !payload.removeTarget) { payload.removeTarget = arg; continue; }
     if (arg === '--help' || arg === '-h') return { command: 'help', options, payload, flags };
     if (arg === '--base-dir') { options.baseDir = requireValue(next, '--base-dir'); flags.baseDirProvided = true; i += 1; }
     else if (arg === '--embedding-base-url') { options.embeddingBaseUrl = requireValue(next, '--embedding-base-url'); i += 1; }
@@ -225,6 +227,9 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--watch-interval') { flags.watchInterval = requireValue(next, '--watch-interval'); i += 1; }
     else if (arg === '--dry-run') { flags.dryRun = true; }
     else if (arg === '--apply') { flags.apply = true; }
+    else if (arg === '--delete-data') { flags.deleteData = true; }
+    else if (arg === '--kill-processes') { flags.killProcesses = true; }
+    else if (arg === '--force') { flags.force = true; }
     else if (arg === '--poll-interval-seconds') { payload.pollIntervalSeconds = requireValue(next, '--poll-interval-seconds'); i += 1; }
     else if (arg === '--idle-disable-after-polls') { payload.idleDisableAfterPolls = requireValue(next, '--idle-disable-after-polls'); i += 1; }
     else if (arg === '--reason') { payload.reason = requireValue(next, '--reason'); i += 1; }
@@ -410,6 +415,49 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
   if (command === 'help') {
     console.log(JSON.stringify(usage(), null, 2));
+    return;
+  }
+
+  if (command === 'remove') {
+    if (payload.removeTarget === undefined) {
+      jsonError('Missing remove target codex', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (payload.removeTarget !== 'codex') {
+      jsonError(`Unsupported remove target ${payload.removeTarget}`, command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.apply && flags.dryRun) {
+      jsonError('remove codex does not support --apply with --dry-run', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.deleteData) {
+      jsonError('remove codex does not support --delete-data', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.killProcesses) {
+      jsonError('remove codex does not support --kill-processes', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.force) {
+      jsonError('remove codex does not support --force', command);
+      process.exitCode = 1;
+      return;
+    }
+    const report = runRemoveCodex({
+      mode: flags.apply ? 'apply' : 'dry-run',
+      runtimeBaseDir: flags.baseDirProvided ? options.baseDir : resolveDefaultRuntimeBaseDir(process.env),
+      codexConfigPath: payload.codexConfigPath,
+      projectDir: payload.projectDir,
+      runtimeEntrypoint: payload.runtimeEntrypoint,
+    });
+    console.log(JSON.stringify(report, null, 2));
+    if (report.refusals.length) process.exitCode = 1;
     return;
   }
 

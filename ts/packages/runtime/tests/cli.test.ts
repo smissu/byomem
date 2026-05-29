@@ -52,7 +52,7 @@ describe('runtime cli', () => {
   it('prints JSON usage for --help', async () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     await main(['--help']);
-    expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({ error: 'Usage', commands: expect.arrayContaining(['store', 'search', 'connect codex', 'file-search-scan', 'prune', 'generate', 'status', 'doctor']) });
+    expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({ error: 'Usage', commands: expect.arrayContaining(['store', 'search', 'connect codex', 'remove codex', 'file-search-scan', 'prune', 'generate', 'status', 'doctor']) });
   });
 
   it('prints JSON usage for generation errors', async () => {
@@ -65,6 +65,74 @@ describe('runtime cli', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     await main(['generate', '--prompt', 'hello']);
     expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({ result: 'hello' });
+  });
+
+  it('rejects remove codex parser errors with intentional JSON errors', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await main(['remove']);
+    expect(JSON.parse(String(errSpy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      error: 'Missing remove target codex',
+      command: 'remove',
+    });
+    process.exitCode = undefined;
+
+    await main(['remove', 'operations']);
+    expect(JSON.parse(String(errSpy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      error: 'Unsupported remove target operations',
+      command: 'remove',
+    });
+    process.exitCode = undefined;
+
+    await main(['remove', 'codex', '--apply', '--dry-run']);
+    expect(JSON.parse(String(errSpy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      error: 'remove codex does not support --apply with --dry-run',
+      command: 'remove',
+    });
+    process.exitCode = undefined;
+
+    await main(['remove', 'codex', '--delete-data']);
+    expect(JSON.parse(String(errSpy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      error: 'remove codex does not support --delete-data',
+      command: 'remove',
+    });
+    process.exitCode = undefined;
+
+    await main(['remove', 'codex', '--kill-processes']);
+    expect(JSON.parse(String(errSpy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      error: 'remove codex does not support --kill-processes',
+      command: 'remove',
+    });
+    process.exitCode = undefined;
+
+    await main(['remove', 'codex', '--force']);
+    expect(JSON.parse(String(errSpy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      error: 'remove codex does not support --force',
+      command: 'remove',
+    });
+    process.exitCode = undefined;
+
+    await main(['remove', 'codex', '--runtime-base-dir', '/tmp/runtime']);
+    expect(JSON.parse(String(errSpy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      error: 'Unknown flag --runtime-base-dir',
+      command: 'remove',
+    });
+  });
+
+  it('uses the configured runtime base for remove codex when --base-dir is omitted', async () => {
+    const projectDir = tempDir();
+    dirs.push(projectDir);
+    const runtimeEntrypoint = join(projectDir, 'runtime', 'dist');
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await main(['remove', 'codex', '--project-dir', projectDir, '--runtime-entrypoint', runtimeEntrypoint]);
+
+    expect(JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}'))).toMatchObject({
+      command: 'remove codex',
+      paths: {
+        runtimeBaseDir: process.env.BYOMEM_RUNTIME_BASE_DIR,
+      },
+    });
   });
 
   it('fails closed for store when no embedding base URL is configured', async () => {
