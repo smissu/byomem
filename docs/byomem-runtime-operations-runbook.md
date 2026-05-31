@@ -9,13 +9,15 @@ Use the existing runtime CLI binary:
 ```bash
 npm run byomem:cli -- status --base-dir /path/to/runtime-or-project
 npm run byomem:cli -- doctor --base-dir /path/to/runtime-or-project
+npm run byomem:cli -- dashboard --base-dir /path/to/runtime-or-project
+npm run byomem:cli -- dashboard --base-dir /path/to/runtime-or-project --format html --output /tmp/byomem-dashboard.html
 npm run byomem:cli -- connect codex --runtime-entrypoint /path/to/byomem/ts/packages/runtime/dist
 npm run byomem:cli -- remove codex --runtime-entrypoint /path/to/byomem/ts/packages/runtime/dist
 npm run byomem:cli -- cleanup --base-dir /path/to/runtime
 npm run byomem:cli -- stop --base-dir /path/to/runtime
 ```
 
-`status`, `doctor`, `connect codex`, `remove codex`, `cleanup`, and `stop` are JSON-first commands.
+`status`, `doctor`, `dashboard`, `connect codex`, `remove codex`, `cleanup`, and `stop` are JSON-first commands.
 
 ## Status
 
@@ -52,6 +54,33 @@ Process liveness evidence uses this confidence vocabulary:
 Set `BYOMEM_DOCTOR_PROCESS_EVIDENCE_CONFIDENCE=constrained` when running the CLI in an environment where PID liveness probes are known to be namespace-limited or otherwise incomplete.
 
 Every suggested action is marked `"mode": "read-only"`. `doctor` must not open SQLite handles, create DBs, scan files, update graphs, call embedding providers, remove runtime-state files, or terminate processes.
+
+## Dashboard
+
+`dashboard` renders a compact read-only snapshot from the existing `status` and `doctor` reports. It keeps status components and doctor checks separate so the dashboard does not replace the machine-readable source contracts.
+
+The generated HTML defaults to dark mode and includes a CSS-only light theme path. It adds runtime identity, KPI cards, capability banners, first-run guidance, section summaries, inert command cards, and footer links without adding scripts, browser storage, remote assets, forms, or executable controls.
+
+Default JSON output:
+
+```bash
+npm run byomem:cli -- dashboard --base-dir /path/to/runtime-or-project
+```
+
+Static HTML output:
+
+```bash
+npm run byomem:cli -- dashboard --base-dir /path/to/runtime-or-project --format html --output /tmp/byomem-dashboard.html
+```
+
+Rules:
+
+- Omitting `--format` defaults to JSON stdout.
+- HTML output requires `--output <path>` and the output parent directory must already exist.
+- HTML output is self-contained, non-interactive, dark by default, and light-theme capable through embedded CSS only.
+- The command does not serve HTTP, watch files, open a browser, scan files, update graphs, refresh embeddings, run cleanup/stop, or mutate Codex config/runtime data.
+- The `codex-config` dashboard evidence comes from host-global `~/.codex/config.toml`, not project-scoped config.
+- The HTML write path prints a JSON write report with `command`, `format`, `outputPath`, and `bytesWritten`.
 
 ## Connect Codex
 
@@ -91,7 +120,7 @@ npm run byomem:cli -- status
 node ts/packages/runtime/dist/cli.js status
 ```
 
-Repo-local commands are necessary but not sufficient for installed/global verification. When the global Pi/Codex BYOMem extension is available, verify the active Codex-facing MCP runtime-info surface without mutating runtime config. Expected evidence is `byomem_runtime_info.runtime.packageVersion === "0.1.10"` and `byomem_runtime_info.server.version === "0.1.10"` from the `byomem_runtime_info` tool result.
+Repo-local commands are necessary but not sufficient for installed/global verification. When the global Pi/Codex BYOMem extension is available, verify the active Codex-facing MCP runtime-info surface without mutating runtime config. Expected evidence is `byomem_runtime_info.runtime.packageVersion === "0.1.12"` and `byomem_runtime_info.server.version === "0.1.12"` from the `byomem_runtime_info` tool result after the active runtime is rebuilt and restarted.
 
 ## Extension Exposure Decision Record
 

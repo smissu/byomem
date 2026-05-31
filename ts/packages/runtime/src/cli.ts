@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
+import { existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { inspectNativeStoreConflict, openNativeStore, repairNativeStoreConflict } from './store.js';
 import { openFileSearchDb } from './file-search-db.js';
 import { openFileSearchRegistryDb } from './file-search-db.js';
@@ -17,6 +18,7 @@ import { refreshSemanticIndexAfterManualScan } from './file-search-semantic-refr
 import { openGenerationClient } from './generation-client.js';
 import { observeQueue, renderQueueObserver } from './queue-observer.js';
 import { resolveDefaultRuntimeBaseDir } from './readonly-core.js';
+import { buildByomemDashboardModel, renderByomemDashboardHtml } from './dashboard.js';
 import { buildByomemStatusReport } from './status-report.js';
 import { buildByomemDoctorReport } from './doctor.js';
 import { buildProcessCleanupReport } from './process-cleanup.js';
@@ -28,6 +30,18 @@ const GENERATION_COMMANDS = new Set(['generate', 'summarize', 'reason', 'chat'])
 const OBSERVER_COMMANDS = new Set(['queue-observe']);
 const OBSERVER_WATCH_INTERVAL_DEFAULT = 2;
 const OBSERVER_WATCH_INTERVAL_MIN = 0.1;
+
+type DashboardCliRequest = {
+  format?: string;
+  output?: string;
+  open: boolean;
+  serve: boolean;
+  refresh: boolean;
+  scan: boolean;
+  graphUpdate: boolean;
+  cleanup: boolean;
+  stop: boolean;
+};
 
 type CliOptions = {
   baseDir: string;
@@ -54,7 +68,7 @@ type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
 type NativeStoreRepairAuthority = 'sqlite' | 'json' | 'abort';
 
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'codex-session-capture', 'connect codex', 'remove codex', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'graph-status', 'graph-query', 'graph-explain', 'graph-path', 'graph-update', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'status', 'doctor', 'cleanup', 'stop', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'codex-session-capture', 'connect codex', 'remove codex', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'graph-status', 'graph-query', 'graph-explain', 'graph-path', 'graph-update', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'status', 'doctor', 'dashboard', 'cleanup', 'stop', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
@@ -63,6 +77,13 @@ function jsonError(message: string, command: string | null): void {
 
 function requireValue(value: string | undefined, flag: string): string {
   const trimmed = value?.trim();
+  if (!trimmed) throw new Error(`Missing value for ${flag}`);
+  return trimmed;
+}
+
+function requireDashboardValue(value: string | undefined, flag: string): string {
+  if (value === undefined || value.startsWith('--')) throw new Error(`Missing value for ${flag}`);
+  const trimmed = value.trim();
   if (!trimmed) throw new Error(`Missing value for ${flag}`);
   return trimmed;
 }
@@ -175,8 +196,17 @@ function openDirectFileSearchCliStore(options: CliOptions): DirectFileSearchCliS
   };
 }
 
-function parseArgs(argv: string[]): { command?: string; options: CliOptions; payload: Record<string, string>; flags: { watch: boolean; watchInterval?: string; baseDirProvided: boolean; dryRun: boolean; apply: boolean; deleteData: boolean; killProcesses: boolean; force: boolean } } {
+function parseArgs(argv: string[]): {
+  command?: string;
+  options: CliOptions;
+  payload: Record<string, string>;
+  positionals: string[];
+  dashboard: DashboardCliRequest;
+  flags: { watch: boolean; watchInterval?: string; baseDirProvided: boolean; dryRun: boolean; apply: boolean; deleteData: boolean; killProcesses: boolean; force: boolean };
+} {
   const payload: Record<string, string> = {};
+  const positionals: string[] = [];
+  const dashboard: DashboardCliRequest = { open: false, serve: false, refresh: false, scan: false, graphUpdate: false, cleanup: false, stop: false };
   const flags = { watch: false, watchInterval: undefined as string | undefined, baseDirProvided: false, dryRun: false, apply: false, deleteData: false, killProcesses: false, force: false };
   const options: CliOptions = {
     baseDir: resolve(tmpdir(), `byomem-cli-${randomUUID()}`),
@@ -208,7 +238,8 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     if (!command && !arg.startsWith('--')) { command = arg; continue; }
     if (command === 'connect' && !arg.startsWith('--') && !payload.connectTarget) { payload.connectTarget = arg; continue; }
     if (command === 'remove' && !arg.startsWith('--') && !payload.removeTarget) { payload.removeTarget = arg; continue; }
-    if (arg === '--help' || arg === '-h') return { command: 'help', options, payload, flags };
+    if (!arg.startsWith('--')) { positionals.push(arg); continue; }
+    if (arg === '--help' || arg === '-h') return { command: 'help', options, payload, positionals, dashboard, flags };
     if (arg === '--base-dir') { options.baseDir = requireValue(next, '--base-dir'); flags.baseDirProvided = true; i += 1; }
     else if (arg === '--embedding-base-url') { options.embeddingBaseUrl = requireValue(next, '--embedding-base-url'); i += 1; }
     else if (arg === '--embedding-model') { options.embeddingModel = requireValue(next, '--embedding-model'); i += 1; }
@@ -248,6 +279,15 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--graph-json') { payload.graphJsonPath = requireValue(next, '--graph-json'); i += 1; }
     else if (arg === '--report') { payload.reportPath = requireValue(next, '--report'); i += 1; }
     else if (arg === '--graph-mode') { payload.graphMode = requireValue(next, '--graph-mode'); i += 1; }
+    else if (command === 'dashboard' && arg === '--format') { dashboard.format = requireDashboardValue(next, '--format'); i += 1; }
+    else if (command === 'dashboard' && arg === '--output') { dashboard.output = requireDashboardValue(next, '--output'); i += 1; }
+    else if (command === 'dashboard' && arg === '--open') { dashboard.open = true; }
+    else if (command === 'dashboard' && arg === '--serve') { dashboard.serve = true; }
+    else if (command === 'dashboard' && arg === '--refresh') { dashboard.refresh = true; }
+    else if (command === 'dashboard' && arg === '--scan') { dashboard.scan = true; }
+    else if (command === 'dashboard' && arg === '--graph-update') { dashboard.graphUpdate = true; }
+    else if (command === 'dashboard' && arg === '--cleanup') { dashboard.cleanup = true; }
+    else if (command === 'dashboard' && arg === '--stop') { dashboard.stop = true; }
     else if (arg === '--codex-config-path') { payload.codexConfigPath = requireValue(next, '--codex-config-path'); i += 1; }
     else if (arg === '--project-dir') { payload.projectDir = requireValue(next, '--project-dir'); i += 1; }
     else if (arg === '--runtime-entrypoint') { payload.runtimeEntrypoint = requireValue(next, '--runtime-entrypoint'); i += 1; }
@@ -274,7 +314,7 @@ function parseArgs(argv: string[]): { command?: string; options: CliOptions; pay
     else if (arg === '--text') { payload.text = requireValue(next, '--text'); i += 1; }
     else if (arg.startsWith('--')) throw new Error(`Unknown flag ${arg}`);
   }
-  return { command, options, payload, flags };
+  return { command, options, payload, positionals, dashboard, flags };
 }
 
 function parsePositiveIntegerFlag(payload: Record<string, string>, key: string, flag: string): number {
@@ -407,7 +447,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exitCode = 1;
     return;
   }
-  const { command, options, payload, flags } = parsed;
+  const { command, options, payload, positionals, dashboard, flags } = parsed;
   if (!command) {
     jsonError('Missing command', null);
     process.exitCode = 1;
@@ -525,6 +565,137 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       command,
       runtimeBaseDir: flags.baseDirProvided ? options.baseDir : resolveDefaultRuntimeBaseDir(process.env),
     }), null, 2));
+    return;
+  }
+
+  if (command === 'dashboard') {
+    if (flags.apply) {
+      jsonError('dashboard is read-only; --apply is not supported', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.deleteData) {
+      jsonError('dashboard is read-only; --delete-data is not supported', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.killProcesses) {
+      jsonError('dashboard is read-only; --kill-processes is not supported', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.force) {
+      jsonError('dashboard is read-only; --force is not supported', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.watch) {
+      jsonError('dashboard does not support --watch', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.watchInterval !== undefined) {
+      jsonError('dashboard does not support --watch-interval', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (dashboard.open) {
+      jsonError('dashboard does not support --open', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (dashboard.serve) {
+      jsonError('dashboard does not support --serve', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (dashboard.refresh) {
+      jsonError('dashboard does not support --refresh', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (dashboard.scan) {
+      jsonError('dashboard does not support --scan', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (dashboard.graphUpdate) {
+      jsonError('dashboard does not support --graph-update', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (dashboard.cleanup) {
+      jsonError('dashboard does not support --cleanup', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (dashboard.stop) {
+      jsonError('dashboard does not support --stop', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (positionals.length > 0) {
+      jsonError(`Unexpected positional argument ${positionals[0]} after dashboard`, command);
+      process.exitCode = 1;
+      return;
+    }
+
+    const formatRaw = dashboard.format?.trim();
+    const format = formatRaw === undefined || formatRaw === '' ? 'json' : formatRaw.toLowerCase();
+    if (format !== 'json' && format !== 'html') {
+      jsonError(`Invalid dashboard format ${formatRaw ?? ''}`, command);
+      process.exitCode = 1;
+      return;
+    }
+    if (format === 'html' && dashboard.output === undefined) {
+      jsonError('dashboard html output requires --output <path>', command);
+      process.exitCode = 1;
+      return;
+    }
+
+    const generatedAt = new Date();
+    const baseDirOptions = {
+      env: process.env,
+      cwd: process.cwd(),
+      projectBaseDir: flags.baseDirProvided ? options.baseDir : undefined,
+      runtimeBaseDir: flags.baseDirProvided ? options.baseDir : resolveDefaultRuntimeBaseDir(process.env),
+      generatedAt,
+    };
+    const statusReport = buildByomemStatusReport(baseDirOptions);
+    const doctorReport = buildByomemDoctorReport(baseDirOptions);
+    const dashboardModel = buildByomemDashboardModel({ statusReport, doctorReport, generatedAt });
+
+    if (format === 'json') {
+      console.log(JSON.stringify(dashboardModel, null, 2));
+      return;
+    }
+
+    const outputRaw = dashboard.output?.trim() ?? '';
+    if (outputRaw === '') {
+      jsonError('Missing value for --output', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (outputRaw === '-') {
+      jsonError('dashboard does not support --output -', command);
+      process.exitCode = 1;
+      return;
+    }
+    const outputPath = resolve(process.cwd(), outputRaw);
+    const outputDir = dirname(outputPath);
+    if (!existsSync(outputDir)) {
+      jsonError('Parent directory for --output must already exist', command);
+      process.exitCode = 1;
+      return;
+    }
+    const html = renderByomemDashboardHtml(dashboardModel);
+    writeFileSync(outputPath, html, 'utf8');
+    console.log(JSON.stringify({
+      command: 'dashboard',
+      format: 'html',
+      outputPath,
+      bytesWritten: Buffer.byteLength(html, 'utf8'),
+    }, null, 2));
     return;
   }
 
