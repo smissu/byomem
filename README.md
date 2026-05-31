@@ -64,7 +64,7 @@ npm run byomem:mcp-file-search
 
 Use split MCP servers for normal Codex or Hermes operation. Replace `<HOME>` with your home directory, for example `/home/alex`, `/Users/alex`, or the absolute path where you keep this repo.
 
-For Codex, preview the config and guidance changes first:
+For Codex, treat setup and removal as paired lifecycle operations. Preview the config and guidance changes first, then apply only after reviewing the JSON report:
 
 ```bash
 npm run byomem:cli -- connect codex --runtime-entrypoint <HOME>/Documents/byomem/ts/packages/runtime/dist
@@ -74,7 +74,9 @@ npm run byomem:cli -- remove codex --runtime-entrypoint <HOME>/Documents/byomem/
 ```
 
 `connect codex` writes only canonical split BYOMem MCP entries and a marked project guidance block. It refuses duplicate, stale, or conflicting BYOMem MCP entries so those can be reviewed manually instead of being silently overwritten.
-`remove codex` is the conservative inverse: dry-run by default, explicit `--apply`, and no durable BYOMem data deletion in this sprint.
+`remove codex` is the conservative inverse: dry-run first, explicit apply-after-review, and no durable BYOMem data deletion in this sprint. Safe uninstall means integration rollback does not delete durable data, does not kill or terminate live processes, and rejects dangerous flags such as `--delete-data`, `--kill-processes`, and `--force`.
+
+`remove codex` reads global `~/.codex/config.toml` by default, so dry-run output must be reviewed as an all-project Codex config change. `--apply` removes only recognized BYOMem Codex integration artifacts after backing up modified config/integration files, not durable BYOMem data. Recognized removable artifacts are canonical BYOMem MCP config sections, the marked AGENTS guidance block, canonical Codex hook commands, and stale BYOMem-owned runtime-state records.
 
 ```toml
 [mcp_servers.byomem-memory]
@@ -100,7 +102,7 @@ args = ["<HOME>/Documents/byomem/ts/packages/runtime/dist/mcp/operations.js"]
 
 Prefer the split servers. File search can be memory-heavy, so isolating it keeps memory and graph tools alive if a worker fails. See [docs/byomem-mcp-process-isolation.md](docs/byomem-mcp-process-isolation.md).
 
-Every MCP surface exposes `byomem_runtime_info` for structured runtime verification. Use it for feature detection; it reports runtime version, server domain, and feature flags such as `split-mcp-servers`, `file-search-worker`, `native-source-graph`, and `file-search-include-graph`.
+Every MCP surface exposes `byomem_runtime_info` for structured runtime verification. Use it for feature detection; it reports runtime version, server domain, and feature flags such as `split-mcp-servers`, `file-search-worker`, `native-source-graph`, and `file-search-include-graph`. For Sprint 87 release evidence, repo-local commands are necessary but not sufficient; installed/global verification should include the active Codex-facing MCP tool result, with `byomem_runtime_info.runtime.packageVersion === "0.1.10"` and `byomem_runtime_info.server.version === "0.1.10"`.
 
 ## Codex CLI Usage
 
@@ -174,6 +176,8 @@ A Codex repo-local `.codex/hooks.json` can provide:
 
 The hook details and safe activation notes are documented in [docs/codex-hooks-reference.md](docs/codex-hooks-reference.md). Session capture should stay project-local and opt-in; it writes compact `byomem-session` rollups and should not persist raw transcripts, tool traces, signatures, encrypted fields, or binary payloads.
 Use `byomem remove codex` to roll back the canonical hook commands and the marked AGENTS guidance block when you no longer want the repo-local reminder setup.
+
+Extension Exposure Decision Record: initial decision is `defer`. BYOMem documents explicit CLI usage for advanced operators and should defer menu/help exposure unless implementation records an explicit override, because accidental uninstall discoverability outweighs menu convenience for this release.
 
 Related skills and setup workflows:
 

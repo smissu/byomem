@@ -55,7 +55,7 @@ Every suggested action is marked `"mode": "read-only"`. `doctor` must not open S
 
 ## Connect Codex
 
-`connect codex` bootstraps Codex to use BYOMem without disturbing running MCP processes. The default mode is dry-run; add `--apply` only after reviewing the JSON report.
+`connect codex` bootstraps Codex to use BYOMem without disturbing running MCP processes. It is one side of the paired lifecycle operations for Codex integration. The default mode is dry-run; add `--apply` only after reviewing the JSON report.
 
 It manages:
 
@@ -67,7 +67,7 @@ The command creates backups before changing existing files. It refuses stale, du
 
 ## Remove Codex
 
-`remove codex` is the conservative inverse of `connect codex`. The default mode is dry-run; add `--apply` only after reviewing the JSON report.
+`remove codex` is the conservative inverse of `connect codex`. It is the rollback side of the paired lifecycle operations for Codex integration. The default mode is dry-run first; add `--apply` only after reviewing the JSON report. This is an apply-after-review workflow, not an automatic uninstall.
 
 It manages:
 
@@ -76,9 +76,28 @@ It manages:
 - `<project>/.codex/hooks.json`, or `--project-dir`
 - stale BYOMem-owned runtime-state records under `--base-dir`
 
-The command creates `.byomem-remove-backup-{timestamp}` backups before changing existing config, AGENTS, or hooks files. It refuses ambiguous or edited BYOMem-looking MCP sections, guidance blocks, and hooks, and it preserves durable data such as memory, file-search, graph, queue, and runtime artifacts by default.
+Safe uninstall means integration rollback does not delete durable data. `remove codex` reads global `~/.codex/config.toml` by default, so dry-run output must be reviewed as an all-project Codex config change. The command creates `.byomem-remove-backup-{timestamp}` backups before changing existing config, AGENTS, or hooks files; those backups cover modified config/integration files, not durable BYOMem data.
 
-`--delete-data`, `--kill-processes`, and `--force` are intentionally rejected in this sprint. `remove codex` does not terminate processes.
+Recognized removable artifacts are canonical BYOMem MCP config sections, the marked AGENTS guidance block, canonical Codex hook commands, and stale BYOMem-owned runtime-state records. It refuses ambiguous or edited BYOMem-looking MCP sections, guidance blocks, and hooks, and it preserves durable data such as memory, file-search, graph, queue, runtime DB, embedding cache, and runtime artifacts by default.
+
+`--delete-data`, `--kill-processes`, and `--force` are intentionally rejected in this sprint. `remove codex` does not kill or terminate live processes.
+
+## Runtime Version Evidence
+
+Use repo-local commands as necessary release evidence:
+
+```bash
+npm run byomem:cli -- status
+node ts/packages/runtime/dist/cli.js status
+```
+
+Repo-local commands are necessary but not sufficient for installed/global verification. When the global Pi/Codex BYOMem extension is available, verify the active Codex-facing MCP runtime-info surface without mutating runtime config. Expected evidence is `byomem_runtime_info.runtime.packageVersion === "0.1.10"` and `byomem_runtime_info.server.version === "0.1.10"` from the `byomem_runtime_info` tool result.
+
+## Extension Exposure Decision Record
+
+Initial decision: `defer`.
+
+Rationale: `remove codex` is dry-run-first and conservative, but exposing an uninstall command in Pi/Codex help or menus increases accidental discoverability. For this release, docs point advanced operators to explicit CLI usage and defer menu/help exposure unless implementation records an explicit override with rationale, tests, exact files, and rollback plan.
 
 ## Runtime State
 
