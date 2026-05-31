@@ -391,6 +391,25 @@ function renderActionList(items: Array<string | DashboardSuggestedAction>): stri
     .join('')}</ul>`;
 }
 
+function renderDisclosureSection(options: {
+  title: string;
+  status: string;
+  countLabel: string;
+  open: boolean;
+  bodyHtml: string;
+}): string {
+  return `
+        <details class="disclosure"${options.open ? ' open' : ''}>
+          <summary>
+            <span class="disclosure-title">${escapeHtml(options.title)} (${escapeHtml(options.countLabel)})</span>
+            <span class="badge">${escapeHtml(options.status)}</span>
+          </summary>
+          <div class="disclosure-body">
+            ${options.bodyHtml}
+          </div>
+        </details>`;
+}
+
 function toCommandCard(id: string, action: DashboardSuggestedAction, summary = 'Copy and run manually if appropriate.'): DashboardCommandCard {
   return {
     id,
@@ -471,7 +490,7 @@ function buildSectionSummaries(
   statusComponents: DashboardStatusComponent[],
   doctorChecks: DashboardDoctorCheck[],
   warnings: string[],
-  suggestedActions: DashboardSuggestedAction[],
+  suggestedActionCount: number,
 ): DashboardSectionSummary[] {
   const componentSummaries = statusComponents.map((component) => ({
     id: component.id,
@@ -499,8 +518,8 @@ function buildSectionSummaries(
     {
       id: 'suggested-actions',
       label: 'Suggested actions',
-      status: suggestedActions.length > 0 ? 'warn' : 'pass',
-      summary: `${suggestedActions.length} copy-only command${suggestedActions.length === 1 ? '' : 's'} included.`,
+      status: suggestedActionCount > 0 ? 'warn' : 'pass',
+      summary: `${suggestedActionCount} copy-only command${suggestedActionCount === 1 ? '' : 's'} included.`,
       href: '#suggested-actions',
     },
   ].slice(0, MAX_SECTION_SUMMARIES) as DashboardSectionSummary[];
@@ -652,8 +671,8 @@ export function buildByomemDashboardModel(options: BuildByomemDashboardModelOpti
   const kpiCards = buildKpiCards(statusComponents, doctorChecks, boundedWarnings, identityMeta.overallStatus);
   const capabilityBanners = buildCapabilityBanners(options);
   const firstRunGuidance = buildFirstRunGuidance(statusComponents, statusReport.runtimeBaseDir);
-  const sectionSummaries = buildSectionSummaries(statusComponents, doctorChecks, boundedWarnings, finalSuggestedActions);
   const commandCards = buildCommandCards(doctorReport, statusReport.runtimeBaseDir);
+  const sectionSummaries = buildSectionSummaries(statusComponents, doctorChecks, boundedWarnings, commandCards.length);
 
   return {
     schemaVersion: 1,
@@ -730,18 +749,23 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
   const firstRunGuidance = Array.isArray(dashboard.firstRunGuidance) && dashboard.firstRunGuidance.length > 0
     ? dashboard.firstRunGuidance
     : buildFirstRunGuidance(statusComponents, runtimeBaseDir);
-  const sectionSummaries = Array.isArray(dashboard.sectionSummaries) && dashboard.sectionSummaries.length > 0
-    ? dashboard.sectionSummaries
-    : buildSectionSummaries(statusComponents, doctorChecks, warnings, suggestedActions.filter((action): action is DashboardSuggestedAction => typeof action !== 'string'));
-  const commandCards: DashboardCommandCard[] = Array.isArray(dashboard.commandCards) && dashboard.commandCards.length > 0
-    ? dashboard.commandCards
+  const suggestedActionCards = suggestedActions
+    .filter((action): action is DashboardSuggestedAction => typeof action !== 'string' && isSafeReadOnlyAction(action))
+    .map((action, index) => toCommandCard(`action-${index}`, action));
+  const commandCards: DashboardCommandCard[] = Array.isArray(dashboard.commandCards)
+    ? (dashboard.commandCards.length > 0 ? dashboard.commandCards : suggestedActionCards)
     : [
         { id: 'status', label: 'Inspect status', command: `byomem-runtime status --base-dir ${runtimeBaseDir}`, mode: 'read-only' as const, summary: 'Copy and run manually for read-only status.' },
         { id: 'doctor', label: 'Inspect doctor', command: `byomem-runtime doctor --base-dir ${runtimeBaseDir} --json`, mode: 'read-only' as const, summary: 'Copy and run manually for read-only diagnostics.' },
-        ...suggestedActions
-          .filter((action): action is DashboardSuggestedAction => typeof action !== 'string' && isSafeReadOnlyAction(action))
-          .map((action, index) => toCommandCard(`action-${index}`, action)),
+        ...suggestedActionCards,
       ].slice(0, MAX_COMMAND_CARDS);
+  const suggestedActionCount = commandCards.length > 0 ? commandCards.length : suggestedActions.length;
+  const suggestedActionsBody = commandCards.length > 0
+    ? renderCommandCards(commandCards)
+    : renderActionList(suggestedActions);
+  const sectionSummaries = Array.isArray(dashboard.sectionSummaries) && dashboard.sectionSummaries.length > 0
+    ? dashboard.sectionSummaries
+    : buildSectionSummaries(statusComponents, doctorChecks, warnings, suggestedActionCount);
 
   return `<!doctype html>
 <html lang="en" data-theme="dark">
@@ -832,6 +856,8 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
     }
     .panel, .summary-panel, .command-card {
       padding: 16px;
+      min-width: 0;
+      max-width: 100%;
     }
     .summary-panel, .command-card {
       border: 1px solid var(--line);
@@ -846,6 +872,22 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
     }
     .panel-head h3, .section-head h2, .subsection h4 {
       margin: 0;
+    }
+    .hero h1,
+    .panel-head h3,
+    .section-head h2,
+    .subsection h4,
+    .disclosure-title,
+    .summary,
+    .empty,
+    .skipped,
+    .meta dd,
+    .list li,
+    .command-card code {
+      min-width: 0;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .badge {
       display: inline-flex;
@@ -887,6 +929,43 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
       margin: 8px 0 0;
       padding-left: 18px;
     }
+    .disclosure {
+      margin-top: 16px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-soft);
+    }
+    .disclosure summary {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      cursor: pointer;
+      list-style: none;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .disclosure summary::-webkit-details-marker {
+      display: none;
+    }
+    .disclosure summary:hover {
+      color: var(--accent);
+    }
+    .disclosure summary:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 4px;
+      border-radius: 4px;
+    }
+    .disclosure-title {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-weight: 600;
+    }
+    .disclosure-body {
+      margin-top: 14px;
+    }
     .status-ready .badge, .check-pass .badge {
       color: var(--pass);
       border-color: rgba(2, 122, 72, 0.35);
@@ -910,6 +989,7 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
       border: 1px solid var(--line);
       border-radius: 6px;
       background: var(--panel-soft);
+      min-width: 0;
     }
     .kpi .value {
       display: block;
@@ -974,6 +1054,7 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
     code {
       white-space: break-spaces;
       word-break: break-word;
+      overflow-wrap: anywhere;
     }
   </style>
 </head>
@@ -1058,9 +1139,13 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
         <h2>Doctor checks</h2>
         <p>Read-only diagnostics remain separate from status components.</p>
       </div>
-      <div class="stack">
-        ${doctorChecks.map((check) => renderDoctorCheck(check)).join('')}
-      </div>
+      ${renderDisclosureSection({
+        title: 'Doctor checks',
+        status: doctorChecks.some((check) => check.status === 'fail') ? 'fail' : doctorChecks.some((check) => check.status === 'warn') ? 'warn' : doctorChecks.length > 0 ? 'pass' : 'empty',
+        countLabel: String(doctorChecks.length),
+        open: doctorChecks.some((check) => check.status === 'fail' || check.status === 'warn'),
+        bodyHtml: doctorChecks.length > 0 ? `<div class="stack">${doctorChecks.map((check) => renderDoctorCheck(check)).join('')}</div>` : '<p class="empty">None.</p>',
+      })}
     </section>
 
     <section id="warnings">
@@ -1068,7 +1153,13 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
         <h2>Warnings</h2>
         <p>Bounded and deduplicated for compact inspection.</p>
       </div>
-      ${renderList(warnings.map((warning) => escapeHtml(warning)))}
+      ${renderDisclosureSection({
+        title: 'Warnings',
+        status: warnings.length > 0 ? 'present' : 'empty',
+        countLabel: String(warnings.length),
+        open: warnings.length > 0,
+        bodyHtml: warnings.length > 0 ? renderList(warnings.map((warning) => escapeHtml(warning))) : '<p class="empty">None.</p>',
+      })}
     </section>
 
     <section id="suggested-actions">
@@ -1076,7 +1167,13 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
         <h2>Suggested actions</h2>
         <p>Copy-friendly read-only commands. Nothing runs from this page.</p>
       </div>
-      ${renderCommandCards(commandCards)}
+      ${renderDisclosureSection({
+        title: 'Suggested actions',
+        status: suggestedActionCount > 0 ? 'copy-only' : 'empty',
+        countLabel: String(suggestedActionCount),
+        open: suggestedActionCount > 0,
+        bodyHtml: suggestedActionCount > 0 ? suggestedActionsBody : '<p class="empty">None.</p>',
+      })}
     </section>
   </main>
   <footer>

@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { normalizeIdentity, normalizeStableKey, resolveActiveProjectContext } from '../src/identity.js';
 import { stableIdentityFixtures } from '../src/identity-fixtures.js';
@@ -45,7 +45,7 @@ describe('identity normalization', () => {
     const repoRoot = process.cwd();
     const ctx = resolveActiveProjectContext({ BYOMEM_RUNTIME_BASE_DIR: '/tmp/byomem-global-store' } as NodeJS.ProcessEnv, join(repoRoot, 'ts/packages/runtime'));
     expect(ctx.repoRoot).toBe(repoRoot);
-    expect(ctx.projectKey).toBe('byomem');
+    expect(ctx.projectKey).toBe(basename(repoRoot));
     expect(ctx.activeProjectMetadata.source).toBe('git');
     expect(ctx.activeProjectMetadata.path).toBe(repoRoot);
   });

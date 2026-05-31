@@ -104,7 +104,7 @@ args = ["<HOME>/Documents/byomem/ts/packages/runtime/dist/mcp/operations.js"]
 
 Prefer the split servers. File search can be memory-heavy, so isolating it keeps memory and graph tools alive if a worker fails. See [docs/byomem-mcp-process-isolation.md](docs/byomem-mcp-process-isolation.md).
 
-Every MCP surface exposes `byomem_runtime_info` for structured runtime verification. Use it for feature detection; it reports runtime version, server domain, and feature flags such as `split-mcp-servers`, `file-search-worker`, `native-source-graph`, and `file-search-include-graph`. For release evidence, repo-local commands are necessary but not sufficient; installed/global verification should include the active Codex-facing MCP tool result, with `byomem_runtime_info.runtime.packageVersion === "0.1.12"` and `byomem_runtime_info.server.version === "0.1.12"` after the active runtime is rebuilt and restarted.
+Every MCP surface exposes `byomem_runtime_info` for structured runtime verification. Use it for feature detection; it reports runtime version, server domain, and feature flags such as `split-mcp-servers`, `file-search-worker`, `native-source-graph`, and `file-search-include-graph`. For release evidence, repo-local commands are necessary but not sufficient; installed/global verification should include the active Codex-facing MCP tool result, with `byomem_runtime_info.runtime.packageVersion === "0.1.13"` and `byomem_runtime_info.server.version === "0.1.13"` after the active runtime is rebuilt and restarted.
 
 ## Runtime Dashboard
 

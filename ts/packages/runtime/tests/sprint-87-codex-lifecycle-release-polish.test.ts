@@ -65,16 +65,20 @@ describe('S87 lifecycle docs contract', () => {
 });
 
 describe('S87 version verification contract', () => {
-  it('keeps the local runtime version at the Sprint 87 release version', () => {
-    expect(BYOMEM_RUNTIME_VERSION).toBe('0.1.10');
+  it('keeps the local runtime version aligned to the current release version', () => {
+    const rootPackage = JSON.parse(readRepo('package.json')) as { version: string };
+    const runtimePackage = JSON.parse(readRepo('ts/packages/runtime/package.json')) as { version: string };
+
+    expect(BYOMEM_RUNTIME_VERSION).toBe(rootPackage.version);
+    expect(BYOMEM_RUNTIME_VERSION).toBe(runtimePackage.version);
   });
 
   it('requires installed and global runtime-info evidence with expected fields', () => {
     const text = lifecycleDocs();
 
     expect(text).toMatch(/installed\/global/i);
-    expect(text).toMatch(/byomem_runtime_info\.runtime\.packageVersion\s*===\s*"0\.1\.10"/);
-    expect(text).toMatch(/byomem_runtime_info\.server\.version\s*===\s*"0\.1\.10"/);
+    expect(text).toContain(`byomem_runtime_info.runtime.packageVersion === "${BYOMEM_RUNTIME_VERSION}"`);
+    expect(text).toContain(`byomem_runtime_info.server.version === "${BYOMEM_RUNTIME_VERSION}"`);
     expect(text).toMatch(/repo-local commands are necessary but not sufficient/i);
   });
 });
