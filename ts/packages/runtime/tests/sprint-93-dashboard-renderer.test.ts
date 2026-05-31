@@ -166,6 +166,11 @@ describe('sprint 93 dashboard renderer', () => {
     expect(html).toContain('<section id="suggested-actions">');
     expect(html).toContain('<details');
     expect(html).toContain('<summary');
+    expect(html).toContain('class="disclosure-indicator"');
+    expect(html).toContain('.disclosure-indicator::before');
+    expect(html).toContain('content: "+"');
+    expect(html).toContain('.disclosure[open] .disclosure-indicator::before');
+    expect(html).toContain('content: "-"');
     expect(html).toContain('href="#warnings"');
     expect(html).toContain('href="#doctor-checks"');
     expect(html).toContain('href="#suggested-actions"');

@@ -401,6 +401,7 @@ function renderDisclosureSection(options: {
   return `
         <details class="disclosure"${options.open ? ' open' : ''}>
           <summary>
+            <span class="disclosure-indicator" aria-hidden="true"></span>
             <span class="disclosure-title">${escapeHtml(options.title)} (${escapeHtml(options.countLabel)})</span>
             <span class="badge">${escapeHtml(options.status)}</span>
           </summary>
@@ -949,6 +950,24 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
     }
     .disclosure summary::-webkit-details-marker {
       display: none;
+    }
+    .disclosure-indicator {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      inline-size: 20px;
+      block-size: 20px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      color: var(--accent);
+      font: 700 14px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .disclosure-indicator::before {
+      content: "+";
+    }
+    .disclosure[open] .disclosure-indicator::before {
+      content: "-";
     }
     .disclosure summary:hover {
       color: var(--accent);
