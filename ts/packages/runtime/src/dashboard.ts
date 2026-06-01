@@ -7,6 +7,7 @@ import type {
   DoctorSuggestedAction,
   DoctorOverallStatus,
 } from './doctor.js';
+import { buildNotCollectedDashboardProfileSummary, type DashboardProfileSummary } from './dashboard-profile.js';
 import type { StatusComponentState, StatusReport } from './status-report.js';
 
 export type DashboardSchemaVersion = 1;
@@ -100,6 +101,7 @@ export type DashboardModel = {
   degradedComponents: DashboardStatusComponentId[];
   kpiCards: DashboardKpiCard[];
   capabilityBanners: DashboardCapabilityBanner[];
+  profileSummary: DashboardProfileSummary;
   firstRunGuidance: DashboardCommandCard[];
   sectionSummaries: DashboardSectionSummary[];
   commandCards: DashboardCommandCard[];
@@ -113,6 +115,7 @@ export type BuildByomemDashboardModelOptions = {
   statusReport: StatusReport;
   doctorReport: DoctorReport;
   generatedAt?: Date | string;
+  profileSummary?: DashboardProfileSummary;
   activeMcpRuntimeInfo?: {
     server?: string;
     collectedAt?: string;
@@ -617,6 +620,91 @@ function renderCapabilityBanners(banners: DashboardCapabilityBanner[]): string {
     .join('')}</div>`;
 }
 
+function formatNullableCount(value: number | null): string {
+  return value === null ? 'not-collected' : String(value);
+}
+
+function renderLanguageCounts(languageCounts: Record<string, number>): string {
+  const entries = Object.entries(languageCounts);
+  if (entries.length === 0) return '<p class="empty">not-collected</p>';
+  return `<ul class="list">${entries.map(([language, count]) => `<li>${escapeHtml(language)}: ${escapeHtml(count)}</li>`).join('')}</ul>`;
+}
+
+function renderRelationCounts(relationCounts: Record<string, number>): string {
+  const entries = Object.entries(relationCounts);
+  if (entries.length === 0) return '<p class="empty">not-collected</p>';
+  return `<ul class="list">${entries.map(([relation, count]) => `<li>${escapeHtml(relation)}: ${escapeHtml(count)}</li>`).join('')}</ul>`;
+}
+
+function renderProfileSummary(profileSummary: DashboardProfileSummary): string {
+  return `
+      <div class="profile-grid">
+        <article class="summary-panel profile-${escapeHtml(profileSummary.fileSearch.state)}">
+          <div class="panel-head">
+            <h3>File search profile</h3>
+            <span class="badge">${escapeHtml(profileSummary.fileSearch.state)}</span>
+          </div>
+          <p class="summary">${escapeHtml(profileSummary.fileSearch.summary)}</p>
+          <dl class="meta">
+            <div><dt>Evidence</dt><dd>${escapeHtml(profileSummary.fileSearch.evidenceTier)} / ${escapeHtml(profileSummary.fileSearch.source)}</dd></div>
+            <div><dt>Database</dt><dd><code>${escapeHtml(profileSummary.fileSearch.dbPath)}</code></dd></div>
+            <div><dt>Files</dt><dd>${escapeHtml(formatNullableCount(profileSummary.fileSearch.indexedFileCount))}</dd></div>
+            <div><dt>Chunks</dt><dd>${escapeHtml(formatNullableCount(profileSummary.fileSearch.chunkCount))}</dd></div>
+          </dl>
+          <div class="subsection">
+            <h4>Languages</h4>
+            ${renderLanguageCounts(profileSummary.fileSearch.languageCounts)}
+          </div>
+          ${profileSummary.fileSearch.warnings.length > 0 ? `<div class="subsection"><h4>Warnings</h4>${renderList(profileSummary.fileSearch.warnings.map((warning) => escapeHtml(warning)))}</div>` : ''}
+        </article>
+
+        <article class="summary-panel profile-${escapeHtml(profileSummary.graph.state)}">
+          <div class="panel-head">
+            <h3>Graph profile</h3>
+            <span class="badge">${escapeHtml(profileSummary.graph.state)}</span>
+          </div>
+          <p class="summary">${escapeHtml(profileSummary.graph.summary)}</p>
+          <dl class="meta">
+            <div><dt>Evidence</dt><dd>${escapeHtml(profileSummary.graph.evidenceTier)} / ${escapeHtml(profileSummary.graph.source)}</dd></div>
+            <div><dt>Database</dt><dd><code>${escapeHtml(profileSummary.graph.dbPath)}</code></dd></div>
+            <div><dt>Nodes</dt><dd>${escapeHtml(formatNullableCount(profileSummary.graph.nodeCount))}</dd></div>
+            <div><dt>Edges</dt><dd>${escapeHtml(formatNullableCount(profileSummary.graph.edgeCount))}</dd></div>
+            <div><dt>Communities</dt><dd>${escapeHtml(formatNullableCount(profileSummary.graph.communityCount))}</dd></div>
+            <div><dt>Last import</dt><dd>${escapeHtml(profileSummary.graph.lastImportTimestamp ?? 'not-collected')}</dd></div>
+            <div><dt>Source</dt><dd>${escapeHtml(profileSummary.graph.lastUpdateSource ?? 'not-collected')}</dd></div>
+          </dl>
+          <div class="subsection">
+            <h4>Relations</h4>
+            ${renderRelationCounts(profileSummary.graph.relationCounts)}
+          </div>
+          ${profileSummary.graph.warnings.length > 0 ? `<div class="subsection"><h4>Warnings</h4>${renderList(profileSummary.graph.warnings.map((warning) => escapeHtml(warning)))}</div>` : ''}
+        </article>
+
+        <article class="summary-panel profile-${escapeHtml(profileSummary.embedding.state)}">
+          <div class="panel-head">
+            <h3>Embedding profile</h3>
+            <span class="badge">${escapeHtml(profileSummary.embedding.readiness)}</span>
+          </div>
+          <p class="summary">${escapeHtml(profileSummary.embedding.summary)}</p>
+          <dl class="meta">
+            <div><dt>Evidence</dt><dd>${escapeHtml(profileSummary.embedding.evidenceTier)} / ${escapeHtml(profileSummary.embedding.source)}</dd></div>
+            <div><dt>Model</dt><dd>${escapeHtml(profileSummary.embedding.model ?? 'not-collected')}</dd></div>
+            <div><dt>Provider</dt><dd>${escapeHtml(profileSummary.embedding.providerKey ?? 'not-collected')}</dd></div>
+            <div><dt>Embedded</dt><dd>${escapeHtml(formatNullableCount(profileSummary.embedding.embeddedChunkCount))}</dd></div>
+            <div><dt>Missing</dt><dd>${escapeHtml(formatNullableCount(profileSummary.embedding.missingChunkCount))}</dd></div>
+            <div><dt>Failed</dt><dd>${escapeHtml(formatNullableCount(profileSummary.embedding.failedChunkCount))}</dd></div>
+          </dl>
+          <div class="subsection">
+            <h4>Dimensions</h4>
+            ${profileSummary.embedding.dimensions.length > 0
+              ? `<ul class="list">${profileSummary.embedding.dimensions.map((entry) => `<li>${escapeHtml(entry.dimension)}: ${escapeHtml(entry.chunks)} chunk${entry.chunks === 1 ? '' : 's'}</li>`).join('')}</ul>`
+              : '<p class="empty">not-collected</p>'}
+          </div>
+          ${profileSummary.embedding.warnings.length > 0 ? `<div class="subsection"><h4>Warnings</h4>${renderList(profileSummary.embedding.warnings.map((warning) => escapeHtml(warning)))}</div>` : ''}
+        </article>
+      </div>`;
+}
+
 export function buildByomemDashboardModel(options: BuildByomemDashboardModelOptions): DashboardModel {
   const statusReport = options.statusReport;
   const doctorReport = options.doctorReport;
@@ -671,6 +759,11 @@ export function buildByomemDashboardModel(options: BuildByomemDashboardModelOpti
   };
   const kpiCards = buildKpiCards(statusComponents, doctorChecks, boundedWarnings, identityMeta.overallStatus);
   const capabilityBanners = buildCapabilityBanners(options);
+  const profileSummary = options.profileSummary ?? buildNotCollectedDashboardProfileSummary({
+    projectBaseDir: statusReport.projectBaseDir,
+    runtimeBaseDir: statusReport.runtimeBaseDir,
+    collectedAt: generatedAt,
+  });
   const firstRunGuidance = buildFirstRunGuidance(statusComponents, statusReport.runtimeBaseDir);
   const commandCards = buildCommandCards(doctorReport, statusReport.runtimeBaseDir);
   const sectionSummaries = buildSectionSummaries(statusComponents, doctorChecks, boundedWarnings, commandCards.length);
@@ -693,6 +786,7 @@ export function buildByomemDashboardModel(options: BuildByomemDashboardModelOpti
       .map((component) => component.id),
     kpiCards,
     capabilityBanners,
+    profileSummary,
     firstRunGuidance,
     sectionSummaries,
     commandCards,
@@ -711,6 +805,7 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
     identityMeta?: DashboardIdentityMeta;
     kpiCards?: DashboardKpiCard[];
     capabilityBanners?: DashboardCapabilityBanner[];
+    profileSummary?: DashboardProfileSummary;
     firstRunGuidance?: DashboardCommandCard[];
     sectionSummaries?: DashboardSectionSummary[];
     commandCards?: DashboardCommandCard[];
@@ -747,6 +842,11 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
   const capabilityBanners = Array.isArray(dashboard.capabilityBanners) && dashboard.capabilityBanners.length > 0
     ? dashboard.capabilityBanners
     : buildCapabilityBanners({ statusReport: {} as StatusReport, doctorReport: {} as DoctorReport });
+  const profileSummary = dashboard.profileSummary ?? buildNotCollectedDashboardProfileSummary({
+    projectBaseDir,
+    runtimeBaseDir,
+    collectedAt: dashboard.generatedAt,
+  });
   const firstRunGuidance = Array.isArray(dashboard.firstRunGuidance) && dashboard.firstRunGuidance.length > 0
     ? dashboard.firstRunGuidance
     : buildFirstRunGuidance(statusComponents, runtimeBaseDir);
@@ -1032,7 +1132,7 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
       gap: 12px;
       margin-top: 16px;
     }
-    .banner-grid, .command-grid, .summary-grid, nav, .theme-samples {
+    .banner-grid, .command-grid, .summary-grid, .profile-grid, nav, .theme-samples {
       display: grid;
       gap: 12px;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -1096,6 +1196,7 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
     </header>
 
     <nav aria-label="Dashboard sections">
+      <a href="#profile-summary">Profile summary</a>
       <a href="#status-components">Status components</a>
       <a href="#doctor-checks">Doctor checks</a>
       <a href="#warnings">Warnings</a>
@@ -1116,6 +1217,14 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
         <div class="theme-sample" data-theme="dark">Dark theme default</div>
         <div class="theme-sample" data-theme="light">Light theme CSS path</div>
       </div>
+    </section>
+
+    <section id="profile-summary">
+      <div class="section-head">
+        <h2>Profile summary</h2>
+        <p>Read-only project profile evidence collected at ${escapeHtml(profileSummary.collectedAt)}.</p>
+      </div>
+      ${renderProfileSummary(profileSummary)}
     </section>
 
     <section id="first-run-guidance">

@@ -16,9 +16,11 @@ import { searchIndex } from './search-index.js';
 import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searchIndex as searchFileIndex } from './file-search-query.js';
 import { refreshSemanticIndexAfterManualScan } from './file-search-semantic-refresh.js';
 import { openGenerationClient } from './generation-client.js';
+import { createDashboardOpener, serializeDashboardOpenFailure } from './dashboard-open.js';
 import { observeQueue, renderQueueObserver } from './queue-observer.js';
 import { resolveDefaultRuntimeBaseDir } from './readonly-core.js';
 import { buildByomemDashboardModel, renderByomemDashboardHtml } from './dashboard.js';
+import { collectDashboardProfileSummary } from './dashboard-profile.js';
 import { buildByomemStatusReport } from './status-report.js';
 import { buildByomemDoctorReport } from './doctor.js';
 import { buildProcessCleanupReport } from './process-cleanup.js';
@@ -66,13 +68,51 @@ type CliOptions = {
 
 type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
 type NativeStoreRepairAuthority = 'sqlite' | 'json' | 'abort';
+type DashboardCliDependencies = {
+  createDashboardOpener?: typeof createDashboardOpener;
+};
 
 function usage(): { error: string; commands: string[] } {
-  return { error: 'Usage', commands: ['store', 'search', 'codex-session-capture', 'connect codex', 'remove codex', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'graph-status', 'graph-query', 'graph-explain', 'graph-path', 'graph-update', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'status', 'doctor', 'dashboard', 'cleanup', 'stop', 'generate', 'summarize', 'reason', 'chat'] };
+  return { error: 'Usage', commands: ['store', 'search', 'codex-session-capture', 'connect codex', 'remove codex', 'file-search', 'file-search-related', 'file-search-scan', 'file-search-status', 'file-search-semantic-refresh', 'file-search-polling-status', 'file-search-polling-enable', 'file-search-polling-disable', 'file-search-project-register', 'file-search-project-unregister', 'file-search-project-list', 'graph-status', 'graph-query', 'graph-explain', 'graph-path', 'graph-update', 'native-store-inspect', 'native-store-repair', 'prune', 'queue-observe', 'status', 'doctor', 'dashboard', 'dashboard-profile', 'cleanup', 'stop', 'generate', 'summarize', 'reason', 'chat'] };
 }
 
 function jsonError(message: string, command: string | null): void {
   console.error(JSON.stringify({ error: message, usage: usage(), command }));
+}
+
+function jsonDashboardOpenError(payload: {
+  command: string;
+  outputPath: string;
+  bytesWritten: number;
+  error: unknown;
+}): void {
+  const details = serializeDashboardOpenFailure(payload.error);
+  console.error(JSON.stringify({
+    error: details.message,
+    command: payload.command,
+    format: 'html',
+    outputPath: payload.outputPath,
+    bytesWritten: payload.bytesWritten,
+    opened: false,
+    opener: details,
+  }, null, 2));
+}
+
+function jsonDashboardWriteError(payload: {
+  command: string;
+  outputPath: string;
+  error: unknown;
+}): void {
+  const details = serializeDashboardOpenFailure(payload.error);
+  console.error(JSON.stringify({
+    error: details.message,
+    command: payload.command,
+    format: 'html',
+    outputPath: payload.outputPath,
+    bytesWritten: 0,
+    opened: false,
+    write: details,
+  }, null, 2));
 }
 
 function requireValue(value: string | undefined, flag: string): string {
@@ -279,7 +319,7 @@ function parseArgs(argv: string[]): {
     else if (arg === '--graph-json') { payload.graphJsonPath = requireValue(next, '--graph-json'); i += 1; }
     else if (arg === '--report') { payload.reportPath = requireValue(next, '--report'); i += 1; }
     else if (arg === '--graph-mode') { payload.graphMode = requireValue(next, '--graph-mode'); i += 1; }
-    else if (command === 'dashboard' && arg === '--format') { dashboard.format = requireDashboardValue(next, '--format'); i += 1; }
+    else if ((command === 'dashboard' || command === 'dashboard-profile') && arg === '--format') { dashboard.format = requireDashboardValue(next, '--format'); i += 1; }
     else if (command === 'dashboard' && arg === '--output') { dashboard.output = requireDashboardValue(next, '--output'); i += 1; }
     else if (command === 'dashboard' && arg === '--open') { dashboard.open = true; }
     else if (command === 'dashboard' && arg === '--serve') { dashboard.serve = true; }
@@ -437,7 +477,7 @@ function parseGraphUpdateOptions(payload: Record<string, string>, baseDir: strin
   };
 }
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+export async function main(argv: string[] = process.argv.slice(2), dependencies: DashboardCliDependencies = {}): Promise<void> {
   let parsed: ReturnType<typeof parseArgs>;
   try {
     parsed = parseArgs(argv);
@@ -599,11 +639,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       process.exitCode = 1;
       return;
     }
-    if (dashboard.open) {
-      jsonError('dashboard does not support --open', command);
-      process.exitCode = 1;
-      return;
-    }
     if (dashboard.serve) {
       jsonError('dashboard does not support --serve', command);
       process.exitCode = 1;
@@ -647,10 +682,40 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       process.exitCode = 1;
       return;
     }
-    if (format === 'html' && dashboard.output === undefined) {
+    const outputRaw = dashboard.output?.trim();
+    if (dashboard.open && format !== 'html') {
+      jsonError('dashboard --open requires --format html --output <path>', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (dashboard.open && outputRaw === undefined) {
+      jsonError('dashboard --open requires --format html --output <path>', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (format === 'html' && outputRaw === undefined) {
       jsonError('dashboard html output requires --output <path>', command);
       process.exitCode = 1;
       return;
+    }
+    if (dashboard.open && outputRaw === '-') {
+      jsonError('dashboard does not support --output -', command);
+      process.exitCode = 1;
+      return;
+    }
+    let outputPath: string | undefined;
+    if (format === 'html') {
+      if ((outputRaw ?? '') === '-') {
+        jsonError('dashboard does not support --output -', command);
+        process.exitCode = 1;
+        return;
+      }
+      outputPath = resolve(process.cwd(), outputRaw ?? '');
+      if (!existsSync(dirname(outputPath))) {
+        jsonError('Parent directory for --output must already exist', command);
+        process.exitCode = 1;
+        return;
+      }
     }
 
     const generatedAt = new Date();
@@ -663,39 +728,117 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     };
     const statusReport = buildByomemStatusReport(baseDirOptions);
     const doctorReport = buildByomemDoctorReport(baseDirOptions);
-    const dashboardModel = buildByomemDashboardModel({ statusReport, doctorReport, generatedAt });
+    const profileSummary = collectDashboardProfileSummary({
+      projectBaseDir: statusReport.projectBaseDir,
+      runtimeBaseDir: statusReport.runtimeBaseDir,
+      collectedAt: generatedAt,
+    });
+    const dashboardModel = buildByomemDashboardModel({ statusReport, doctorReport, generatedAt, profileSummary });
 
     if (format === 'json') {
       console.log(JSON.stringify(dashboardModel, null, 2));
       return;
     }
 
-    const outputRaw = dashboard.output?.trim() ?? '';
-    if (outputRaw === '') {
-      jsonError('Missing value for --output', command);
-      process.exitCode = 1;
-      return;
-    }
-    if (outputRaw === '-') {
-      jsonError('dashboard does not support --output -', command);
-      process.exitCode = 1;
-      return;
-    }
-    const outputPath = resolve(process.cwd(), outputRaw);
-    const outputDir = dirname(outputPath);
-    if (!existsSync(outputDir)) {
-      jsonError('Parent directory for --output must already exist', command);
-      process.exitCode = 1;
-      return;
-    }
     const html = renderByomemDashboardHtml(dashboardModel);
-    writeFileSync(outputPath, html, 'utf8');
-    console.log(JSON.stringify({
-      command: 'dashboard',
-      format: 'html',
-      outputPath,
-      bytesWritten: Buffer.byteLength(html, 'utf8'),
-    }, null, 2));
+    const resolvedOutputPath = outputPath ?? resolve(process.cwd(), outputRaw ?? '');
+    const bytesWritten = Buffer.byteLength(html, 'utf8');
+    try {
+      writeFileSync(resolvedOutputPath, html, 'utf8');
+    } catch (error) {
+      if (dashboard.open) {
+        jsonDashboardWriteError({
+          command: 'dashboard',
+          outputPath: resolvedOutputPath,
+          error,
+        });
+        process.exitCode = 1;
+        return;
+      }
+      throw error;
+    }
+    if (!dashboard.open) {
+      console.log(JSON.stringify({
+        command: 'dashboard',
+        format: 'html',
+        outputPath: resolvedOutputPath,
+        bytesWritten,
+      }, null, 2));
+      return;
+    }
+    const openDashboardHtml = (dependencies.createDashboardOpener ?? createDashboardOpener)();
+    try {
+      await openDashboardHtml(resolvedOutputPath);
+      console.log(JSON.stringify({
+        command: 'dashboard',
+        format: 'html',
+        outputPath: resolvedOutputPath,
+        bytesWritten,
+        opened: true,
+      }, null, 2));
+      return;
+    } catch (error) {
+      jsonDashboardOpenError({
+        command: 'dashboard',
+        outputPath: resolvedOutputPath,
+        bytesWritten,
+        error,
+      });
+      process.exitCode = 1;
+      return;
+    }
+    return;
+  }
+
+  if (command === 'dashboard-profile') {
+    if (flags.apply) {
+      jsonError('dashboard-profile is read-only; --apply is not supported', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.deleteData) {
+      jsonError('dashboard-profile is read-only; --delete-data is not supported', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.killProcesses) {
+      jsonError('dashboard-profile is read-only; --kill-processes is not supported', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.force) {
+      jsonError('dashboard-profile is read-only; --force is not supported', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.watch) {
+      jsonError('dashboard-profile does not support --watch', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.watchInterval !== undefined) {
+      jsonError('dashboard-profile does not support --watch-interval', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (positionals.length > 0) {
+      jsonError(`Unexpected positional argument ${positionals[0]} after dashboard-profile`, command);
+      process.exitCode = 1;
+      return;
+    }
+    const formatRaw = dashboard.format?.trim();
+    const format = formatRaw === undefined || formatRaw === '' ? 'json' : formatRaw.toLowerCase();
+    if (format !== 'json') {
+      jsonError('dashboard-profile only supports --format json', command);
+      process.exitCode = 1;
+      return;
+    }
+    const generatedAt = new Date();
+    console.log(JSON.stringify(collectDashboardProfileSummary({
+      projectBaseDir: flags.baseDirProvided ? options.baseDir : process.cwd(),
+      runtimeBaseDir: flags.baseDirProvided ? options.baseDir : resolveDefaultRuntimeBaseDir(process.env),
+      collectedAt: generatedAt,
+    }), null, 2));
     return;
   }
 

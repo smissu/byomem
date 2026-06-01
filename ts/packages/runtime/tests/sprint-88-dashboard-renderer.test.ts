@@ -105,6 +105,9 @@ describe('sprint 88 dashboard renderer', () => {
     expect(html).toContain('Runtime Dashboard');
     expect(html).toContain('2026-05-31T00:00:00.000Z');
     expect(html).toContain('Status components');
+    expect(html).toContain('Profile summary');
+    expect(html).toContain('File search profile');
+    expect(html).toContain('Embedding profile');
     expect(html).toContain('Doctor checks');
     expect(html).toContain('Warnings');
     expect(html).toContain('Suggested actions');

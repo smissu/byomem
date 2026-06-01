@@ -124,6 +124,7 @@ describe('sprint 88 dashboard CLI boundary', () => {
       outputPath,
       bytesWritten: expect.any(Number),
     });
+    expect(payload).not.toHaveProperty('opened');
     expect(existsSync(outputPath)).toBe(true);
     expect(readFileSync(outputPath, 'utf8')).toContain('<!doctype html>');
     expectEmptyRuntimeArtifacts(runtimeDir);
@@ -169,7 +170,7 @@ describe('sprint 88 dashboard CLI boundary', () => {
       },
       {
         argv: ['dashboard', '--base-dir', runtimeDir, '--open'],
-        error: 'dashboard does not support --open',
+        error: 'dashboard --open requires --format html --output <path>',
       },
       {
         argv: ['dashboard', '--base-dir', runtimeDir, '--serve'],

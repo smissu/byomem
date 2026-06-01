@@ -110,6 +110,7 @@ describe('sprint 92 dashboard CLI boundary', () => {
       outputPath,
       bytesWritten: expect.any(Number),
     });
+    expect(payload).not.toHaveProperty('opened');
     expect(readFileSync(outputPath, 'utf8')).toContain('<!doctype html>');
     expectNoRuntimeArtifacts(runtimeDir);
   });
@@ -137,7 +138,10 @@ describe('sprint 92 dashboard CLI boundary', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const cases = [
-      { argv: ['dashboard', '--base-dir', runtimeDir, '--open'], error: 'dashboard does not support --open' },
+      { argv: ['dashboard', '--base-dir', runtimeDir, '--open'], error: 'dashboard --open requires --format html --output <path>' },
+      { argv: ['dashboard', '--base-dir', runtimeDir, '--format', 'json', '--open'], error: 'dashboard --open requires --format html --output <path>' },
+      { argv: ['dashboard', '--base-dir', runtimeDir, '--format', 'html', '--open'], error: 'dashboard --open requires --format html --output <path>' },
+      { argv: ['dashboard', '--base-dir', runtimeDir, '--format', 'html', '--output', '-', '--open'], error: 'dashboard does not support --output -' },
       { argv: ['dashboard', '--base-dir', runtimeDir, '--serve'], error: 'dashboard does not support --serve' },
       { argv: ['dashboard', '--base-dir', runtimeDir, '--watch'], error: 'dashboard does not support --watch' },
       { argv: ['dashboard', '--base-dir', runtimeDir, '--refresh'], error: 'dashboard does not support --refresh' },

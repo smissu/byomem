@@ -277,6 +277,20 @@ describe('sprint 88 dashboard model contract', () => {
         runtimeBaseDir,
       },
       overallStatus: 'warn',
+      profileSummary: {
+        fileSearch: {
+          state: 'missing',
+          evidenceTier: 'not-collected',
+        },
+        graph: {
+          state: 'missing',
+          evidenceTier: 'not-collected',
+        },
+        embedding: {
+          readiness: 'missing',
+          evidenceTier: 'not-collected',
+        },
+      },
     });
     expect(report.statusComponents).toHaveLength(5);
     expect(report.statusComponents).toEqual([
