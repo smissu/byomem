@@ -120,7 +120,7 @@ npm run byomem:cli -- status
 node ts/packages/runtime/dist/cli.js status
 ```
 
-Repo-local commands are necessary but not sufficient for installed/global verification. When the global Pi/Codex BYOMem extension is available, verify the active Codex-facing MCP runtime-info surface without mutating runtime config. Expected evidence is `byomem_runtime_info.runtime.packageVersion === "0.1.17"` and `byomem_runtime_info.server.version === "0.1.17"` from the `byomem_runtime_info` tool result after the active runtime is rebuilt and restarted.
+Repo-local commands are necessary but not sufficient for installed/global verification. When the global Pi/Codex BYOMem extension is available, verify the active Codex-facing MCP runtime-info surface without mutating runtime config. Expected evidence is `byomem_runtime_info.runtime.packageVersion === "0.1.18"` and `byomem_runtime_info.server.version === "0.1.18"` from the `byomem_runtime_info` tool result after the active runtime is rebuilt and restarted.
 
 ## Extension Exposure Decision Record
 

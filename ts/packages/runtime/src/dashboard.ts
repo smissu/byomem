@@ -942,6 +942,18 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
     .hero, section, footer {
       padding: 20px;
     }
+    .hero {
+      position: relative;
+    }
+    .hero-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .hero-title {
+      min-width: 0;
+    }
     .hero h1 {
       margin: 0 0 8px;
       font-size: 24px;
@@ -1133,7 +1145,7 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
       gap: 12px;
       margin-top: 16px;
     }
-    .banner-grid, .command-grid, .summary-grid, .profile-grid, nav, .theme-samples {
+    .banner-grid, .command-grid, .summary-grid, .profile-grid, nav {
       display: grid;
       gap: 12px;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -1148,28 +1160,29 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
     }
     .theme-switch {
       display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 16px;
+      flex: 0 0 auto;
+      gap: 6px;
     }
     .theme-switch a {
-      padding: 8px 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      inline-size: 34px;
+      block-size: 34px;
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: 999px;
       background: var(--panel-soft);
+      color: var(--accent);
       text-decoration: none;
+      font-size: 16px;
+      line-height: 1;
     }
-    .theme-sample {
-      padding: 12px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: var(--panel-soft);
+    .theme-switch a:hover {
+      border-color: var(--accent);
     }
-    .theme-sample[data-theme="light"] {
-      color-scheme: light;
-      color: #1f2937;
-      background: #fbfcfe;
-      border-color: #d0d5dd;
+    .theme-switch a:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
     }
     code {
       white-space: break-spaces;
@@ -1183,9 +1196,17 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
   <div id="theme-light" class="theme-target" aria-hidden="true"></div>
   <main>
     <header class="hero">
-      <h1>Byomem Runtime Dashboard</h1>
-      <p class="lead">Read-only snapshot of runtime status and doctor evidence.</p>
-      <p class="lead">Generated at <time datetime="${escapeHtml(identityMeta.generatedAt)}">${escapeHtml(identityMeta.generatedAt)}</time>. Overall status: <strong>${escapeHtml(identityMeta.overallStatus)}</strong>.</p>
+      <div class="hero-header">
+        <div class="hero-title">
+          <h1>Byomem Runtime Dashboard</h1>
+          <p class="lead">Read-only snapshot of runtime status and doctor evidence.</p>
+          <p class="lead">Generated at <time datetime="${escapeHtml(identityMeta.generatedAt)}">${escapeHtml(identityMeta.generatedAt)}</time>. Overall status: <strong>${escapeHtml(identityMeta.overallStatus)}</strong>.</p>
+        </div>
+        <div class="theme-switch" aria-label="Theme mode">
+          <a href="#theme-dark" aria-label="Use dark theme" title="Dark theme">☾</a>
+          <a href="#theme-light" aria-label="Use light theme" title="Light theme">☀</a>
+        </div>
+      </div>
       <div class="kpis">
         <div class="kpi"><span>Runtime version</span><span class="value">${escapeHtml(identityMeta.runtimeVersion)}</span></div>
         <div class="kpi"><span>Project base dir</span><span class="value"><code>${escapeHtml(identityMeta.projectBaseDir)}</code></span></div>
@@ -1210,14 +1231,6 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
         <p>Static feature evidence without live runtime probes.</p>
       </div>
       ${renderCapabilityBanners(capabilityBanners)}
-      <div class="theme-switch" aria-label="Theme mode">
-        <a href="#theme-dark">Dark</a>
-        <a href="#theme-light">Light</a>
-      </div>
-      <div class="theme-samples" aria-label="Theme samples">
-        <div class="theme-sample" data-theme="dark">Dark theme default</div>
-        <div class="theme-sample" data-theme="light">Light theme CSS path</div>
-      </div>
     </section>
 
     <section id="profile-summary">

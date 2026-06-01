@@ -320,11 +320,11 @@ describe('sprint 94 dashboard profile summary', () => {
     const html = renderByomemDashboardHtml({
       schemaVersion: 1,
       command: 'dashboard',
-      runtimeVersion: '0.1.17',
+      runtimeVersion: '0.1.18',
       generatedAt: '2026-06-01T00:00:00.000Z',
       overallStatus: 'pass',
       identityMeta: {
-        runtimeVersion: '0.1.17',
+        runtimeVersion: '0.1.18',
         projectBaseDir: projectDir,
         runtimeBaseDir: runtimeDir,
         generatedAt: '2026-06-01T00:00:00.000Z',
