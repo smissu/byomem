@@ -1177,6 +1177,15 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
       font-size: 16px;
       line-height: 1;
     }
+    .theme-switch .theme-to-dark {
+      display: none;
+    }
+    html:has(#theme-light:target) .theme-switch .theme-to-light {
+      display: none;
+    }
+    html:has(#theme-light:target) .theme-switch .theme-to-dark {
+      display: inline-flex;
+    }
     .theme-switch a:hover {
       border-color: var(--accent);
     }
@@ -1203,8 +1212,8 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
           <p class="lead">Generated at <time datetime="${escapeHtml(identityMeta.generatedAt)}">${escapeHtml(identityMeta.generatedAt)}</time>. Overall status: <strong>${escapeHtml(identityMeta.overallStatus)}</strong>.</p>
         </div>
         <div class="theme-switch" aria-label="Theme mode">
-          <a href="#theme-dark" aria-label="Use dark theme" title="Dark theme">☾</a>
-          <a href="#theme-light" aria-label="Use light theme" title="Light theme">☀</a>
+          <a class="theme-to-light" href="#theme-light" aria-label="Use light theme" title="Light theme">☀</a>
+          <a class="theme-to-dark" href="#theme-dark" aria-label="Use dark theme" title="Dark theme">☾</a>
         </div>
       </div>
       <div class="kpis">

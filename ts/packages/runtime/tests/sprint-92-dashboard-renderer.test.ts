@@ -74,6 +74,10 @@ describe('sprint 92 dashboard renderer RED contracts', () => {
     expect(html).toContain('aria-label="Use light theme"');
     expect(html).toContain('title="Dark theme"');
     expect(html).toContain('title="Light theme"');
+    expect(html).toContain('class="theme-to-light"');
+    expect(html).toContain('class="theme-to-dark"');
+    expect(html).toContain('html:has(#theme-light:target) .theme-switch .theme-to-light');
+    expect(html).toContain('html:has(#theme-light:target) .theme-switch .theme-to-dark');
     expect(html).toContain('html:has(#theme-light:target)');
     expect(html).toContain(':root[data-theme="light"]');
     expect(html).not.toContain('Dark theme default');
