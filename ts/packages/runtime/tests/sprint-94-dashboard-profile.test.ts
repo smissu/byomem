@@ -119,9 +119,12 @@ function seedGraphDb(projectDir: string, runtimeDir: string): void {
 
 describe('sprint 94 dashboard profile summary', () => {
   const dirs: string[] = [];
+  const originalRuntimeBaseDir = process.env.BYOMEM_RUNTIME_BASE_DIR;
 
   afterEach(() => {
     while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+    if (originalRuntimeBaseDir === undefined) delete process.env.BYOMEM_RUNTIME_BASE_DIR;
+    else process.env.BYOMEM_RUNTIME_BASE_DIR = originalRuntimeBaseDir;
     vi.restoreAllMocks();
     process.exitCode = undefined;
   });
@@ -211,27 +214,60 @@ describe('sprint 94 dashboard profile summary', () => {
   });
 
   it('exposes profileSummary in dashboard JSON and the read-only dashboard-profile CLI surface', async () => {
+    const projectDir = tempDir('byomem-profile-project-');
     const runtimeDir = tempDir('byomem-profile-runtime-');
-    dirs.push(runtimeDir);
+    dirs.push(projectDir, runtimeDir);
+    process.env.BYOMEM_RUNTIME_BASE_DIR = runtimeDir;
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await main(['dashboard', '--base-dir', runtimeDir, '--format', 'json']);
+    await main(['dashboard', '--base-dir', projectDir, '--format', 'json']);
     const dashboardPayload = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}')) as { profileSummary?: unknown };
     expect(dashboardPayload.profileSummary).toMatchObject({
+      projectBaseDir: projectDir,
+      runtimeBaseDir: runtimeDir,
       fileSearch: { state: 'missing', evidenceTier: 'not-collected' },
       graph: { state: 'missing', evidenceTier: 'not-collected' },
       embedding: { readiness: 'missing', evidenceTier: 'not-collected' },
     });
     expectNoRuntimeArtifacts(runtimeDir);
 
-    await main(['dashboard-profile', '--base-dir', runtimeDir, '--format', 'json']);
+    await main(['dashboard-profile', '--base-dir', projectDir, '--format', 'json']);
     const profilePayload = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}')) as { fileSearch?: unknown; graph?: unknown; embedding?: unknown };
     expect(profilePayload).toMatchObject({
+      projectBaseDir: projectDir,
+      runtimeBaseDir: runtimeDir,
       fileSearch: { state: 'missing' },
       graph: { state: 'missing' },
       embedding: { state: 'missing' },
     });
     expectNoRuntimeArtifacts(runtimeDir);
+  });
+
+  it('uses --base-dir as the project root while reading profile evidence from the runtime store', async () => {
+    const projectDir = tempDir('byomem-profile-project-');
+    const runtimeDir = tempDir('byomem-profile-runtime-');
+    dirs.push(projectDir, runtimeDir);
+    process.env.BYOMEM_RUNTIME_BASE_DIR = runtimeDir;
+    seedFileSearchDb(projectDir, runtimeDir);
+    seedGraphDb(projectDir, runtimeDir);
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await main(['dashboard-profile', '--base-dir', projectDir, '--format', 'json']);
+
+    const profilePayload = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}')) as {
+      projectBaseDir?: string;
+      runtimeBaseDir?: string;
+      fileSearch?: { indexedFileCount?: number; chunkCount?: number };
+      graph?: { nodeCount?: number; edgeCount?: number };
+      embedding?: { readiness?: string; embeddedChunkCount?: number };
+    };
+    expect(profilePayload.projectBaseDir).toBe(projectDir);
+    expect(profilePayload.runtimeBaseDir).toBe(runtimeDir);
+    expect(profilePayload.fileSearch).toMatchObject({ indexedFileCount: 2, chunkCount: 3 });
+    expect(profilePayload.graph).toMatchObject({ nodeCount: 2, edgeCount: 1 });
+    expect(profilePayload.embedding).toMatchObject({ readiness: 'refresh-needed', embeddedChunkCount: 2 });
+    expect(existsSync(join(projectDir, 'byomem-file-search.sqlite'))).toBe(false);
+    expect(existsSync(join(projectDir, 'byomem-graph.sqlite'))).toBe(false);
   });
 
   it('renders profile summary as static HTML without executable controls or remote assets', () => {
@@ -262,11 +298,11 @@ describe('sprint 94 dashboard profile summary', () => {
     const html = renderByomemDashboardHtml({
       schemaVersion: 1,
       command: 'dashboard',
-      runtimeVersion: '0.1.15',
+      runtimeVersion: '0.1.16',
       generatedAt: '2026-06-01T00:00:00.000Z',
       overallStatus: 'pass',
       identityMeta: {
-        runtimeVersion: '0.1.15',
+        runtimeVersion: '0.1.16',
         projectBaseDir: projectDir,
         runtimeBaseDir: runtimeDir,
         generatedAt: '2026-06-01T00:00:00.000Z',

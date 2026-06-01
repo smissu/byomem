@@ -723,7 +723,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       env: process.env,
       cwd: process.cwd(),
       projectBaseDir: flags.baseDirProvided ? options.baseDir : undefined,
-      runtimeBaseDir: flags.baseDirProvided ? options.baseDir : resolveDefaultRuntimeBaseDir(process.env),
+      runtimeBaseDir: resolveDefaultRuntimeBaseDir(process.env),
       generatedAt,
     };
     const statusReport = buildByomemStatusReport(baseDirOptions);
@@ -836,7 +836,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
     const generatedAt = new Date();
     console.log(JSON.stringify(collectDashboardProfileSummary({
       projectBaseDir: flags.baseDirProvided ? options.baseDir : process.cwd(),
-      runtimeBaseDir: flags.baseDirProvided ? options.baseDir : resolveDefaultRuntimeBaseDir(process.env),
+      runtimeBaseDir: resolveDefaultRuntimeBaseDir(process.env),
       collectedAt: generatedAt,
     }), null, 2));
     return;
