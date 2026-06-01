@@ -732,6 +732,9 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       projectBaseDir: statusReport.projectBaseDir,
       runtimeBaseDir: statusReport.runtimeBaseDir,
       collectedAt: generatedAt,
+      embeddingBaseUrl: options.embeddingBaseUrl,
+      embeddingModel: options.embeddingModel,
+      embeddingDimension: options.embeddingDimension,
     });
     const dashboardModel = buildByomemDashboardModel({ statusReport, doctorReport, generatedAt, profileSummary });
 
@@ -838,6 +841,9 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       projectBaseDir: flags.baseDirProvided ? options.baseDir : process.cwd(),
       runtimeBaseDir: resolveDefaultRuntimeBaseDir(process.env),
       collectedAt: generatedAt,
+      embeddingBaseUrl: options.embeddingBaseUrl,
+      embeddingModel: options.embeddingModel,
+      embeddingDimension: options.embeddingDimension,
     }), null, 2));
     return;
   }

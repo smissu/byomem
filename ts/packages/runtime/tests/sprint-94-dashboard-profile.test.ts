@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { main } from '../src/cli.js';
 import { collectDashboardProfileSummary } from '../src/dashboard-profile.js';
 import { renderByomemDashboardHtml } from '../src/dashboard.js';
+import { FILE_SEARCH_EMBEDDING_IDENTITY_VERSION } from '../src/embedding-client.js';
 import { resolveFileSearchProjectKey } from '../src/file-search-db.js';
 import { openGraphDb } from '../src/graph-db.js';
 
@@ -108,8 +109,8 @@ function seedFileSearchDb(projectDir: string, runtimeDir: string): void {
     INSERT INTO indexed_chunk_embeddings(chunk_id, project_key, file_record_id, chunk_index, chunk_hash, text_hash, model, configured_dimension, embedding, dimension, provider_key, effective_dimension, identity_version, status, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  insertEmbedding.run('chunk-1', projectKey, 'record-1', 0, 'hash-1', 'text-1', 'minishlab/potion-code-16M', 256, Buffer.from([1, 2, 3]), 256, 'local:model2vec:minishlab/potion-code-16M', 256, 'v1', 'ready', now, now);
-  insertEmbedding.run('chunk-2', projectKey, 'record-1', 1, 'hash-2', 'text-2', 'minishlab/potion-code-16M', 256, Buffer.from([1, 2, 3]), 256, 'local:model2vec:minishlab/potion-code-16M', 256, 'v1', 'ready', now, now);
+  insertEmbedding.run('chunk-1', projectKey, 'record-1', 0, 'hash-1', 'text-1', 'minishlab/potion-code-16M', 256, Buffer.from([1, 2, 3]), 256, 'local:model2vec:minishlab/potion-code-16M', 256, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, 'ready', now, now);
+  insertEmbedding.run('chunk-2', projectKey, 'record-1', 1, 'hash-2', 'text-2', 'minishlab/potion-code-16M', 256, Buffer.from([1, 2, 3]), 256, 'local:model2vec:minishlab/potion-code-16M', 256, FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, 'ready', now, now);
   db.prepare(`
     INSERT INTO file_search_scanner_status(project_key, state, run_id, trigger, base_dir, started_at, completed_at, duration_ms, progress_json, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -320,11 +321,11 @@ describe('sprint 94 dashboard profile summary', () => {
     const html = renderByomemDashboardHtml({
       schemaVersion: 1,
       command: 'dashboard',
-      runtimeVersion: '0.1.18',
+      runtimeVersion: '0.1.19',
       generatedAt: '2026-06-01T00:00:00.000Z',
       overallStatus: 'pass',
       identityMeta: {
-        runtimeVersion: '0.1.18',
+        runtimeVersion: '0.1.19',
         projectBaseDir: projectDir,
         runtimeBaseDir: runtimeDir,
         generatedAt: '2026-06-01T00:00:00.000Z',

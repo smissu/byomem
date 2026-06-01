@@ -2,12 +2,38 @@ import Database from 'better-sqlite3';
 import { existsSync } from 'node:fs';
 import { extname, resolve } from 'node:path';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
+import { FILE_SEARCH_EMBEDDING_IDENTITY_VERSION, resolveEmbeddingProviderKey, SEMBLE_EMBEDDING_MODEL } from './embedding-client.js';
+import { DEFAULT_EMBEDDING_DIMENSION } from './embedding-vector.js';
 import { openGraphDb, resolveDefaultGraphDbPath, type GraphStatus } from './graph-db.js';
 import { resolveDefaultFileSearchDbPath, resolveFileSearchProjectKey } from './file-search-db.js';
 
 export type DashboardProfileEvidenceState = 'ready' | 'degraded' | 'missing' | 'unavailable' | 'not-collected';
 export type DashboardProfileEvidenceSource = 'db-read-only' | 'injected' | 'missing' | 'not-collected' | 'unavailable';
 export type DashboardEmbeddingReadiness = 'ready' | 'refresh-needed' | 'disabled' | 'incompatible' | 'missing' | 'unavailable' | 'not-collected';
+export type DashboardFileSearchScannerState = 'idle' | 'running' | 'completed' | 'failed' | 'abandoned' | 'missing' | 'not-collected' | 'unavailable';
+export type DashboardFileSearchHotIndexState = 'not-collected' | 'injected' | 'cold' | 'hydrating' | 'ready' | 'stale' | 'building' | 'failed';
+export type DashboardFileSearchHotIndexSource = 'not-collected' | 'injected';
+
+export type DashboardFileSearchHealth = {
+  scannerState: DashboardFileSearchScannerState;
+  scannerTrigger: string | null;
+  scannerStartedAt: string | null;
+  scannerCompletedAt: string | null;
+  scannerUpdatedAt: string | null;
+  lastIndexedAt: string | null;
+  indexedFileCount: number | null;
+  indexedChunkCount: number | null;
+  embeddedChunkCount: number | null;
+  missingChunkCount: number | null;
+  failedChunkCount: number | null;
+  embeddingReadiness: DashboardEmbeddingReadiness;
+  embeddingModel: string | null;
+  embeddingProviderKey: string | null;
+  embeddingDimensions: Array<{ dimension: number; chunks: number }>;
+  hotIndexState: DashboardFileSearchHotIndexState;
+  hotIndexSource: DashboardFileSearchHotIndexSource;
+  warnings: string[];
+};
 
 export type DashboardFileSearchProfile = {
   state: DashboardProfileEvidenceState;
@@ -20,6 +46,7 @@ export type DashboardFileSearchProfile = {
   languageCounts: Record<string, number>;
   summary: string;
   warnings: string[];
+  health: DashboardFileSearchHealth;
 };
 
 export type DashboardGraphProfile = {
@@ -67,12 +94,25 @@ export type CollectDashboardProfileSummaryOptions = {
   collectedAt?: Date | string;
   fileSearchDbPath?: string;
   graphDbPath?: string;
+  embeddingBaseUrl?: string;
+  embeddingModel?: string;
+  embeddingDimension?: number;
   injected?: Partial<Pick<DashboardProfileSummary, 'fileSearch' | 'graph' | 'embedding'>>;
 };
 
 const MAX_LANGUAGE_COUNTS = 16;
 const MAX_EMBEDDING_DIMENSIONS = 8;
 const NOT_COLLECTED_SUMMARY = 'Not collected by static dashboard generation.';
+
+function expectedEmbeddingModel(options: CollectDashboardProfileSummaryOptions): string {
+  return options.embeddingModel ?? SEMBLE_EMBEDDING_MODEL;
+}
+
+function expectedEmbeddingConfiguredDimension(options: CollectDashboardProfileSummaryOptions): number {
+  if (options.embeddingDimension !== undefined) return options.embeddingDimension;
+  if (options.embeddingBaseUrl) return 0;
+  return expectedEmbeddingModel(options) === SEMBLE_EMBEDDING_MODEL ? 256 : DEFAULT_EMBEDDING_DIMENSION;
+}
 
 function normalizeCollectedAt(value: Date | string | undefined): string {
   if (value === undefined) return new Date().toISOString();
@@ -94,6 +134,49 @@ function tableExists(db: BetterSqliteDatabase, table: string): boolean {
   return Boolean(row?.name);
 }
 
+function columnExists(db: BetterSqliteDatabase, table: string, column: string): boolean {
+  const rows = db.prepare(`PRAGMA table_info(${JSON.stringify(table)})`).all() as Array<{ name?: string }>;
+  return rows.some((row) => row.name === column);
+}
+
+function tableHasColumns(db: BetterSqliteDatabase, table: string, columns: string[]): boolean {
+  return columns.every((column) => columnExists(db, table, column));
+}
+
+function defaultFileSearchHealth(overrides: Partial<DashboardFileSearchHealth> = {}): DashboardFileSearchHealth {
+  return {
+    scannerState: 'not-collected',
+    scannerTrigger: null,
+    scannerStartedAt: null,
+    scannerCompletedAt: null,
+    scannerUpdatedAt: null,
+    lastIndexedAt: null,
+    indexedFileCount: null,
+    indexedChunkCount: null,
+    embeddedChunkCount: null,
+    missingChunkCount: null,
+    failedChunkCount: null,
+    embeddingReadiness: 'not-collected',
+    embeddingModel: null,
+    embeddingProviderKey: null,
+    embeddingDimensions: [],
+    hotIndexState: 'not-collected',
+    hotIndexSource: 'not-collected',
+    warnings: [],
+    ...overrides,
+  };
+}
+
+function normalizeScannerState(value: unknown): DashboardFileSearchScannerState {
+  return value === 'idle'
+    || value === 'running'
+    || value === 'completed'
+    || value === 'failed'
+    || value === 'abandoned'
+    ? value
+    : 'unavailable';
+}
+
 function missingFileSearchProfile(dbPath: string): DashboardFileSearchProfile {
   return {
     state: 'missing',
@@ -106,6 +189,10 @@ function missingFileSearchProfile(dbPath: string): DashboardFileSearchProfile {
     languageCounts: {},
     summary: 'File-search database is missing; no profile evidence was collected.',
     warnings: [],
+    health: defaultFileSearchHealth({
+      scannerState: 'missing',
+      embeddingReadiness: 'missing',
+    }),
   };
 }
 
@@ -155,6 +242,11 @@ function unavailableFileSearchProfile(dbPath: string, reason: string): Dashboard
     languageCounts: {},
     summary: NOT_COLLECTED_SUMMARY,
     warnings: [reason],
+    health: defaultFileSearchHealth({
+      scannerState: 'unavailable',
+      embeddingReadiness: 'unavailable',
+      warnings: [reason],
+    }),
   };
 }
 
@@ -271,9 +363,24 @@ function collectFileSearchAndEmbedding(options: CollectDashboardProfileSummaryOp
     const indexedFileCount = countRow(db, 'SELECT COUNT(*) AS count FROM indexed_files WHERE project_key = ?', projectKey);
     const chunkCount = countRow(db, 'SELECT COUNT(*) AS count FROM indexed_chunks WHERE project_key = ?', projectKey);
     const paths = db.prepare('SELECT path FROM indexed_files WHERE project_key = ? ORDER BY path ASC').all(projectKey) as Array<{ path: string }>;
-    const scannerStatus = tableExists(db, 'file_search_scanner_status')
-      ? db.prepare('SELECT completed_at AS completedAt, updated_at AS updatedAt FROM file_search_scanner_status WHERE project_key = ?').get(projectKey) as { completedAt?: string | null; updatedAt?: string | null } | undefined
+    const scannerStatusTableAvailable = tableExists(db, 'file_search_scanner_status');
+    const scannerStatusColumnsAvailable = scannerStatusTableAvailable
+      && tableHasColumns(db, 'file_search_scanner_status', ['state', 'trigger', 'started_at', 'completed_at', 'updated_at']);
+    const scannerStatus = scannerStatusColumnsAvailable
+      ? db.prepare(`
+          SELECT state, trigger, started_at AS startedAt, completed_at AS completedAt, updated_at AS updatedAt
+          FROM file_search_scanner_status
+          WHERE project_key = ?
+        `).get(projectKey) as { state?: string | null; trigger?: string | null; startedAt?: string | null; completedAt?: string | null; updatedAt?: string | null } | undefined
       : undefined;
+    const lastIndexedAt = scannerStatus?.completedAt ?? scannerStatus?.updatedAt ?? null;
+    const scannerWarnings = [
+      ...(scannerStatusTableAvailable && !scannerStatusColumnsAvailable ? ['File-search scanner status schema is missing one or more read-only health columns.'] : []),
+      ...(!scannerStatusTableAvailable ? ['File-search scanner status table is not available in the read-only profile snapshot.'] : []),
+      ...(scannerStatus && scannerStatus.state === 'failed' ? ['The last file-search scanner run failed.'] : []),
+      ...(scannerStatus && scannerStatus.state === 'abandoned' ? ['The last file-search scanner run was abandoned.'] : []),
+      ...(scannerStatus && scannerStatus.state === 'running' ? ['The file-search scanner was running when this snapshot was collected.'] : []),
+    ];
     const fileSearch: DashboardFileSearchProfile = {
       state: 'ready',
       source: 'db-read-only',
@@ -281,42 +388,124 @@ function collectFileSearchAndEmbedding(options: CollectDashboardProfileSummaryOp
       dbPath,
       indexedFileCount,
       chunkCount,
-      lastIndexedAt: scannerStatus?.completedAt ?? scannerStatus?.updatedAt ?? null,
+      lastIndexedAt,
       languageCounts: boundLanguageCounts(paths.map((row) => row.path)),
       summary: `${indexedFileCount} indexed file${indexedFileCount === 1 ? '' : 's'} and ${chunkCount} chunk${chunkCount === 1 ? '' : 's'} collected from a read-only SQLite connection.`,
       warnings: [],
+      health: defaultFileSearchHealth({
+        scannerState: scannerStatus ? normalizeScannerState(scannerStatus.state) : scannerStatusTableAvailable ? 'not-collected' : 'not-collected',
+        scannerTrigger: scannerStatus?.trigger ?? null,
+        scannerStartedAt: scannerStatus?.startedAt ?? null,
+        scannerCompletedAt: scannerStatus?.completedAt ?? null,
+        scannerUpdatedAt: scannerStatus?.updatedAt ?? null,
+        lastIndexedAt,
+        indexedFileCount,
+        indexedChunkCount: chunkCount,
+        warnings: scannerWarnings,
+      }),
     };
 
     if (!tableExists(db, 'indexed_chunk_embeddings')) {
+      const reason = 'File-search database does not expose the indexed_chunk_embeddings read-only schema.';
+      fileSearch.health = {
+        ...fileSearch.health,
+        embeddingReadiness: 'missing',
+        warnings: [...fileSearch.health.warnings, reason],
+      };
       return {
         fileSearch,
-        embedding: unavailableEmbeddingProfile('File-search database does not expose the indexed_chunk_embeddings read-only schema.'),
+        embedding: unavailableEmbeddingProfile(reason),
       };
     }
 
-    const embeddedChunkCount = countRow(db, "SELECT COUNT(*) AS count FROM indexed_chunk_embeddings WHERE project_key = ? AND status = 'ready'", projectKey);
-    const failedChunkCount = countRow(db, "SELECT COUNT(*) AS count FROM indexed_chunk_embeddings WHERE project_key = ? AND status = 'failed'", projectKey);
+    const hasProviderKey = columnExists(db, 'indexed_chunk_embeddings', 'provider_key');
+    const hasConfiguredDimension = columnExists(db, 'indexed_chunk_embeddings', 'configured_dimension');
+    const hasIdentityVersion = columnExists(db, 'indexed_chunk_embeddings', 'identity_version');
+    const configuredEmbeddingModel = expectedEmbeddingModel(options);
+    const expectedEmbeddingProviderKey = resolveEmbeddingProviderKey(options.embeddingBaseUrl, configuredEmbeddingModel);
+    const expectedEmbeddingDimension = expectedEmbeddingConfiguredDimension(options);
+    const requiredEmbeddingColumns = ['chunk_id', 'project_key', 'chunk_hash', 'model', 'dimension', 'status'];
+    if (!tableHasColumns(db, 'indexed_chunk_embeddings', requiredEmbeddingColumns)) {
+      const reason = 'File-search embedding schema is missing one or more read-only health columns.';
+      fileSearch.health = {
+        ...fileSearch.health,
+        embeddingReadiness: 'unavailable',
+        warnings: [...fileSearch.health.warnings, reason],
+      };
+      return { fileSearch, embedding: unavailableEmbeddingProfile(reason) };
+    }
+
+    const compatibleReadySql = `
+      e.project_key = c.project_key
+      AND e.status = 'ready'
+      AND e.chunk_hash = c.chunk_hash
+      AND e.model = ?
+      AND ${hasProviderKey ? 'e.provider_key = ?' : '1 = 0'}
+      AND ${hasConfiguredDimension ? 'e.configured_dimension = ? AND (? = 0 OR e.dimension = ?)' : '1 = 0'}
+      AND ${hasIdentityVersion ? 'e.identity_version = ?' : '1 = 0'}
+    `;
+    const compatibleReadyParams = [
+      configuredEmbeddingModel,
+      ...(hasProviderKey ? [expectedEmbeddingProviderKey] : []),
+      ...(hasConfiguredDimension ? [expectedEmbeddingDimension, expectedEmbeddingDimension, expectedEmbeddingDimension] : []),
+      ...(hasIdentityVersion ? [FILE_SEARCH_EMBEDDING_IDENTITY_VERSION] : []),
+    ];
+    const compatibleIdentitySql = `
+      e.project_key = c.project_key
+      AND e.status IN ('ready', 'failed')
+      AND e.chunk_hash = c.chunk_hash
+      AND e.model = ?
+      AND ${hasProviderKey ? 'e.provider_key = ?' : '1 = 0'}
+      AND ${hasConfiguredDimension ? 'e.configured_dimension = ?' : '1 = 0'}
+      AND ${hasIdentityVersion ? 'e.identity_version = ?' : '1 = 0'}
+    `;
+    const compatibleIdentityParams = [
+      configuredEmbeddingModel,
+      ...(hasProviderKey ? [expectedEmbeddingProviderKey] : []),
+      ...(hasConfiguredDimension ? [expectedEmbeddingDimension] : []),
+      ...(hasIdentityVersion ? [FILE_SEARCH_EMBEDDING_IDENTITY_VERSION] : []),
+    ];
+    const embeddedChunkCount = countRow(db, `
+      SELECT COUNT(*) AS count
+      FROM indexed_chunks c
+      JOIN indexed_chunk_embeddings e ON e.chunk_id = c.id
+      WHERE c.project_key = ? AND ${compatibleReadySql}
+    `, projectKey, ...compatibleReadyParams);
+    const failedChunkCount = countRow(db, `
+      SELECT COUNT(*) AS count
+      FROM indexed_chunk_embeddings
+      WHERE project_key = ? AND status = 'failed'
+        AND model = ?
+        AND ${hasProviderKey ? 'provider_key = ?' : '1 = 0'}
+        AND ${hasConfiguredDimension ? 'configured_dimension = ?' : '1 = 0'}
+        AND ${hasIdentityVersion ? 'identity_version = ?' : '1 = 0'}
+    `, projectKey, configuredEmbeddingModel, ...(hasProviderKey ? [expectedEmbeddingProviderKey] : []), ...(hasConfiguredDimension ? [expectedEmbeddingDimension] : []), ...(hasIdentityVersion ? [FILE_SEARCH_EMBEDDING_IDENTITY_VERSION] : []));
     const missingChunkCount = countRow(db, `
       SELECT COUNT(*) AS count
       FROM indexed_chunks c
-      WHERE c.project_key = ? AND NOT EXISTS (SELECT 1 FROM indexed_chunk_embeddings e WHERE e.chunk_id = c.id)
-    `, projectKey);
+      WHERE c.project_key = ? AND NOT EXISTS (
+        SELECT 1
+        FROM indexed_chunk_embeddings e
+        WHERE e.chunk_id = c.id AND ${compatibleIdentitySql}
+      )
+    `, projectKey, ...compatibleIdentityParams);
     const identity = db.prepare(`
-      SELECT model, provider_key AS providerKey, COUNT(*) AS count
+      SELECT model, ${hasProviderKey ? 'provider_key AS providerKey' : 'NULL AS providerKey'}, COUNT(*) AS count
       FROM indexed_chunk_embeddings
       WHERE project_key = ?
-      GROUP BY model, provider_key
+      GROUP BY model, ${hasProviderKey ? 'provider_key' : 'providerKey'}
       ORDER BY count DESC, model ASC
       LIMIT 1
     `).get(projectKey) as { model?: string; providerKey?: string | null } | undefined;
     const dimensions = db.prepare(`
       SELECT dimension, COUNT(*) AS chunks
-      FROM indexed_chunk_embeddings
-      WHERE project_key = ? AND status = 'ready'
-      GROUP BY dimension
+      FROM indexed_chunks c
+      JOIN indexed_chunk_embeddings e ON e.chunk_id = c.id
+      WHERE c.project_key = ? AND ${compatibleReadySql}
+      GROUP BY e.dimension
       ORDER BY chunks DESC, dimension ASC
       LIMIT ?
-    `).all(projectKey, MAX_EMBEDDING_DIMENSIONS) as Array<{ dimension: number; chunks: number }>;
+    `).all(projectKey, ...compatibleReadyParams, MAX_EMBEDDING_DIMENSIONS) as Array<{ dimension: number; chunks: number }>;
     const readiness: DashboardEmbeddingReadiness = chunkCount === 0
       ? 'not-collected'
       : failedChunkCount > 0
@@ -326,6 +515,23 @@ function collectFileSearchAndEmbedding(options: CollectDashboardProfileSummaryOp
           : embeddedChunkCount >= chunkCount
             ? 'ready'
             : 'refresh-needed';
+    const identityWarnings = [
+      ...(!hasProviderKey ? ['Embedding provider identity is not available in the read-only schema.'] : []),
+      ...(!hasConfiguredDimension ? ['Embedding configured dimension is not available in the read-only schema.'] : []),
+      ...(!hasIdentityVersion ? ['Embedding identity version is not available in the read-only schema.'] : []),
+    ];
+    const embeddingWarnings = readiness === 'ready' ? [] : ['Some indexed chunks are missing current ready embeddings.', ...identityWarnings];
+    fileSearch.health = {
+      ...fileSearch.health,
+      embeddedChunkCount,
+      missingChunkCount,
+      failedChunkCount,
+      embeddingReadiness: readiness,
+      embeddingModel: identity?.model ?? null,
+      embeddingProviderKey: identity?.providerKey ?? null,
+      embeddingDimensions: dimensions,
+      warnings: [...fileSearch.health.warnings, ...embeddingWarnings],
+    };
     return {
       fileSearch,
       embedding: {
@@ -342,7 +548,7 @@ function collectFileSearchAndEmbedding(options: CollectDashboardProfileSummaryOp
         summary: readiness === 'ready'
           ? 'Embedding readiness is current for indexed chunks in the read-only profile snapshot.'
           : 'Embedding readiness needs review based on read-only indexed chunk evidence.',
-        warnings: readiness === 'ready' ? [] : ['Some indexed chunks are missing current ready embeddings.'],
+        warnings: embeddingWarnings,
       },
     };
   } catch (error) {

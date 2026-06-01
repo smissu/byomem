@@ -7,7 +7,7 @@ import type {
   DoctorSuggestedAction,
   DoctorOverallStatus,
 } from './doctor.js';
-import { buildNotCollectedDashboardProfileSummary, type DashboardProfileSummary } from './dashboard-profile.js';
+import { buildNotCollectedDashboardProfileSummary, type DashboardFileSearchHealth, type DashboardProfileSummary } from './dashboard-profile.js';
 import type { StatusComponentState, StatusReport } from './status-report.js';
 
 export type DashboardSchemaVersion = 1;
@@ -636,7 +636,37 @@ function renderRelationCounts(relationCounts: Record<string, number>): string {
   return `<ul class="list">${entries.map(([relation, count]) => `<li>${escapeHtml(relation)}: ${escapeHtml(count)}</li>`).join('')}</ul>`;
 }
 
+function renderEmbeddingDimensions(dimensions: Array<{ dimension: number; chunks: number }>): string {
+  if (dimensions.length === 0) return '<p class="empty">not-collected</p>';
+  return `<ul class="list">${dimensions.map((entry) => `<li>${escapeHtml(entry.dimension)}: ${escapeHtml(entry.chunks)} chunk${entry.chunks === 1 ? '' : 's'}</li>`).join('')}</ul>`;
+}
+
+function fallbackFileSearchHealth(profileSummary: DashboardProfileSummary): DashboardFileSearchHealth {
+  const fileSearch = profileSummary.fileSearch;
+  return {
+    scannerState: fileSearch.state === 'missing' ? 'missing' : 'not-collected',
+    scannerTrigger: null,
+    scannerStartedAt: null,
+    scannerCompletedAt: null,
+    scannerUpdatedAt: null,
+    lastIndexedAt: fileSearch.lastIndexedAt,
+    indexedFileCount: fileSearch.indexedFileCount,
+    indexedChunkCount: fileSearch.chunkCount,
+    embeddedChunkCount: profileSummary.embedding.embeddedChunkCount,
+    missingChunkCount: profileSummary.embedding.missingChunkCount,
+    failedChunkCount: profileSummary.embedding.failedChunkCount,
+    embeddingReadiness: profileSummary.embedding.readiness,
+    embeddingModel: profileSummary.embedding.model,
+    embeddingProviderKey: profileSummary.embedding.providerKey,
+    embeddingDimensions: profileSummary.embedding.dimensions,
+    hotIndexState: 'not-collected',
+    hotIndexSource: 'not-collected',
+    warnings: [],
+  };
+}
+
 function renderProfileSummary(profileSummary: DashboardProfileSummary): string {
+  const fileSearchHealth = profileSummary.fileSearch.health ?? fallbackFileSearchHealth(profileSummary);
   return `
       <div class="profile-grid">
         <article class="summary-panel profile-${escapeHtml(profileSummary.fileSearch.state)}">
@@ -655,6 +685,31 @@ function renderProfileSummary(profileSummary: DashboardProfileSummary): string {
           <div class="subsection">
             <h4>Languages</h4>
             ${renderLanguageCounts(profileSummary.fileSearch.languageCounts)}
+          </div>
+          <div class="subsection">
+            <h4>File search health</h4>
+            <dl class="meta">
+              <div><dt>Scanner state</dt><dd>${escapeHtml(fileSearchHealth.scannerState)}</dd></div>
+              <div><dt>Scanner trigger</dt><dd>${escapeHtml(fileSearchHealth.scannerTrigger ?? 'not-collected')}</dd></div>
+              <div><dt>Started</dt><dd>${escapeHtml(fileSearchHealth.scannerStartedAt ?? 'not-collected')}</dd></div>
+              <div><dt>Completed</dt><dd>${escapeHtml(fileSearchHealth.scannerCompletedAt ?? 'not-collected')}</dd></div>
+              <div><dt>Updated</dt><dd>${escapeHtml(fileSearchHealth.scannerUpdatedAt ?? 'not-collected')}</dd></div>
+              <div><dt>Last indexed</dt><dd>${escapeHtml(fileSearchHealth.lastIndexedAt ?? 'not-collected')}</dd></div>
+              <div><dt>Indexed files</dt><dd>${escapeHtml(formatNullableCount(fileSearchHealth.indexedFileCount))}</dd></div>
+              <div><dt>Indexed chunks</dt><dd>${escapeHtml(formatNullableCount(fileSearchHealth.indexedChunkCount))}</dd></div>
+              <div><dt>Embedded</dt><dd>${escapeHtml(formatNullableCount(fileSearchHealth.embeddedChunkCount))}</dd></div>
+              <div><dt>Missing</dt><dd>${escapeHtml(formatNullableCount(fileSearchHealth.missingChunkCount))}</dd></div>
+              <div><dt>Failed</dt><dd>${escapeHtml(formatNullableCount(fileSearchHealth.failedChunkCount))}</dd></div>
+              <div><dt>Embedding</dt><dd>${escapeHtml(fileSearchHealth.embeddingReadiness)}</dd></div>
+              <div><dt>Embedding model</dt><dd>${escapeHtml(fileSearchHealth.embeddingModel ?? 'not-collected')}</dd></div>
+              <div><dt>Embedding provider</dt><dd>${escapeHtml(fileSearchHealth.embeddingProviderKey ?? 'not-collected')}</dd></div>
+              <div><dt>Hot index</dt><dd>${escapeHtml(fileSearchHealth.hotIndexState)} / ${escapeHtml(fileSearchHealth.hotIndexSource)}</dd></div>
+            </dl>
+            <div class="subsection">
+              <h4>Embedding dimensions</h4>
+              ${renderEmbeddingDimensions(fileSearchHealth.embeddingDimensions)}
+            </div>
+            ${fileSearchHealth.warnings.length > 0 ? `<div class="subsection"><h4>Health warnings</h4>${renderList(fileSearchHealth.warnings.map((warning) => escapeHtml(warning)))}</div>` : ''}
           </div>
           ${profileSummary.fileSearch.warnings.length > 0 ? `<div class="subsection"><h4>Warnings</h4>${renderList(profileSummary.fileSearch.warnings.map((warning) => escapeHtml(warning)))}</div>` : ''}
         </article>
@@ -697,9 +752,7 @@ function renderProfileSummary(profileSummary: DashboardProfileSummary): string {
           </dl>
           <div class="subsection">
             <h4>Dimensions</h4>
-            ${profileSummary.embedding.dimensions.length > 0
-              ? `<ul class="list">${profileSummary.embedding.dimensions.map((entry) => `<li>${escapeHtml(entry.dimension)}: ${escapeHtml(entry.chunks)} chunk${entry.chunks === 1 ? '' : 's'}</li>`).join('')}</ul>`
-              : '<p class="empty">not-collected</p>'}
+            ${renderEmbeddingDimensions(profileSummary.embedding.dimensions)}
           </div>
           ${profileSummary.embedding.warnings.length > 0 ? `<div class="subsection"><h4>Warnings</h4>${renderList(profileSummary.embedding.warnings.map((warning) => escapeHtml(warning)))}</div>` : ''}
         </article>
