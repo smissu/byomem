@@ -16,6 +16,7 @@ export type DashboardFileSearchProfile = {
   dbPath: string;
   indexedFileCount: number | null;
   chunkCount: number | null;
+  lastIndexedAt: string | null;
   languageCounts: Record<string, number>;
   summary: string;
   warnings: string[];
@@ -101,6 +102,7 @@ function missingFileSearchProfile(dbPath: string): DashboardFileSearchProfile {
     dbPath,
     indexedFileCount: null,
     chunkCount: null,
+    lastIndexedAt: null,
     languageCounts: {},
     summary: 'File-search database is missing; no profile evidence was collected.',
     warnings: [],
@@ -149,6 +151,7 @@ function unavailableFileSearchProfile(dbPath: string, reason: string): Dashboard
     dbPath,
     indexedFileCount: null,
     chunkCount: null,
+    lastIndexedAt: null,
     languageCounts: {},
     summary: NOT_COLLECTED_SUMMARY,
     warnings: [reason],
@@ -268,6 +271,9 @@ function collectFileSearchAndEmbedding(options: CollectDashboardProfileSummaryOp
     const indexedFileCount = countRow(db, 'SELECT COUNT(*) AS count FROM indexed_files WHERE project_key = ?', projectKey);
     const chunkCount = countRow(db, 'SELECT COUNT(*) AS count FROM indexed_chunks WHERE project_key = ?', projectKey);
     const paths = db.prepare('SELECT path FROM indexed_files WHERE project_key = ? ORDER BY path ASC').all(projectKey) as Array<{ path: string }>;
+    const scannerStatus = tableExists(db, 'file_search_scanner_status')
+      ? db.prepare('SELECT completed_at AS completedAt, updated_at AS updatedAt FROM file_search_scanner_status WHERE project_key = ?').get(projectKey) as { completedAt?: string | null; updatedAt?: string | null } | undefined
+      : undefined;
     const fileSearch: DashboardFileSearchProfile = {
       state: 'ready',
       source: 'db-read-only',
@@ -275,6 +281,7 @@ function collectFileSearchAndEmbedding(options: CollectDashboardProfileSummaryOp
       dbPath,
       indexedFileCount,
       chunkCount,
+      lastIndexedAt: scannerStatus?.completedAt ?? scannerStatus?.updatedAt ?? null,
       languageCounts: boundLanguageCounts(paths.map((row) => row.path)),
       summary: `${indexedFileCount} indexed file${indexedFileCount === 1 ? '' : 's'} and ${chunkCount} chunk${chunkCount === 1 ? '' : 's'} collected from a read-only SQLite connection.`,
       warnings: [],

@@ -650,6 +650,7 @@ function renderProfileSummary(profileSummary: DashboardProfileSummary): string {
             <div><dt>Database</dt><dd><code>${escapeHtml(profileSummary.fileSearch.dbPath)}</code></dd></div>
             <div><dt>Files</dt><dd>${escapeHtml(formatNullableCount(profileSummary.fileSearch.indexedFileCount))}</dd></div>
             <div><dt>Chunks</dt><dd>${escapeHtml(formatNullableCount(profileSummary.fileSearch.chunkCount))}</dd></div>
+            <div><dt>Last indexed</dt><dd>${escapeHtml(profileSummary.fileSearch.lastIndexedAt ?? 'not-collected')}</dd></div>
           </dl>
           <div class="subsection">
             <h4>Languages</h4>

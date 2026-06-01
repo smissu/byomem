@@ -79,8 +79,24 @@ function seedFileSearchDb(projectDir: string, runtimeDir: string): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE file_search_scanner_status (
+      project_key TEXT PRIMARY KEY,
+      state TEXT NOT NULL,
+      run_id TEXT,
+      trigger TEXT,
+      base_dir TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT,
+      duration_ms INTEGER,
+      current_path TEXT,
+      last_path TEXT,
+      last_error TEXT,
+      progress_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
   const now = '2026-06-01T00:00:00.000Z';
+  const completedAt = '2026-06-01T00:01:30.000Z';
   const insertFile = db.prepare('INSERT INTO indexed_files(id, project_key, path, file_record_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)');
   insertFile.run('file-1', projectKey, 'src/dashboard-profile.ts', 'record-1', now, now);
   insertFile.run('file-2', projectKey, 'README.md', 'record-2', now, now);
@@ -94,6 +110,10 @@ function seedFileSearchDb(projectDir: string, runtimeDir: string): void {
   `);
   insertEmbedding.run('chunk-1', projectKey, 'record-1', 0, 'hash-1', 'text-1', 'minishlab/potion-code-16M', 256, Buffer.from([1, 2, 3]), 256, 'local:model2vec:minishlab/potion-code-16M', 256, 'v1', 'ready', now, now);
   insertEmbedding.run('chunk-2', projectKey, 'record-1', 1, 'hash-2', 'text-2', 'minishlab/potion-code-16M', 256, Buffer.from([1, 2, 3]), 256, 'local:model2vec:minishlab/potion-code-16M', 256, 'v1', 'ready', now, now);
+  db.prepare(`
+    INSERT INTO file_search_scanner_status(project_key, state, run_id, trigger, base_dir, started_at, completed_at, duration_ms, progress_json, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(projectKey, 'completed', 'run-1', 'manual', projectDir, now, completedAt, 90000, '{}', completedAt);
   db.close();
 }
 
@@ -180,6 +200,7 @@ describe('sprint 94 dashboard profile summary', () => {
       evidenceTier: 'db-read-only',
       indexedFileCount: 2,
       chunkCount: 3,
+      lastIndexedAt: '2026-06-01T00:01:30.000Z',
     });
     expect(summary.fileSearch.languageCounts).toMatchObject({
       TypeScript: 1,
@@ -257,13 +278,13 @@ describe('sprint 94 dashboard profile summary', () => {
     const profilePayload = JSON.parse(String(spy.mock.calls.at(-1)?.[0] ?? '{}')) as {
       projectBaseDir?: string;
       runtimeBaseDir?: string;
-      fileSearch?: { indexedFileCount?: number; chunkCount?: number };
+      fileSearch?: { indexedFileCount?: number; chunkCount?: number; lastIndexedAt?: string };
       graph?: { nodeCount?: number; edgeCount?: number };
       embedding?: { readiness?: string; embeddedChunkCount?: number };
     };
     expect(profilePayload.projectBaseDir).toBe(projectDir);
     expect(profilePayload.runtimeBaseDir).toBe(runtimeDir);
-    expect(profilePayload.fileSearch).toMatchObject({ indexedFileCount: 2, chunkCount: 3 });
+    expect(profilePayload.fileSearch).toMatchObject({ indexedFileCount: 2, chunkCount: 3, lastIndexedAt: '2026-06-01T00:01:30.000Z' });
     expect(profilePayload.graph).toMatchObject({ nodeCount: 2, edgeCount: 1 });
     expect(profilePayload.embedding).toMatchObject({ readiness: 'refresh-needed', embeddedChunkCount: 2 });
     expect(existsSync(join(projectDir, 'byomem-file-search.sqlite'))).toBe(false);
@@ -285,6 +306,7 @@ describe('sprint 94 dashboard profile summary', () => {
           dbPath: join(runtimeDir, 'byomem-file-search.sqlite'),
           indexedFileCount: 2,
           chunkCount: 4,
+          lastIndexedAt: '2026-06-01T00:01:30.000Z',
           languageCounts: {
             'VeryLongLanguageNameThatMustWrapInsideTheProfileSummaryCardWithoutOverflow': 2,
           },
@@ -298,11 +320,11 @@ describe('sprint 94 dashboard profile summary', () => {
     const html = renderByomemDashboardHtml({
       schemaVersion: 1,
       command: 'dashboard',
-      runtimeVersion: '0.1.16',
+      runtimeVersion: '0.1.17',
       generatedAt: '2026-06-01T00:00:00.000Z',
       overallStatus: 'pass',
       identityMeta: {
-        runtimeVersion: '0.1.16',
+        runtimeVersion: '0.1.17',
         projectBaseDir: projectDir,
         runtimeBaseDir: runtimeDir,
         generatedAt: '2026-06-01T00:00:00.000Z',
@@ -326,6 +348,8 @@ describe('sprint 94 dashboard profile summary', () => {
 
     expect(html).toContain('Profile summary');
     expect(html).toContain('File search profile');
+    expect(html).toContain('Last indexed');
+    expect(html).toContain('2026-06-01T00:01:30.000Z');
     expect(html).toContain('Graph profile');
     expect(html).toContain('Embedding profile');
     expect(html).toContain('VeryLongLanguageNameThatMustWrapInsideTheProfileSummaryCardWithoutOverflow');
