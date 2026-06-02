@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { buildByomemStatusReport, type StatusComponentState } from './status-report.js';
-import { readRuntimeProcessInventory, type RuntimeProcessInventoryOptions } from './runtime-state.js';
+import { readRuntimeProcessInventory, summarizeDuplicateActiveRuntimeProcessRoles, type RuntimeProcessInventoryOptions } from './runtime-state.js';
 import { BYOMEM_RUNTIME_VERSION } from './version.js';
 
 export type DoctorCheckStatus = 'pass' | 'warn' | 'fail' | 'skipped';
@@ -204,15 +204,8 @@ function runtimeStateChecks(options: BuildDoctorReportOptions): DoctorCheck[] {
     staleAfterMs: options.staleAfterMs,
     processExists: options.processExists,
   });
-  const duplicateActiveRoles = Object.entries(inventory.records
-    .filter((entry) => entry.state === 'active')
-    .reduce<Record<string, number>>((acc, entry) => {
-      acc[entry.record.role] = (acc[entry.record.role] ?? 0) + 1;
-      return acc;
-    }, {}))
-    .filter(([, count]) => count > 1)
-    .map(([role]) => role)
-    .sort();
+  const duplicateActiveRoleSummaries = summarizeDuplicateActiveRuntimeProcessRoles(inventory);
+  const duplicateActiveRoles = duplicateActiveRoleSummaries.map((entry) => entry.role);
 
   const warnings = [
     ...inventory.warnings,
@@ -249,6 +242,7 @@ function runtimeStateChecks(options: BuildDoctorReportOptions): DoctorCheck[] {
         stateDir: inventory.stateDir,
         counts: inventory.counts,
         duplicateActiveRoles,
+        duplicateActiveRoleSummaries,
         records: inventory.records.map((entry) => ({
           role: entry.record.role,
           serverName: entry.record.serverName,

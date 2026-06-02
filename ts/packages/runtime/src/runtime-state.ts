@@ -47,6 +47,34 @@ export type RuntimeProcessInventory = {
   };
 };
 
+export type RuntimeDuplicateActiveRoleRecord = {
+  pid: number | null;
+  serverName: string | null;
+  entrypoint: string | null;
+  path: string;
+};
+
+export type RuntimeDuplicateActiveRoleSummary = {
+  role: string;
+  count: number;
+  records: RuntimeDuplicateActiveRoleRecord[];
+};
+
+export type CanonicalByomemMcpRuntimeProcess = {
+  role: RuntimeProcessRole;
+  serverName: string;
+  entrypoint: string;
+};
+
+export const CANONICAL_BYOMEM_MCP_RUNTIME_PROCESSES: readonly CanonicalByomemMcpRuntimeProcess[] = [
+  { role: 'bootstrap', serverName: 'byomem-mcp-bootstrap', entrypoint: 'mcp-bootstrap' },
+  { role: 'readonly', serverName: 'byomem-mcp-readonly', entrypoint: 'mcp-readonly' },
+  { role: 'operations', serverName: 'byomem-mcp-operations', entrypoint: 'mcp-operations' },
+  { role: 'memory', serverName: 'byomem-mcp-memory', entrypoint: 'mcp-memory' },
+  { role: 'graph', serverName: 'byomem-mcp-graph', entrypoint: 'mcp-graph' },
+  { role: 'file-search', serverName: 'byomem-mcp-file-search', entrypoint: 'mcp-file-search' },
+];
+
 export type RuntimeProcessRegistration = {
   record: RuntimeProcessRecord;
   path: string;
@@ -72,6 +100,18 @@ export type RuntimeProcessInventoryOptions = {
   staleAfterMs?: number;
   processExists?: (pid: number) => boolean;
 };
+
+export function isCanonicalByomemMcpRuntimeProcess(value: Pick<RuntimeProcessRecord, 'role' | 'serverName' | 'entrypoint'>): boolean {
+  return CANONICAL_BYOMEM_MCP_RUNTIME_PROCESSES.some((entry) => (
+    value.role === entry.role
+    && value.serverName === entry.serverName
+    && value.entrypoint === entry.entrypoint
+  ));
+}
+
+export function getCanonicalByomemMcpRuntimeProcess(role: RuntimeProcessRole): CanonicalByomemMcpRuntimeProcess | undefined {
+  return CANONICAL_BYOMEM_MCP_RUNTIME_PROCESSES.find((entry) => entry.role === role);
+}
 
 function normalizeTimestamp(value?: Date | string): string {
   if (value === undefined) return new Date().toISOString();
@@ -248,4 +288,36 @@ export function readRuntimeProcessInventory(options: RuntimeProcessInventoryOpti
       malformed: malformed.length,
     },
   };
+}
+
+export function summarizeDuplicateActiveRuntimeProcessRoles(inventory: RuntimeProcessInventory): RuntimeDuplicateActiveRoleSummary[] {
+  const activeByRole = new Map<string, RuntimeProcessInventoryEntry[]>();
+  for (const entry of inventory.records) {
+    if (entry.state !== 'active') continue;
+    const role = entry.record.role;
+    const entries = activeByRole.get(role) ?? [];
+    entries.push(entry);
+    activeByRole.set(role, entries);
+  }
+
+  return [...activeByRole.entries()]
+    .filter(([, entries]) => entries.length > 1)
+    .map(([role, entries]) => ({
+      role,
+      count: entries.length,
+      records: entries
+        .map((entry): RuntimeDuplicateActiveRoleRecord => ({
+          pid: Number.isSafeInteger(entry.record.pid) ? entry.record.pid : null,
+          serverName: entry.record.serverName || null,
+          entrypoint: entry.record.entrypoint || null,
+          path: entry.path,
+        }))
+        .sort((a, b) => (
+          (a.pid ?? Number.MAX_SAFE_INTEGER) - (b.pid ?? Number.MAX_SAFE_INTEGER)
+          || (a.serverName ?? '').localeCompare(b.serverName ?? '')
+          || (a.entrypoint ?? '').localeCompare(b.entrypoint ?? '')
+          || a.path.localeCompare(b.path)
+        )),
+    }))
+    .sort((a, b) => a.role.localeCompare(b.role));
 }

@@ -28,6 +28,7 @@ npm run byomem:cli -- stop --base-dir /path/to/runtime
 - memory, file-search, and graph artifact paths
 - artifact existence, size, and mtime
 - runtime-state MCP process inventory summary
+- duplicate active MCP role summaries at `mcpProcesses.duplicateActiveRoles`
 
 It must not open SQLite handles, create DBs, scan files, update graphs, or inspect host process tables.
 
@@ -53,7 +54,9 @@ Process liveness evidence uses this confidence vocabulary:
 
 Set `BYOMEM_DOCTOR_PROCESS_EVIDENCE_CONFIDENCE=constrained` when running the CLI in an environment where PID liveness probes are known to be namespace-limited or otherwise incomplete.
 
-Every suggested action is marked `"mode": "read-only"`. `doctor` must not open SQLite handles, create DBs, scan files, update graphs, call embedding providers, remove runtime-state files, or terminate processes.
+Duplicate active role evidence is reported as both the compatibility string list `evidence.duplicateActiveRoles` and structured `evidence.duplicateActiveRoleSummaries` records containing role, count, pid, server name, entrypoint, and runtime-state JSON path.
+
+Every suggested action is marked `"mode": "read-only"`. `doctor` must not open SQLite handles, create DBs, scan files, update graphs, call embedding providers, remove runtime-state files, refresh MCP heartbeats, or terminate processes.
 
 ## Dashboard
 
@@ -120,7 +123,7 @@ npm run byomem:cli -- status
 node ts/packages/runtime/dist/cli.js status
 ```
 
-Repo-local commands are necessary but not sufficient for installed/global verification. When the global Pi/Codex BYOMem extension is available, verify the active Codex-facing MCP runtime-info surface without mutating runtime config. Expected evidence is `byomem_runtime_info.runtime.packageVersion === "0.1.19"` and `byomem_runtime_info.server.version === "0.1.19"` from the `byomem_runtime_info` tool result after the active runtime is rebuilt and restarted.
+Repo-local commands are necessary but not sufficient for installed/global verification. When the global Pi/Codex BYOMem extension is available, verify the active Codex-facing MCP runtime-info surface without mutating runtime config. Expected evidence is `byomem_runtime_info.runtime.packageVersion === "0.1.21"` and `byomem_runtime_info.server.version === "0.1.21"` from the `byomem_runtime_info` tool result after the active runtime is rebuilt and restarted.
 
 ## Extension Exposure Decision Record
 
@@ -150,6 +153,10 @@ Each record includes:
 
 MCP entrypoints remove their own record on normal process exit, SIGINT, SIGTERM, or startup failure. A process only removes a record when the id, pid, server name, entrypoint, and startedAt metadata still match.
 
+Canonical BYOMem MCP roles are `bootstrap`, `readonly`, `operations`, `memory`, `graph`, and `file-search`. Startup registration checks active canonical records for the same role in the selected runtime base before writing a new record. A second active canonical same-role record is refused; a stale same-role record does not block startup. Active non-canonical same-role records are diagnostics-only evidence and do not block canonical startup.
+
+If a race creates another active canonical same-role record after preflight, the attempted startup unregisters only its own exact record and fails closed. Existing live duplicate processes remain operator-owned; this guard prevents new canonical duplicates but does not kill or reconcile already-running processes.
+
 ## Cleanup And Stop
 
 `cleanup` is dry-run by default. It classifies runtime-state records as:
@@ -172,6 +179,8 @@ Dry-run candidates include whether stale state would be removed:
 `safeToTerminate` is always false. Cleanup never kills or signals processes.
 
 `cleanup --apply` removes only stale BYOMem-owned runtime-state process records whose PIDs are no longer running. It re-reads each candidate immediately before deletion and preserves/refuses records that are active, heartbeat-expired with a live PID, malformed, ownership-mismatched, or changed during the second pass.
+
+Cleanup is not duplicate-active remediation. Active duplicate records are preserved, and cleanup output must not suggest that `cleanup --apply` can fix live duplicate MCP processes. Use `doctor` or `status` to identify duplicate active roles, then stop or restart the owning external sessions manually.
 
 `stop` remains dry-run only. `stop --apply` is intentionally not implemented because process termination is out of scope.
 

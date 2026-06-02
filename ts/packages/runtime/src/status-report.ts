@@ -4,7 +4,7 @@ import { resolveDefaultGraphDbPath } from './graph-db.js';
 import { resolveDefaultFileSearchDbPath } from './file-search-db.js';
 import { resolveProjectContext } from './project-context.js';
 import { resolveDefaultRuntimeBaseDir } from './readonly-core.js';
-import { readRuntimeProcessInventory } from './runtime-state.js';
+import { readRuntimeProcessInventory, summarizeDuplicateActiveRuntimeProcessRoles, type RuntimeDuplicateActiveRoleSummary } from './runtime-state.js';
 import { BYOMEM_RUNTIME_VERSION } from './version.js';
 
 export type StatusArtifactFile = {
@@ -22,6 +22,7 @@ export type StatusMcpProcesses = {
   source: 'runtime-state';
   count: number;
   roles: string[];
+  duplicateActiveRoles: RuntimeDuplicateActiveRoleSummary[];
   staleCount: number;
   malformedCount: number;
   warnings: string[];
@@ -184,6 +185,7 @@ export function buildByomemStatusReport(options: BuildStatusReportOptions = {}):
     source: 'runtime-state',
     count: processInventory.counts.total,
     roles: dedupe(processInventory.records.map((entry) => entry.record.role)).sort(),
+    duplicateActiveRoles: summarizeDuplicateActiveRuntimeProcessRoles(processInventory),
     staleCount: processInventory.counts.stale,
     malformedCount: processInventory.counts.malformed,
     warnings: processInventory.warnings,
