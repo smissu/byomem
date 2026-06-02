@@ -1,6 +1,6 @@
 import { existsSync, rmSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
-import { readRuntimeProcessInventory, type RuntimeProcessInventory, type RuntimeProcessInventoryEntry, type RuntimeProcessInventoryOptions } from './runtime-state.js';
+import { isCanonicalByomemMcpRuntimeProcess, readRuntimeProcessInventory, type RuntimeProcessInventory, type RuntimeProcessInventoryEntry, type RuntimeProcessInventoryOptions } from './runtime-state.js';
 
 export type ProcessCleanupClassification =
   | 'active-owned'
@@ -93,35 +93,12 @@ function pathInsideStateDir(path: string, stateDir: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !rel.startsWith(sep) && rel !== '..');
 }
 
-function isByomemServerName(serverName: string): boolean {
-  return serverName === 'byomem' || serverName.startsWith('byomem-') || serverName.startsWith('byomem-mcp-');
-}
-
-function isByomemEntrypoint(entrypoint: string): boolean {
-  return entrypoint === 'byomem-runtime' || entrypoint.startsWith('mcp-');
-}
-
-const CLEANUP_RUNTIME_ROLES = new Map<string, { serverName: string; entrypoint: string }>([
-  ['bootstrap', { serverName: 'byomem-mcp-bootstrap', entrypoint: 'mcp-bootstrap' }],
-  ['readonly', { serverName: 'byomem-mcp-readonly', entrypoint: 'mcp-readonly' }],
-  ['operations', { serverName: 'byomem-mcp-operations', entrypoint: 'mcp-operations' }],
-  ['memory', { serverName: 'byomem-mcp-memory', entrypoint: 'mcp-memory' }],
-  ['graph', { serverName: 'byomem-mcp-graph', entrypoint: 'mcp-graph' }],
-  ['file-search', { serverName: 'byomem-mcp-file-search', entrypoint: 'mcp-file-search' }],
-]);
-
 function hasNearMatchArgv(entry: RuntimeProcessInventoryEntry): boolean {
   return entry.record.argv.some((value) => value.endsWith('.bak'));
 }
 
 function isCleanupOwned(entry: RuntimeProcessInventoryEntry): boolean {
-  const expected = CLEANUP_RUNTIME_ROLES.get(entry.record.role);
-  if (expected === undefined) return false;
-  return isByomemServerName(entry.record.serverName)
-    && isByomemEntrypoint(entry.record.entrypoint)
-    && entry.record.serverName === expected.serverName
-    && entry.record.entrypoint === expected.entrypoint
-    && !hasNearMatchArgv(entry);
+  return isCanonicalByomemMcpRuntimeProcess(entry.record) && !hasNearMatchArgv(entry);
 }
 
 function sameRuntimeRecord(a: RuntimeProcessInventoryEntry, b: RuntimeProcessInventoryEntry): boolean {
