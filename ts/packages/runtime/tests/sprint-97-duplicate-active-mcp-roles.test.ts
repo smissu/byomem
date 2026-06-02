@@ -315,7 +315,47 @@ describe('Sprint 97 duplicate active MCP role guardrails', () => {
     expect(statSync(second.path).mtimeMs).toBe(before.get(second.path));
   });
 
-  it('blocks same-role canonical lifecycle registration before leaking a second record', () => {
+  it('allows default same-role canonical lifecycle registration and leaves duplicate summaries visible', () => {
+    const runtimeBaseDir = tempDir();
+    dirs.push(runtimeBaseDir);
+    const first = registerRuntimeProcess({
+      runtimeBaseDir,
+      role: 'memory',
+      serverName: 'byomem-mcp-memory',
+      entrypoint: 'mcp-memory',
+      pid: 101,
+      ppid: 1,
+      argv: ['node', 'memory-a.js'],
+      cwd: runtimeBaseDir,
+    });
+
+    const lifecycle = registerMcpRuntimeState({
+      role: 'memory',
+      serverName: 'byomem-mcp-memory',
+      entrypoint: 'mcp-memory',
+      env: { BYOMEM_RUNTIME_BASE_DIR: runtimeBaseDir },
+      pid: 202,
+      processExists: activePids([101, 202]),
+    });
+
+    expect(existsSync(first.path)).toBe(true);
+    expect(existsSync(lifecycle.registration.path)).toBe(true);
+    expect(summarizeDuplicateActiveRuntimeProcessRoles(readRuntimeProcessInventory({
+      runtimeBaseDir,
+      processExists: activePids([101, 202]),
+    }))).toEqual([
+      expect.objectContaining({
+        role: 'memory',
+        count: 2,
+        records: [
+          expect.objectContaining({ pid: 101 }),
+          expect.objectContaining({ pid: 202 }),
+        ],
+      }),
+    ]);
+  });
+
+  it('blocks strict same-role canonical lifecycle registration before leaking a second record', () => {
     const runtimeBaseDir = tempDir();
     dirs.push(runtimeBaseDir);
     registerRuntimeProcess({
@@ -334,6 +374,37 @@ describe('Sprint 97 duplicate active MCP role guardrails', () => {
       serverName: 'byomem-mcp-memory',
       entrypoint: 'mcp-memory',
       env: { BYOMEM_RUNTIME_BASE_DIR: runtimeBaseDir },
+      duplicatePolicy: 'strict',
+      pid: 202,
+      processExists: activePids([101, 202]),
+    })).toThrow(/Refusing to register duplicate active BYOMem MCP role memory.*101/);
+
+    const inventory = readRuntimeProcessInventory({ runtimeBaseDir, processExists: activePids([101, 202]) });
+    expect(inventory.records.filter((entry) => entry.state === 'active').map((entry) => entry.record.pid)).toEqual([101]);
+  });
+
+  it('honors BYOMEM_MCP_DUPLICATE_POLICY=strict for canonical lifecycle registration', () => {
+    const runtimeBaseDir = tempDir();
+    dirs.push(runtimeBaseDir);
+    registerRuntimeProcess({
+      runtimeBaseDir,
+      role: 'memory',
+      serverName: 'byomem-mcp-memory',
+      entrypoint: 'mcp-memory',
+      pid: 101,
+      ppid: 1,
+      argv: ['node', 'memory-a.js'],
+      cwd: runtimeBaseDir,
+    });
+
+    expect(() => registerMcpRuntimeState({
+      role: 'memory',
+      serverName: 'byomem-mcp-memory',
+      entrypoint: 'mcp-memory',
+      env: {
+        BYOMEM_RUNTIME_BASE_DIR: runtimeBaseDir,
+        BYOMEM_MCP_DUPLICATE_POLICY: 'strict',
+      },
       pid: 202,
       processExists: activePids([101, 202]),
     })).toThrow(/Refusing to register duplicate active BYOMem MCP role memory.*101/);
@@ -413,7 +484,7 @@ describe('Sprint 97 duplicate active MCP role guardrails', () => {
     ]);
   });
 
-  it('unregisters only its attempted record when a race appears after preflight', () => {
+  it('unregisters only its attempted record when a race appears after preflight in strict mode', () => {
     const runtimeBaseDir = tempDir();
     dirs.push(runtimeBaseDir);
     let competingPath = '';
@@ -423,6 +494,7 @@ describe('Sprint 97 duplicate active MCP role guardrails', () => {
       serverName: 'byomem-mcp-memory',
       entrypoint: 'mcp-memory',
       env: { BYOMEM_RUNTIME_BASE_DIR: runtimeBaseDir },
+      duplicatePolicy: 'strict',
       pid: 202,
       processExists: activePids([101, 202]),
       afterPreflight: () => {
@@ -445,7 +517,7 @@ describe('Sprint 97 duplicate active MCP role guardrails', () => {
     expect(inventory.records.filter((entry) => entry.state === 'active').map((entry) => entry.record.pid)).toEqual([101]);
   });
 
-  it('concurrent same-role lifecycle attempts leave no duplicate active records', async () => {
+  it('concurrent default same-role lifecycle attempts allow duplicate active summaries', async () => {
     const runtimeBaseDir = tempDir();
     dirs.push(runtimeBaseDir);
 
@@ -463,6 +535,40 @@ describe('Sprint 97 duplicate active MCP role guardrails', () => {
         serverName: 'byomem-mcp-memory',
         entrypoint: 'mcp-memory',
         env: { BYOMEM_RUNTIME_BASE_DIR: runtimeBaseDir },
+        pid: 202,
+        processExists: activePids([101, 202]),
+      })),
+    ]);
+
+    expect(attempts.filter((entry) => entry.status === 'fulfilled')).toHaveLength(2);
+    expect(attempts.filter((entry) => entry.status === 'rejected')).toHaveLength(0);
+    const inventory = readRuntimeProcessInventory({ runtimeBaseDir, processExists: activePids([101, 202]) });
+    expect(summarizeDuplicateActiveRuntimeProcessRoles(inventory)).toEqual([
+      expect.objectContaining({ role: 'memory', count: 2 }),
+    ]);
+    expect(inventory.records.filter((entry) => entry.state === 'active')).toHaveLength(2);
+  });
+
+  it('concurrent strict same-role lifecycle attempts leave no duplicate active records', async () => {
+    const runtimeBaseDir = tempDir();
+    dirs.push(runtimeBaseDir);
+
+    const attempts = await Promise.allSettled([
+      Promise.resolve().then(() => registerMcpRuntimeState({
+        role: 'memory',
+        serverName: 'byomem-mcp-memory',
+        entrypoint: 'mcp-memory',
+        env: { BYOMEM_RUNTIME_BASE_DIR: runtimeBaseDir },
+        duplicatePolicy: 'strict',
+        pid: 101,
+        processExists: activePids([101, 202]),
+      })),
+      Promise.resolve().then(() => registerMcpRuntimeState({
+        role: 'memory',
+        serverName: 'byomem-mcp-memory',
+        entrypoint: 'mcp-memory',
+        env: { BYOMEM_RUNTIME_BASE_DIR: runtimeBaseDir },
+        duplicatePolicy: 'strict',
         pid: 202,
         processExists: activePids([101, 202]),
       })),

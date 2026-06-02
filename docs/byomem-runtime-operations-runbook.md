@@ -123,7 +123,7 @@ npm run byomem:cli -- status
 node ts/packages/runtime/dist/cli.js status
 ```
 
-Repo-local commands are necessary but not sufficient for installed/global verification. When the global Pi/Codex BYOMem extension is available, verify the active Codex-facing MCP runtime-info surface without mutating runtime config. Expected evidence is `byomem_runtime_info.runtime.packageVersion === "0.1.21"` and `byomem_runtime_info.server.version === "0.1.21"` from the `byomem_runtime_info` tool result after the active runtime is rebuilt and restarted.
+Repo-local commands are necessary but not sufficient for installed/global verification. When the global Pi/Codex BYOMem extension is available, verify the active Codex-facing MCP runtime-info surface without mutating runtime config. Expected evidence is `byomem_runtime_info.runtime.packageVersion === "0.1.22"` and `byomem_runtime_info.server.version === "0.1.22"` from the `byomem_runtime_info` tool result after the active runtime is rebuilt and restarted.
 
 ## Extension Exposure Decision Record
 
@@ -153,9 +153,9 @@ Each record includes:
 
 MCP entrypoints remove their own record on normal process exit, SIGINT, SIGTERM, or startup failure. A process only removes a record when the id, pid, server name, entrypoint, and startedAt metadata still match.
 
-Canonical BYOMem MCP roles are `bootstrap`, `readonly`, `operations`, `memory`, `graph`, and `file-search`. Startup registration checks active canonical records for the same role in the selected runtime base before writing a new record. A second active canonical same-role record is refused; a stale same-role record does not block startup. Active non-canonical same-role records are diagnostics-only evidence and do not block canonical startup.
+Canonical BYOMem MCP roles are `bootstrap`, `readonly`, `operations`, `memory`, `graph`, and `file-search`. Startup registration checks active canonical records for the same role in the selected runtime base, but duplicate handling is observe-by-default so Codex MCP startup and handshake do not fail simply because old live records or processes still exist. In observe mode, a second active canonical same-role record is registered and remains visible through `status` and `doctor` duplicate summaries; a stale same-role record does not block startup. Active non-canonical same-role records are diagnostics-only evidence and do not block canonical startup.
 
-If a race creates another active canonical same-role record after preflight, the attempted startup unregisters only its own exact record and fails closed. Existing live duplicate processes remain operator-owned; this guard prevents new canonical duplicates but does not kill or reconcile already-running processes.
+Set `BYOMEM_MCP_DUPLICATE_POLICY=strict` for canaries or tests that should retain the previous fail-closed guard. In strict mode, an active canonical same-role record is refused before writing a second record. If a race creates another active canonical same-role record after preflight, the attempted startup unregisters only its own exact record and fails closed. Existing live duplicate processes remain operator-owned; this guard does not kill or reconcile already-running processes.
 
 ## Cleanup And Stop
 

@@ -21,6 +21,7 @@ export type RuntimeStateLifecycleOptions = {
   now?: Date | string;
   staleAfterMs?: number;
   processExists?: (pid: number) => boolean;
+  duplicatePolicy?: 'observe' | 'strict';
   afterPreflight?: (context: { runtimeBaseDir: string }) => void;
   afterRegister?: (context: { runtimeBaseDir: string; registration: RuntimeProcessRegistration }) => void;
 };
@@ -49,13 +50,25 @@ function duplicateRoleError(prefix: string, role: RuntimeProcessRole, entries: R
   return new Error(`${prefix} BYOMem MCP role ${role}; active canonical record pid(s): ${pids}`);
 }
 
+function resolveDuplicatePolicy(options: RuntimeStateLifecycleOptions): 'observe' | 'strict' {
+  if (options.duplicatePolicy) return options.duplicatePolicy;
+  const env = options.env ?? process.env;
+  return env.BYOMEM_MCP_DUPLICATE_POLICY === 'strict' ? 'strict' : 'observe';
+}
+
+function writeDuplicateDiagnostic(prefix: string, role: RuntimeProcessRole, entries: RuntimeProcessInventoryEntry[]): void {
+  const pids = entries.map((entry) => entry.record.pid).join(', ');
+  process.stderr.write(`${prefix} BYOMem MCP role ${role}; active canonical record pid(s): ${pids}\n`);
+}
+
 export function registerMcpRuntimeState(options: RuntimeStateLifecycleOptions): RuntimeStateLifecycle {
   const runtimeBaseDir = options.runtimeBaseDir ?? resolveDefaultRuntimeBaseDir(options.env ?? process.env);
   const canonicalAttempt = isCanonicalByomemMcpRuntimeProcess(options);
+  const duplicatePolicy = resolveDuplicatePolicy(options);
 
   if (canonicalAttempt) {
     const existing = activeCanonicalEntriesForRole(options, runtimeBaseDir);
-    if (existing.length > 0) {
+    if (existing.length > 0 && duplicatePolicy === 'strict') {
       throw duplicateRoleError('Refusing to register duplicate active', options.role, existing);
     }
   }
@@ -78,8 +91,11 @@ export function registerMcpRuntimeState(options: RuntimeStateLifecycleOptions): 
     const active = activeCanonicalEntriesForRole(options, runtimeBaseDir);
     const duplicate = active.filter((entry) => entry.path !== registration.path);
     if (duplicate.length > 0) {
-      registration.unregister();
-      throw duplicateRoleError('Race detected while registering', options.role, duplicate);
+      if (duplicatePolicy === 'strict') {
+        registration.unregister();
+        throw duplicateRoleError('Race detected while registering', options.role, duplicate);
+      }
+      writeDuplicateDiagnostic('Observed duplicate active canonical', options.role, duplicate);
     }
   }
 
