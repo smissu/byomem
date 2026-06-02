@@ -31,7 +31,7 @@ BYOMem should defer menu/help exposure unless implementation records an explicit
 
 ## Runtime Verification
 
-Every BYOMem MCP surface exposes `byomem_runtime_info`. For release evidence, repo-local commands are necessary but not sufficient; installed/global verification should inspect the active Codex-facing MCP runtime-info tool and confirm `byomem_runtime_info.runtime.packageVersion === "0.1.10"` and `byomem_runtime_info.server.version === "0.1.10"`.
+Every BYOMem MCP surface exposes `byomem_runtime_info`. For release evidence, repo-local commands are necessary but not sufficient; installed/global verification should inspect the active Codex-facing MCP runtime-info tool and confirm `byomem_runtime_info.runtime.packageVersion === "0.1.23"` and `byomem_runtime_info.server.version === "0.1.23"`.
 
 ## BYOMem graph hook
 

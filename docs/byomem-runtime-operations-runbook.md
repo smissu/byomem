@@ -76,14 +76,22 @@ Static HTML output:
 npm run byomem:cli -- dashboard --base-dir /path/to/runtime-or-project --format html --output /tmp/byomem-dashboard.html
 ```
 
+Static loopback serve output:
+
+```bash
+npm run byomem:cli -- dashboard --base-dir /path/to/runtime-or-project --format html --output /tmp/byomem-dashboard.html --serve --port 0
+```
+
 Rules:
 
 - Omitting `--format` defaults to JSON stdout.
 - HTML output requires `--output <path>` and the output parent directory must already exist.
 - HTML output is self-contained, non-interactive, dark by default, and light-theme capable through embedded CSS only.
-- The command does not serve HTTP, watch files, open a browser, scan files, update graphs, refresh embeddings, run cleanup/stop, or mutate Codex config/runtime data.
+- `dashboard --serve` binds only to `127.0.0.1`, serves the generated HTML snapshot from memory, accepts `--port 0` for OS-selected ports or `--port 1..65535`, prints a JSON serve report with `url`, `host`, `port`, and `pid`, and closes on normal termination.
+- `dashboard --open` opens the generated file for non-serve HTML output and opens the reported loopback URL for serve output.
+- The command does not watch files, scan files, update graphs, refresh embeddings, run cleanup/stop, mutate Codex config/runtime data, or serve arbitrary directories/files.
 - The `codex-config` dashboard evidence comes from host-global `~/.codex/config.toml`, not project-scoped config.
-- The HTML write path prints a JSON write report with `command`, `format`, `outputPath`, and `bytesWritten`.
+- The HTML write/open/serve paths print JSON reports with `reportSchemaVersion`, `command`, `format`, `outputPath`, and `bytesWritten`; serve reports also include `served`, `url`, `host`, `port`, `pid`, and `openRequested`.
 
 ## Connect Codex
 
@@ -123,7 +131,7 @@ npm run byomem:cli -- status
 node ts/packages/runtime/dist/cli.js status
 ```
 
-Repo-local commands are necessary but not sufficient for installed/global verification. When the global Pi/Codex BYOMem extension is available, verify the active Codex-facing MCP runtime-info surface without mutating runtime config. Expected evidence is `byomem_runtime_info.runtime.packageVersion === "0.1.22"` and `byomem_runtime_info.server.version === "0.1.22"` from the `byomem_runtime_info` tool result after the active runtime is rebuilt and restarted.
+Repo-local commands are necessary but not sufficient for installed/global verification. When the global Pi/Codex BYOMem extension is available, verify the active Codex-facing MCP runtime-info surface without mutating runtime config. Expected evidence is `byomem_runtime_info.runtime.packageVersion === "0.1.23"` and `byomem_runtime_info.server.version === "0.1.23"` from the `byomem_runtime_info` tool result after the active runtime is rebuilt and restarted.
 
 ## Extension Exposure Decision Record
 

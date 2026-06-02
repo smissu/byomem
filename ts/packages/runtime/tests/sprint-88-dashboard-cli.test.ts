@@ -174,7 +174,7 @@ describe('sprint 88 dashboard CLI boundary', () => {
       },
       {
         argv: ['dashboard', '--base-dir', runtimeDir, '--serve'],
-        error: 'dashboard does not support --serve',
+        error: 'dashboard --serve requires --format html --output <path>',
       },
       {
         argv: ['dashboard', '--base-dir', runtimeDir, '--watch'],

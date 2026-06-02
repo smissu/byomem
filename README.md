@@ -104,20 +104,21 @@ args = ["<HOME>/Documents/byomem/ts/packages/runtime/dist/mcp/operations.js"]
 
 Prefer the split servers. File search can be memory-heavy, so isolating it keeps memory and graph tools alive if a worker fails. See [docs/byomem-mcp-process-isolation.md](docs/byomem-mcp-process-isolation.md).
 
-Every MCP surface exposes `byomem_runtime_info` for structured runtime verification. Use it for feature detection; it reports runtime version, server domain, and feature flags such as `split-mcp-servers`, `file-search-worker`, `native-source-graph`, and `file-search-include-graph`. For release evidence, repo-local commands are necessary but not sufficient; installed/global verification should include the active Codex-facing MCP tool result, with `byomem_runtime_info.runtime.packageVersion === "0.1.20"` and `byomem_runtime_info.server.version === "0.1.20"` after the active runtime is rebuilt and restarted.
+Every MCP surface exposes `byomem_runtime_info` for structured runtime verification. Use it for feature detection; it reports runtime version, server domain, and feature flags such as `split-mcp-servers`, `file-search-worker`, `native-source-graph`, and `file-search-include-graph`. For release evidence, repo-local commands are necessary but not sufficient; installed/global verification should include the active Codex-facing MCP tool result, with `byomem_runtime_info.runtime.packageVersion === "0.1.23"` and `byomem_runtime_info.server.version === "0.1.23"` after the active runtime is rebuilt and restarted.
 
 ## Runtime Dashboard
 
-`dashboard` is a read-only snapshot command over the existing `status` and `doctor` reports. It is a presentation layer only: it does not serve HTTP, watch files, open a browser, scan files, update graphs, refresh embeddings, run cleanup/stop, or mutate config/runtime data.
+`dashboard` is a read-only snapshot command over the existing `status` and `doctor` reports. It is a presentation layer only: it does not watch files, scan files, update graphs, refresh embeddings, run cleanup/stop, or mutate config/runtime data. HTML output can be opened explicitly with `--open` or served explicitly on loopback with `--serve`.
 
 The static HTML dashboard defaults to a dark theme and embeds a CSS-only light theme path. It includes runtime identity, KPI cards, capability banners, first-run guidance, section summaries, inert command cards, and footer links while keeping the page self-contained with no scripts, forms, remote assets, browser storage, or executable controls.
 
 ```bash
 npm run byomem:cli -- dashboard --base-dir /path/to/runtime
 npm run byomem:cli -- dashboard --base-dir /path/to/runtime --format html --output /tmp/byomem-dashboard.html
+npm run byomem:cli -- dashboard --base-dir /path/to/runtime --format html --output /tmp/byomem-dashboard.html --serve --port 0
 ```
 
-Omitting `--format` defaults to JSON on stdout. HTML output requires an explicit `--output` path whose parent directory already exists, writes a self-contained static file, and prints a JSON write report containing `command`, `format`, `outputPath`, and `bytesWritten`.
+Omitting `--format` defaults to JSON on stdout. HTML output requires an explicit `--output` path whose parent directory already exists, writes a self-contained static file, and prints a JSON write report containing `reportSchemaVersion`, `command`, `format`, `outputPath`, and `bytesWritten`. `dashboard --serve` binds only to `127.0.0.1`, serves the generated HTML snapshot from memory, and prints a JSON serve report containing the loopback `url`, `host`, `port`, and `pid`.
 
 ## Codex CLI Usage
 

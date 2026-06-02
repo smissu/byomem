@@ -17,6 +17,7 @@ import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searc
 import { refreshSemanticIndexAfterManualScan } from './file-search-semantic-refresh.js';
 import { openGenerationClient } from './generation-client.js';
 import { createDashboardOpener, serializeDashboardOpenFailure } from './dashboard-open.js';
+import { createDashboardServer, type DashboardServerHandle, type DashboardServerOptions } from './dashboard-server.js';
 import { observeQueue, renderQueueObserver } from './queue-observer.js';
 import { resolveDefaultRuntimeBaseDir } from './readonly-core.js';
 import { buildByomemDashboardModel, renderByomemDashboardHtml } from './dashboard.js';
@@ -36,6 +37,7 @@ const OBSERVER_WATCH_INTERVAL_MIN = 0.1;
 type DashboardCliRequest = {
   format?: string;
   output?: string;
+  port?: string;
   open: boolean;
   serve: boolean;
   refresh: boolean;
@@ -70,6 +72,7 @@ type ObserverWatchMode = { enabled: boolean; intervalSeconds: number };
 type NativeStoreRepairAuthority = 'sqlite' | 'json' | 'abort';
 type DashboardCliDependencies = {
   createDashboardOpener?: typeof createDashboardOpener;
+  createDashboardServer?: (options: DashboardServerOptions) => Promise<DashboardServerHandle>;
 };
 
 function usage(): { error: string; commands: string[] } {
@@ -84,16 +87,25 @@ function jsonDashboardOpenError(payload: {
   command: string;
   outputPath: string;
   bytesWritten: number;
+  openTarget?: string;
+  url?: string;
+  openRequested?: boolean;
+  served?: boolean;
   error: unknown;
 }): void {
   const details = serializeDashboardOpenFailure(payload.error);
   console.error(JSON.stringify({
+    reportSchemaVersion: 1,
     error: details.message,
     command: payload.command,
     format: 'html',
     outputPath: payload.outputPath,
     bytesWritten: payload.bytesWritten,
     opened: false,
+    openTarget: payload.openTarget,
+    url: payload.url,
+    openRequested: payload.openRequested,
+    served: payload.served,
     opener: details,
   }, null, 2));
 }
@@ -105,6 +117,7 @@ function jsonDashboardWriteError(payload: {
 }): void {
   const details = serializeDashboardOpenFailure(payload.error);
   console.error(JSON.stringify({
+    reportSchemaVersion: 1,
     error: details.message,
     command: payload.command,
     format: 'html',
@@ -112,6 +125,30 @@ function jsonDashboardWriteError(payload: {
     bytesWritten: 0,
     opened: false,
     write: details,
+  }, null, 2));
+}
+
+function jsonDashboardServerError(payload: {
+  command: string;
+  outputPath: string;
+  bytesWritten: number;
+  url?: string;
+  openRequested?: boolean;
+  error: unknown;
+  server?: DashboardServerHandle;
+}): void {
+  const details = serializeDashboardOpenFailure(payload.error);
+  console.error(JSON.stringify({
+    reportSchemaVersion: 1,
+    error: details.message,
+    command: payload.command,
+    format: 'html',
+    outputPath: payload.outputPath,
+    bytesWritten: payload.bytesWritten,
+    served: false,
+    url: payload.url,
+    openRequested: payload.openRequested,
+    server: details,
   }, null, 2));
 }
 
@@ -126,6 +163,14 @@ function requireDashboardValue(value: string | undefined, flag: string): string 
   const trimmed = value.trim();
   if (!trimmed) throw new Error(`Missing value for ${flag}`);
   return trimmed;
+}
+
+function parseDashboardPort(raw: string | undefined): number {
+  const value = raw?.trim();
+  if (value === undefined || !/^(0|[1-9]\d*)$/.test(value)) throw new Error('--port must be an integer between 0 and 65535');
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 65535) throw new Error('--port must be an integer between 0 and 65535');
+  return parsed;
 }
 
 function parseMessages(raw: string | undefined): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> | undefined {
@@ -321,6 +366,11 @@ function parseArgs(argv: string[]): {
     else if (arg === '--graph-mode') { payload.graphMode = requireValue(next, '--graph-mode'); i += 1; }
     else if ((command === 'dashboard' || command === 'dashboard-profile') && arg === '--format') { dashboard.format = requireDashboardValue(next, '--format'); i += 1; }
     else if (command === 'dashboard' && arg === '--output') { dashboard.output = requireDashboardValue(next, '--output'); i += 1; }
+    else if (command === 'dashboard' && arg === '--port') {
+      if (dashboard.port !== undefined) throw new Error('--port can only be provided once');
+      dashboard.port = requireDashboardValue(next, '--port');
+      i += 1;
+    }
     else if (command === 'dashboard' && arg === '--open') { dashboard.open = true; }
     else if (command === 'dashboard' && arg === '--serve') { dashboard.serve = true; }
     else if (command === 'dashboard' && arg === '--refresh') { dashboard.refresh = true; }
@@ -662,11 +712,6 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       process.exitCode = 1;
       return;
     }
-    if (dashboard.serve) {
-      jsonError('dashboard does not support --serve', command);
-      process.exitCode = 1;
-      return;
-    }
     if (dashboard.refresh) {
       jsonError('dashboard does not support --refresh', command);
       process.exitCode = 1;
@@ -706,8 +751,21 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       return;
     }
     const outputRaw = dashboard.output?.trim();
+    let dashboardPort: number;
+    try {
+      dashboardPort = parseDashboardPort(dashboard.port ?? '0');
+    } catch (error) {
+      jsonError(error instanceof Error ? error.message : String(error), command);
+      process.exitCode = 1;
+      return;
+    }
     if (dashboard.open && format !== 'html') {
       jsonError('dashboard --open requires --format html --output <path>', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (dashboard.serve && format !== 'html') {
+      jsonError('dashboard --serve requires --format html --output <path>', command);
       process.exitCode = 1;
       return;
     }
@@ -716,12 +774,17 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       process.exitCode = 1;
       return;
     }
+    if (dashboard.serve && outputRaw === undefined) {
+      jsonError('dashboard --serve requires --format html --output <path>', command);
+      process.exitCode = 1;
+      return;
+    }
     if (format === 'html' && outputRaw === undefined) {
       jsonError('dashboard html output requires --output <path>', command);
       process.exitCode = 1;
       return;
     }
-    if (dashboard.open && outputRaw === '-') {
+    if ((dashboard.open || dashboard.serve) && outputRaw === '-') {
       jsonError('dashboard does not support --output -', command);
       process.exitCode = 1;
       return;
@@ -772,7 +835,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
     try {
       writeFileSync(resolvedOutputPath, html, 'utf8');
     } catch (error) {
-      if (dashboard.open) {
+      if (dashboard.open || dashboard.serve) {
         jsonDashboardWriteError({
           command: 'dashboard',
           outputPath: resolvedOutputPath,
@@ -783,8 +846,83 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       }
       throw error;
     }
+    if (dashboard.serve) {
+      const startDashboardServer = dependencies.createDashboardServer ?? createDashboardServer;
+      let server: DashboardServerHandle | undefined;
+      try {
+        server = await startDashboardServer({
+          html,
+          outputPath: resolvedOutputPath,
+          host: '127.0.0.1',
+          port: dashboardPort,
+        });
+      } catch (error) {
+        jsonDashboardServerError({
+          command: 'dashboard',
+          outputPath: resolvedOutputPath,
+          bytesWritten,
+          openRequested: dashboard.open,
+          error,
+        });
+        process.exitCode = 1;
+        return;
+      }
+      const closeServer = async (): Promise<void> => {
+        await server?.close();
+      };
+      const onSigint = (): void => {
+        void closeServer();
+      };
+      const onSigterm = (): void => {
+        void closeServer();
+      };
+      process.once('SIGINT', onSigint);
+      process.once('SIGTERM', onSigterm);
+      try {
+        console.log(JSON.stringify({
+          reportSchemaVersion: 1,
+          command: 'dashboard',
+          format: 'html',
+          outputPath: resolvedOutputPath,
+          bytesWritten,
+          served: true,
+          url: server.url,
+          host: server.host,
+          port: server.port,
+          pid: process.pid,
+          openRequested: dashboard.open,
+          openTarget: dashboard.open ? server.url : undefined,
+        }, null, 2));
+        if (dashboard.open) {
+          const openDashboardUrl = (dependencies.createDashboardOpener ?? createDashboardOpener)();
+          try {
+            await openDashboardUrl(server.url);
+          } catch (error) {
+            await server.close();
+            jsonDashboardOpenError({
+              command: 'dashboard',
+              outputPath: resolvedOutputPath,
+              bytesWritten,
+              openTarget: server.url,
+              url: server.url,
+              openRequested: true,
+              served: false,
+              error,
+            });
+            process.exitCode = 1;
+            return;
+          }
+        }
+        await server.waitUntilClosed();
+      } finally {
+        process.removeListener('SIGINT', onSigint);
+        process.removeListener('SIGTERM', onSigterm);
+      }
+      return;
+    }
     if (!dashboard.open) {
       console.log(JSON.stringify({
+        reportSchemaVersion: 1,
         command: 'dashboard',
         format: 'html',
         outputPath: resolvedOutputPath,
@@ -796,11 +934,13 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
     try {
       await openDashboardHtml(resolvedOutputPath);
       console.log(JSON.stringify({
+        reportSchemaVersion: 1,
         command: 'dashboard',
         format: 'html',
         outputPath: resolvedOutputPath,
         bytesWritten,
         opened: true,
+        openTarget: resolvedOutputPath,
       }, null, 2));
       return;
     } catch (error) {
@@ -808,6 +948,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
         command: 'dashboard',
         outputPath: resolvedOutputPath,
         bytesWritten,
+        openTarget: resolvedOutputPath,
         error,
       });
       process.exitCode = 1;
