@@ -596,15 +596,38 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
     return;
   }
   if (command === 'cleanup' || command === 'stop') {
-    if (flags.apply) {
-      jsonError(`${command} apply mode is not implemented; rerun without --apply for dry-run`, command);
+    if (flags.apply && flags.dryRun) {
+      jsonError(`${command} does not support --apply with --dry-run`, command);
       process.exitCode = 1;
       return;
     }
-    console.log(JSON.stringify(buildProcessCleanupReport({
+    if (flags.deleteData) {
+      jsonError(`${command} does not support --delete-data`, command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.killProcesses) {
+      jsonError(`${command} does not support --kill-processes`, command);
+      process.exitCode = 1;
+      return;
+    }
+    if (flags.force) {
+      jsonError(`${command} does not support --force`, command);
+      process.exitCode = 1;
+      return;
+    }
+    if (command === 'stop' && flags.apply) {
+      jsonError('stop apply mode is not implemented; process termination is out of scope', command);
+      process.exitCode = 1;
+      return;
+    }
+    const report = buildProcessCleanupReport({
       command,
+      mode: flags.apply ? 'apply' : 'dry-run',
       runtimeBaseDir: flags.baseDirProvided ? options.baseDir : resolveDefaultRuntimeBaseDir(process.env),
-    }), null, 2));
+    });
+    console.log(JSON.stringify(report, null, 2));
+    if (report.summary.failed > 0) process.exitCode = 1;
     return;
   }
 

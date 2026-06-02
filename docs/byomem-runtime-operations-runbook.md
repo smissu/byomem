@@ -150,41 +150,49 @@ Each record includes:
 
 MCP entrypoints remove their own record on normal process exit, SIGINT, SIGTERM, or startup failure. A process only removes a record when the id, pid, server name, entrypoint, and startedAt metadata still match.
 
-## Cleanup And Stop Dry Run
+## Cleanup And Stop
 
-`cleanup` and `stop` are dry-run only in this implementation. They classify runtime-state records as:
+`cleanup` is dry-run by default. It classifies runtime-state records as:
 
 - `active-owned`
 - `stale-pid-missing`
 - `stale-heartbeat-expired`
 - `malformed-state`
 
-Every candidate returns:
+Dry-run candidates include whether stale state would be removed:
 
 ```json
 {
-  "action": "none",
+  "action": "would-remove-state",
   "safeToTerminate": false,
-  "safeToRemoveState": false
+  "safeToRemoveState": true
 }
 ```
 
-Summary counters for dry-run action are always zero:
+`safeToTerminate` is always false. Cleanup never kills or signals processes.
 
-- `wouldTerminate: 0`
-- `wouldRemoveState: 0`
+`cleanup --apply` removes only stale BYOMem-owned runtime-state process records whose PIDs are no longer running. It re-reads each candidate immediately before deletion and preserves/refuses records that are active, heartbeat-expired with a live PID, malformed, ownership-mismatched, or changed during the second pass.
+
+`stop` remains dry-run only. `stop --apply` is intentionally not implemented because process termination is out of scope.
 
 ## Apply Mode
 
-`--apply` is intentionally not implemented.
+Use this sequence when stale runtime-state records cause degraded status:
 
 ```bash
+npm run byomem:cli -- cleanup --base-dir /path/to/runtime
 npm run byomem:cli -- cleanup --base-dir /path/to/runtime --apply
-npm run byomem:cli -- stop --base-dir /path/to/runtime --apply
-npm run byomem:cli -- doctor --base-dir /path/to/runtime --apply
+npm run byomem:cli -- doctor --base-dir /path/to/runtime --json
 ```
 
-All three commands fail with a JSON error. No process termination or runtime-state deletion is performed.
+`cleanup --apply` exits 0 for successful removals, no-op runs, and safety refusals. It exits 1 for invalid flags, contract errors, or deletion failures.
+
+These flags fail closed for both `cleanup` and `stop`:
+
+- `--delete-data`
+- `--kill-processes`
+- `--force`
+- `--apply --dry-run`
 
 ## Safe Canary Pattern
 

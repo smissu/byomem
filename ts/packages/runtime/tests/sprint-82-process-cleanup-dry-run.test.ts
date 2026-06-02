@@ -70,7 +70,7 @@ describe('Sprint 82 process cleanup dry-run', () => {
     expect(report).toMatchObject({
       command: 'cleanup',
       dryRun: true,
-      applySupported: false,
+      applySupported: true,
       runtimeBaseDir,
       summary: {
         total: 3,
@@ -78,7 +78,7 @@ describe('Sprint 82 process cleanup dry-run', () => {
         stale: 2,
         malformed: 1,
         wouldTerminate: 0,
-        wouldRemoveState: 0,
+        wouldRemoveState: 1,
       },
     });
     expect(report.candidates.map((candidate) => candidate.classification).sort()).toEqual([
@@ -87,10 +87,15 @@ describe('Sprint 82 process cleanup dry-run', () => {
       'stale-heartbeat-expired',
       'stale-pid-missing',
     ]);
-    expect(report.candidates.every((candidate) => candidate.action === 'none' && candidate.safeToTerminate === false && candidate.safeToRemoveState === false)).toBe(true);
+    expect(report.candidates.every((candidate) => candidate.safeToTerminate === false)).toBe(true);
+    expect(report.candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ classification: 'stale-pid-missing', action: 'would-remove-state', safeToRemoveState: true }),
+      expect.objectContaining({ classification: 'stale-heartbeat-expired', action: 'preserve', safeToRemoveState: false }),
+      expect.objectContaining({ classification: 'malformed-state', action: 'refuse', safeToRemoveState: false }),
+    ]));
   });
 
-  it('prints cleanup dry-run JSON from the CLI and rejects apply mode', async () => {
+  it('prints cleanup dry-run JSON from the CLI', async () => {
     const runtimeBaseDir = tempDir();
     dirs.push(runtimeBaseDir);
     process.env.BYOMEM_RUNTIME_BASE_DIR = runtimeBaseDir;
@@ -119,12 +124,7 @@ describe('Sprint 82 process cleanup dry-run', () => {
       expect(report.summary?.total).toBe(1);
       expect(report.candidates).toHaveLength(1);
 
-      await main(['cleanup', '--base-dir', runtimeBaseDir, '--apply']);
-      expect(process.exitCode).toBe(1);
-      expect(JSON.parse(errorCalls.at(-1) ?? '{}')).toMatchObject({
-        error: 'cleanup apply mode is not implemented; rerun without --apply for dry-run',
-        command: 'cleanup',
-      });
+      expect(errorCalls).toHaveLength(0);
     } finally {
       console.log = originalLog;
       console.error = originalError;
@@ -163,7 +163,7 @@ describe('Sprint 82 process cleanup dry-run', () => {
       await main(['stop', '--base-dir', runtimeBaseDir, '--apply']);
       expect(process.exitCode).toBe(1);
       expect(JSON.parse(errorCalls.at(-1) ?? '{}')).toMatchObject({
-        error: 'stop apply mode is not implemented; rerun without --apply for dry-run',
+        error: 'stop apply mode is not implemented; process termination is out of scope',
         command: 'stop',
       });
     } finally {
