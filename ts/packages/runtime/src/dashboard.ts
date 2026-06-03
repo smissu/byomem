@@ -182,6 +182,7 @@ const MAX_RUNTIME_PROCESS_RECORDS = 24;
 const MAX_RUNTIME_PROCESS_MALFORMED = 24;
 const MAX_RUNTIME_PROCESS_DUPLICATE_ROLES = 24;
 const MAX_RUNTIME_PROCESS_DUPLICATE_RECORDS = 12;
+const DASHBOARD_FAVICON_DATA_URI = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Crect width=%2264%22 height=%2264%22 rx=%2214%22 fill=%22%23111416%22/%3E%3Cpath d=%22M20 32h24M32 20v24M23 23l18 18M41 23L23 41%22 stroke=%22%237cb7ff%22 stroke-width=%224%22 stroke-linecap=%22round%22 opacity=%22.9%22/%3E%3Ccircle cx=%2232%22 cy=%2232%22 r=%2210%22 fill=%22%23181c20%22 stroke=%22%23edf2f7%22 stroke-width=%224%22/%3E%3Ccircle cx=%2218%22 cy=%2218%22 r=%226%22 fill=%22%237bd88f%22/%3E%3Ccircle cx=%2246%22 cy=%2218%22 r=%226%22 fill=%22%237bd88f%22/%3E%3Ccircle cx=%2218%22 cy=%2246%22 r=%226%22 fill=%22%237bd88f%22/%3E%3Ccircle cx=%2246%22 cy=%2246%22 r=%226%22 fill=%22%237bd88f%22/%3E%3Ccircle cx=%2232%22 cy=%2232%22 r=%224%22 fill=%22%23ffd166%22/%3E%3C/svg%3E';
 
 const STATUS_COMPONENT_LABELS: Record<DashboardStatusComponentId, string> = {
   memory: 'Memory',
@@ -1274,6 +1275,7 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="${DASHBOARD_FAVICON_DATA_URI}">
   <title>Byomem Runtime Dashboard</title>
   <style>
     :root {

@@ -109,7 +109,7 @@ Every MCP surface exposes `byomem_runtime_info` for structured runtime verificat
 
 ## Runtime Dashboard
 
-`dashboard` is a read-only snapshot command over the existing `status` and `doctor` reports. It is a presentation layer only: it does not watch files, scan files, update graphs, refresh embeddings, run cleanup/stop, or mutate config/runtime data. HTML output can be opened explicitly with `--open` or served explicitly on loopback with `--serve`.
+`dashboard` is a read-only snapshot command over the existing `status` and `doctor` reports. It is a presentation layer only: it does not watch files, scan files, update graphs, refresh embeddings, run cleanup/stop, or mutate config/runtime data. HTML output can be opened explicitly with `--open` or served explicitly with `--serve`.
 
 The static HTML dashboard defaults to a dark theme and embeds a CSS-only light theme path. It includes runtime identity, KPI cards, capability banners, first-run guidance, section summaries, inert command cards, and footer links while keeping the page self-contained with no scripts, forms, remote assets, browser storage, or executable controls.
 
@@ -117,9 +117,10 @@ The static HTML dashboard defaults to a dark theme and embeds a CSS-only light t
 npm run byomem:cli -- dashboard --base-dir /path/to/project --runtime-base-dir /path/to/runtime
 npm run byomem:cli -- dashboard --base-dir /path/to/project --runtime-base-dir /path/to/runtime --format html --output /tmp/byomem-dashboard.html
 npm run byomem:cli -- dashboard --base-dir /path/to/project --runtime-base-dir /path/to/runtime --format html --output /tmp/byomem-dashboard.html --serve --port 0
+npm run byomem:cli -- dashboard --base-dir /path/to/project --runtime-base-dir /path/to/runtime --format html --output /tmp/byomem-dashboard.html --serve --host 0.0.0.0 --port 8765
 ```
 
-Omitting `--format` defaults to JSON on stdout. HTML output requires an explicit `--output` path whose parent directory already exists, writes a self-contained static file, and prints a JSON write report containing `reportSchemaVersion`, `command`, `format`, `outputPath`, and `bytesWritten`. `dashboard --serve` binds only to `127.0.0.1`, serves the generated HTML snapshot from memory, and prints a JSON serve report containing the loopback `url`, `host`, `port`, and `pid`. Use `--runtime-base-dir` when the dashboard project/profile base and runtime-state base are different. The static Runtime processes panel is read-only and omits raw argv, cwd, and environment values.
+Omitting `--format` defaults to JSON on stdout. HTML output requires an explicit `--output` path whose parent directory already exists, writes a self-contained static file, and prints a JSON write report containing `reportSchemaVersion`, `command`, `format`, `outputPath`, and `bytesWritten`. `dashboard --serve` defaults to `127.0.0.1`, accepts explicit `--host 127.0.0.1` or `--host 0.0.0.0`, serves the generated HTML snapshot from memory, and prints a JSON serve report containing the `url`, `host`, `port`, and `pid`. Use `--host 0.0.0.0` only when you intentionally want the dashboard reachable from another device, such as over Tailscale or a private network. Use `--runtime-base-dir` when the dashboard project/profile base and runtime-state base are different. The static Runtime processes panel is read-only and omits raw argv, cwd, and environment values.
 
 ## Codex CLI Usage
 

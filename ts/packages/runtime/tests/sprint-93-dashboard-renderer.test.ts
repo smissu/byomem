@@ -191,6 +191,15 @@ describe('sprint 93 dashboard renderer', () => {
     expect(html).toContain('2 copy-only commands included.');
   });
 
+  it('embeds a self-contained SVG favicon for browser tabs', () => {
+    const html = renderByomemDashboardHtml(buildDashboardModel() as any);
+
+    expect(html).toContain('<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,');
+    expect(html).toContain('%23111416');
+    expect(html).toContain('%237bd88f');
+    expect(html).toContain('%237cb7ff');
+  });
+
   it('keeps doctor checks collapsed unless a warn or fail check is present and renders empty sections as stable collapsed text', () => {
     const html = renderByomemDashboardHtml(buildEmptyDashboardModel() as any);
 

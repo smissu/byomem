@@ -34,10 +34,11 @@ function expectNoRuntimeArtifacts(baseDir: string): void {
 }
 
 function makeClosedServerHandle(options: DashboardServerOptions, closeSpy = vi.fn(async () => {})): DashboardServerHandle {
+  const host = options.host ?? '127.0.0.1';
   return {
-    host: '127.0.0.1',
+    host,
     port: options.port ?? 0,
-    url: `http://127.0.0.1:${options.port ?? 0}/`,
+    url: `http://${host}:${options.port ?? 0}/`,
     close: closeSpy,
     waitUntilClosed: async () => {},
   };
@@ -143,6 +144,11 @@ describe('sprint 98 dashboard serve', () => {
       { argv: ['dashboard', '--base-dir', runtimeDir, '--format', 'html', '--output', outputPath, '--serve', '--port', '1.5'], error: '--port must be an integer between 0 and 65535' },
       { argv: ['dashboard', '--base-dir', runtimeDir, '--format', 'html', '--output', outputPath, '--serve', '--port', '-1'], error: '--port must be an integer between 0 and 65535' },
       { argv: ['dashboard', '--base-dir', runtimeDir, '--format', 'html', '--output', outputPath, '--serve', '--port', '65536'], error: '--port must be an integer between 0 and 65535' },
+      { argv: ['dashboard', '--base-dir', runtimeDir, '--format', 'html', '--output', outputPath, '--host'], error: 'Missing value for --host' },
+      { argv: ['dashboard', '--base-dir', runtimeDir, '--format', 'html', '--output', outputPath, '--host', '--serve'], error: 'Missing value for --host' },
+      { argv: ['dashboard', '--base-dir', runtimeDir, '--format', 'html', '--output', outputPath, '--serve', '--host', '0.0.0.0', '--host', '127.0.0.1'], error: '--host can only be provided once' },
+      { argv: ['dashboard', '--base-dir', runtimeDir, '--format', 'html', '--output', outputPath, '--serve', '--host', 'localhost'], error: '--host must be 127.0.0.1 or 0.0.0.0' },
+      { argv: ['dashboard', '--base-dir', runtimeDir, '--format', 'html', '--output', outputPath, '--host', '0.0.0.0'], error: 'dashboard --host requires --serve' },
     ] as const;
 
     for (const testCase of invalidCases) {
@@ -164,6 +170,22 @@ describe('sprint 98 dashboard serve', () => {
       expect(process.exitCode).toBeUndefined();
       expect(createDashboardServer.mock.calls.at(-1)?.[0]).toMatchObject({ port });
     }
+
+    await main(['dashboard', '--base-dir', runtimeDir, '--format', 'html', '--output', outputPath, '--serve', '--host', '0.0.0.0', '--port', '48765'], {
+      createDashboardServer,
+    });
+    expect(process.exitCode).toBeUndefined();
+    expect(createDashboardServer.mock.calls.at(-1)?.[0]).toMatchObject({
+      host: '0.0.0.0',
+      port: 48765,
+    });
+    const hostPayload = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0] ?? '{}')) as Record<string, unknown>;
+    expect(hostPayload).toMatchObject({
+      served: true,
+      url: 'http://0.0.0.0:48765/',
+      host: '0.0.0.0',
+      port: 48765,
+    });
 
     expectNoRuntimeArtifacts(runtimeDir);
   });

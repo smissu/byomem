@@ -17,7 +17,7 @@ import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searc
 import { refreshSemanticIndexAfterManualScan } from './file-search-semantic-refresh.js';
 import { openGenerationClient } from './generation-client.js';
 import { createDashboardOpener, serializeDashboardOpenFailure } from './dashboard-open.js';
-import { createDashboardServer, type DashboardServerHandle, type DashboardServerOptions } from './dashboard-server.js';
+import { createDashboardServer, type DashboardServerHandle, type DashboardServerHost, type DashboardServerOptions } from './dashboard-server.js';
 import { observeQueue, renderQueueObserver } from './queue-observer.js';
 import { resolveDefaultRuntimeBaseDir } from './readonly-core.js';
 import { buildByomemDashboardModel, renderByomemDashboardHtml } from './dashboard.js';
@@ -36,6 +36,7 @@ const OBSERVER_WATCH_INTERVAL_MIN = 0.1;
 
 type DashboardCliRequest = {
   format?: string;
+  host?: string;
   output?: string;
   port?: string;
   runtimeBaseDir?: string;
@@ -172,6 +173,12 @@ function parseDashboardPort(raw: string | undefined): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 65535) throw new Error('--port must be an integer between 0 and 65535');
   return parsed;
+}
+
+function parseDashboardHost(raw: string | undefined): DashboardServerHost {
+  const value = raw?.trim();
+  if (value === '127.0.0.1' || value === '0.0.0.0') return value;
+  throw new Error('--host must be 127.0.0.1 or 0.0.0.0');
 }
 
 function parseMessages(raw: string | undefined): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> | undefined {
@@ -370,6 +377,11 @@ function parseArgs(argv: string[]): {
     else if (command === 'dashboard' && arg === '--port') {
       if (dashboard.port !== undefined) throw new Error('--port can only be provided once');
       dashboard.port = requireDashboardValue(next, '--port');
+      i += 1;
+    }
+    else if (command === 'dashboard' && arg === '--host') {
+      if (dashboard.host !== undefined) throw new Error('--host can only be provided once');
+      dashboard.host = requireDashboardValue(next, '--host');
       i += 1;
     }
     else if ((command === 'dashboard' || command === 'dashboard-profile') && arg === '--runtime-base-dir') { dashboard.runtimeBaseDir = requireDashboardValue(next, '--runtime-base-dir'); i += 1; }
@@ -754,10 +766,17 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
     }
     const outputRaw = dashboard.output?.trim();
     let dashboardPort: number;
+    let dashboardHost: DashboardServerHost;
     try {
       dashboardPort = parseDashboardPort(dashboard.port ?? '0');
+      dashboardHost = parseDashboardHost(dashboard.host ?? '127.0.0.1');
     } catch (error) {
       jsonError(error instanceof Error ? error.message : String(error), command);
+      process.exitCode = 1;
+      return;
+    }
+    if (dashboard.host !== undefined && !dashboard.serve) {
+      jsonError('dashboard --host requires --serve', command);
       process.exitCode = 1;
       return;
     }
@@ -855,7 +874,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
         server = await startDashboardServer({
           html,
           outputPath: resolvedOutputPath,
-          host: '127.0.0.1',
+          host: dashboardHost,
           port: dashboardPort,
         });
       } catch (error) {

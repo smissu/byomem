@@ -2,7 +2,7 @@ import { createServer, type Server, type ServerResponse } from 'node:http';
 import { basename } from 'node:path';
 import type { Socket } from 'node:net';
 
-export type DashboardServerHost = '127.0.0.1';
+export type DashboardServerHost = '127.0.0.1' | '0.0.0.0';
 
 export type DashboardServerOptions = {
   html: string;
