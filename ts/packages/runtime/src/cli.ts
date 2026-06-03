@@ -38,6 +38,7 @@ type DashboardCliRequest = {
   format?: string;
   output?: string;
   port?: string;
+  runtimeBaseDir?: string;
   open: boolean;
   serve: boolean;
   refresh: boolean;
@@ -371,6 +372,7 @@ function parseArgs(argv: string[]): {
       dashboard.port = requireDashboardValue(next, '--port');
       i += 1;
     }
+    else if ((command === 'dashboard' || command === 'dashboard-profile') && arg === '--runtime-base-dir') { dashboard.runtimeBaseDir = requireDashboardValue(next, '--runtime-base-dir'); i += 1; }
     else if (command === 'dashboard' && arg === '--open') { dashboard.open = true; }
     else if (command === 'dashboard' && arg === '--serve') { dashboard.serve = true; }
     else if (command === 'dashboard' && arg === '--refresh') { dashboard.refresh = true; }
@@ -809,11 +811,11 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       env: process.env,
       cwd: process.cwd(),
       projectBaseDir: flags.baseDirProvided ? options.baseDir : undefined,
-      runtimeBaseDir: resolveDefaultRuntimeBaseDir(process.env),
+      runtimeBaseDir: dashboard.runtimeBaseDir ? resolve(process.cwd(), dashboard.runtimeBaseDir) : resolveDefaultRuntimeBaseDir(process.env),
       generatedAt,
     };
     const statusReport = buildByomemStatusReport(baseDirOptions);
-    const doctorReport = buildByomemDoctorReport(baseDirOptions);
+    const doctorReport = buildByomemDoctorReport({ ...baseDirOptions, versionBaseDir: statusReport.projectBaseDir });
     const profileSummary = collectDashboardProfileSummary({
       projectBaseDir: statusReport.projectBaseDir,
       runtimeBaseDir: statusReport.runtimeBaseDir,
@@ -1003,7 +1005,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
     const generatedAt = new Date();
     console.log(JSON.stringify(collectDashboardProfileSummary({
       projectBaseDir: flags.baseDirProvided ? options.baseDir : process.cwd(),
-      runtimeBaseDir: resolveDefaultRuntimeBaseDir(process.env),
+      runtimeBaseDir: dashboard.runtimeBaseDir ? resolve(process.cwd(), dashboard.runtimeBaseDir) : resolveDefaultRuntimeBaseDir(process.env),
       collectedAt: generatedAt,
       embeddingBaseUrl: options.embeddingBaseUrl,
       embeddingModel: options.embeddingModel,

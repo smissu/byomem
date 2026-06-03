@@ -53,11 +53,56 @@ export type DashboardCommandCard = {
 };
 
 export type DashboardSectionSummary = {
-  id: DashboardStatusComponentId | 'doctor-checks' | 'warnings' | 'suggested-actions';
+  id: DashboardStatusComponentId | 'runtime-processes' | 'doctor-checks' | 'warnings' | 'suggested-actions';
   label: string;
   status: DashboardStatusComponentStatus | DoctorOverallStatus;
   summary: string;
   href: string;
+};
+
+export type DashboardRuntimeProcessRecord = {
+  role: string;
+  serverName: string;
+  pid: number;
+  ppid: number | null;
+  entrypoint: string;
+  runtimeVersion: string | null;
+  startedAt: string | null;
+  lastHeartbeatAt: string | null;
+  state: 'active' | 'stale';
+  staleReason: 'pid-not-running' | 'heartbeat-expired' | null;
+  path: string;
+};
+
+export type DashboardRuntimeProcessPanel = {
+  source: 'runtime-state';
+  evidenceTier: 'stat-only';
+  evidenceConfidence: DoctorEvidenceConfidence;
+  status: DashboardStatusComponentStatus;
+  summary: string;
+  counts: {
+    total: number;
+    active: number;
+    stale: number;
+    malformed: number;
+  };
+  roles: string[];
+  duplicateActiveRoles: Array<{
+    role: string;
+    count: number;
+    records: Array<{
+      pid: number | null;
+      serverName: string | null;
+      entrypoint: string | null;
+      path: string;
+    }>;
+  }>;
+  records: DashboardRuntimeProcessRecord[];
+  malformed: Array<{
+    path: string;
+    error: string;
+  }>;
+  warnings: string[];
 };
 
 export type DashboardStatusComponent = {
@@ -102,6 +147,7 @@ export type DashboardModel = {
   kpiCards: DashboardKpiCard[];
   capabilityBanners: DashboardCapabilityBanner[];
   profileSummary: DashboardProfileSummary;
+  runtimeProcesses: DashboardRuntimeProcessPanel;
   firstRunGuidance: DashboardCommandCard[];
   sectionSummaries: DashboardSectionSummary[];
   commandCards: DashboardCommandCard[];
@@ -132,6 +178,10 @@ const MAX_CAPABILITY_BANNERS = 8;
 const MAX_FIRST_RUN_GUIDANCE = 8;
 const MAX_SECTION_SUMMARIES = 10;
 const MAX_COMMAND_CARDS = 12;
+const MAX_RUNTIME_PROCESS_RECORDS = 24;
+const MAX_RUNTIME_PROCESS_MALFORMED = 24;
+const MAX_RUNTIME_PROCESS_DUPLICATE_ROLES = 24;
+const MAX_RUNTIME_PROCESS_DUPLICATE_RECORDS = 12;
 
 const STATUS_COMPONENT_LABELS: Record<DashboardStatusComponentId, string> = {
   memory: 'Memory',
@@ -424,6 +474,197 @@ function toCommandCard(id: string, action: DashboardSuggestedAction, summary = '
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) ? value : null;
+}
+
+function processState(value: unknown): 'active' | 'stale' {
+  return value === 'stale' ? 'stale' : 'active';
+}
+
+function staleReason(value: unknown): 'pid-not-running' | 'heartbeat-expired' | null {
+  return value === 'pid-not-running' || value === 'heartbeat-expired' ? value : null;
+}
+
+function findRuntimeProcessLivenessCheck(doctorReport: DoctorReport): DoctorCheck | undefined {
+  return doctorReport.checks.find((check) => check.id === 'runtime-state.process-liveness');
+}
+
+function runtimeProcessWarnings(statusReport: StatusReport, livenessCheck: DoctorCheck | undefined, extra: string[] = []): string[] {
+  return dedupeStrings([
+    ...statusReport.mcpProcesses.warnings,
+    ...(livenessCheck?.warnings ?? []),
+    ...extra,
+  ]);
+}
+
+function mapRuntimeProcessRecord(value: unknown): DashboardRuntimeProcessRecord | null {
+  if (!isRecord(value)) return null;
+  const role = stringOrNull(value.role);
+  const serverName = stringOrNull(value.serverName);
+  const pid = numberOrNull(value.pid);
+  const path = stringOrNull(value.path);
+  if (!role || !serverName || pid === null || !path) return null;
+  return {
+    role,
+    serverName,
+    pid,
+    ppid: numberOrNull(value.ppid),
+    entrypoint: stringOrNull(value.entrypoint) ?? 'not-collected',
+    runtimeVersion: stringOrNull(value.runtimeVersion),
+    startedAt: stringOrNull(value.startedAt),
+    lastHeartbeatAt: stringOrNull(value.lastHeartbeatAt),
+    state: processState(value.state),
+    staleReason: staleReason(value.staleReason),
+    path,
+  };
+}
+
+function mapRuntimeProcessMalformed(value: unknown): { path: string; error: string } | null {
+  if (!isRecord(value)) return null;
+  const path = stringOrNull(value.path);
+  const error = stringOrNull(value.error);
+  if (!path || !error) return null;
+  return { path, error };
+}
+
+function mapRuntimeProcessDuplicateRecord(value: unknown): DashboardRuntimeProcessPanel['duplicateActiveRoles'][number]['records'][number] | null {
+  if (!isRecord(value)) return null;
+  const path = stringOrNull(value.path);
+  if (!path) return null;
+  return {
+    pid: numberOrNull(value.pid),
+    serverName: stringOrNull(value.serverName),
+    entrypoint: stringOrNull(value.entrypoint),
+    path,
+  };
+}
+
+function sortRuntimeProcessDuplicateRecords(
+  records: DashboardRuntimeProcessPanel['duplicateActiveRoles'][number]['records'],
+): DashboardRuntimeProcessPanel['duplicateActiveRoles'][number]['records'] {
+  return [...records].sort((a, b) => (
+    (a.pid ?? Number.MAX_SAFE_INTEGER) - (b.pid ?? Number.MAX_SAFE_INTEGER)
+    || (a.serverName ?? '').localeCompare(b.serverName ?? '')
+    || (a.entrypoint ?? '').localeCompare(b.entrypoint ?? '')
+    || a.path.localeCompare(b.path)
+  ));
+}
+
+function mapRuntimeProcessDuplicateRole(value: unknown): DashboardRuntimeProcessPanel['duplicateActiveRoles'][number] | null {
+  if (!isRecord(value)) return null;
+  const role = stringOrNull(value.role);
+  const count = numberOrNull(value.count);
+  if (!role || count === null) return null;
+  const rawRecords = Array.isArray(value.records) ? value.records : [];
+  const records = sortRuntimeProcessDuplicateRecords(rawRecords
+    .map(mapRuntimeProcessDuplicateRecord)
+    .filter((entry): entry is DashboardRuntimeProcessPanel['duplicateActiveRoles'][number]['records'][number] => Boolean(entry)));
+  const { items: boundedRecords } = truncateItems(records, MAX_RUNTIME_PROCESS_DUPLICATE_RECORDS);
+  return { role, count, records: boundedRecords };
+}
+
+function sortRuntimeProcessDuplicateRoles(
+  duplicates: DashboardRuntimeProcessPanel['duplicateActiveRoles'],
+): DashboardRuntimeProcessPanel['duplicateActiveRoles'] {
+  return [...duplicates].sort((a, b) => (
+    a.role.localeCompare(b.role)
+    || b.count - a.count
+    || (a.records[0]?.pid ?? Number.MAX_SAFE_INTEGER) - (b.records[0]?.pid ?? Number.MAX_SAFE_INTEGER)
+  ));
+}
+
+function runtimeProcessStatus(statusReport: StatusReport): DashboardStatusComponentStatus {
+  const warnings = statusReport.mcpProcesses.warnings ?? [];
+  const duplicateActiveRoles = statusReport.mcpProcesses.duplicateActiveRoles ?? [];
+  const missingDirectory = statusReport.mcpProcesses.count === 0
+    && warnings.some((warning) => warning.toLowerCase().includes('runtime process state directory is missing'));
+  if (missingDirectory) return 'missing';
+  if (
+    statusReport.mcpProcesses.staleCount > 0
+    || statusReport.mcpProcesses.malformedCount > 0
+    || duplicateActiveRoles.length > 0
+    || warnings.length > 0
+  ) return 'degraded';
+  return 'ready';
+}
+
+function runtimeProcessSummary(panel: Omit<DashboardRuntimeProcessPanel, 'summary'>): string {
+  if (panel.status === 'missing') return 'Runtime process state directory is missing.';
+  if (panel.counts.total === 0 && panel.counts.malformed === 0) return 'No runtime process records are present.';
+  const parts = [
+    `${panel.counts.active} active`,
+    `${panel.counts.stale} stale`,
+    `${panel.counts.malformed} malformed`,
+  ];
+  return `${parts.join(', ')} runtime-state record${panel.counts.total === 1 ? '' : 's'} from ${panel.source}.`;
+}
+
+function sortRuntimeProcessRecords(records: DashboardRuntimeProcessRecord[]): DashboardRuntimeProcessRecord[] {
+  const stateRank = (state: DashboardRuntimeProcessRecord['state']) => (state === 'active' ? 0 : 1);
+  return [...records].sort((a, b) => (
+    stateRank(a.state) - stateRank(b.state)
+    || a.role.localeCompare(b.role)
+    || a.pid - b.pid
+    || a.serverName.localeCompare(b.serverName)
+    || a.entrypoint.localeCompare(b.entrypoint)
+    || a.path.localeCompare(b.path)
+  ));
+}
+
+function buildRuntimeProcessPanel(statusReport: StatusReport, doctorReport: DoctorReport): DashboardRuntimeProcessPanel {
+  const livenessCheck = findRuntimeProcessLivenessCheck(doctorReport);
+  const evidence = isRecord(livenessCheck?.evidence) ? livenessCheck.evidence : {};
+  const rawRecords = Array.isArray(evidence.records) ? evidence.records : [];
+  const rawMalformed = Array.isArray(evidence.malformed) ? evidence.malformed : [];
+  const sortedRecords = sortRuntimeProcessRecords(rawRecords.map(mapRuntimeProcessRecord).filter((entry): entry is DashboardRuntimeProcessRecord => Boolean(entry)));
+  const malformed = rawMalformed.map(mapRuntimeProcessMalformed).filter((entry): entry is { path: string; error: string } => Boolean(entry));
+  const duplicateRoles = sortRuntimeProcessDuplicateRoles((statusReport.mcpProcesses.duplicateActiveRoles ?? [])
+    .map(mapRuntimeProcessDuplicateRole)
+    .filter((entry): entry is DashboardRuntimeProcessPanel['duplicateActiveRoles'][number] => Boolean(entry)));
+  const { items: boundedRecords, truncated: recordsTruncated } = truncateItems(sortedRecords, MAX_RUNTIME_PROCESS_RECORDS);
+  const { items: boundedMalformed, truncated: malformedTruncated } = truncateItems(malformed, MAX_RUNTIME_PROCESS_MALFORMED);
+  const { items: boundedDuplicateRoles, truncated: duplicateRolesTruncated } = truncateItems(duplicateRoles, MAX_RUNTIME_PROCESS_DUPLICATE_ROLES);
+  const duplicateRecordsTruncated = duplicateRoles
+    .slice(0, MAX_RUNTIME_PROCESS_DUPLICATE_ROLES)
+    .some((entry) => entry.count > entry.records.length);
+  const counts = {
+    total: statusReport.mcpProcesses.count,
+    active: Math.max(0, statusReport.mcpProcesses.count - statusReport.mcpProcesses.staleCount),
+    stale: statusReport.mcpProcesses.staleCount,
+    malformed: statusReport.mcpProcesses.malformedCount,
+  };
+  const basePanel = {
+    source: 'runtime-state' as const,
+    evidenceTier: 'stat-only' as const,
+    evidenceConfidence: livenessCheck?.evidenceConfidence ?? 'not-applicable',
+    status: runtimeProcessStatus(statusReport),
+    counts,
+    roles: [...(statusReport.mcpProcesses.roles ?? [])].sort(),
+    duplicateActiveRoles: boundedDuplicateRoles,
+    records: boundedRecords,
+    malformed: boundedMalformed,
+    warnings: runtimeProcessWarnings(statusReport, livenessCheck, [
+      ...(duplicateRolesTruncated ? [`Duplicate active role summaries were truncated to ${MAX_RUNTIME_PROCESS_DUPLICATE_ROLES} roles; additional roles were omitted.`] : []),
+      ...(duplicateRecordsTruncated ? [`Duplicate active role records were truncated to ${MAX_RUNTIME_PROCESS_DUPLICATE_RECORDS} records per role; additional records were omitted.`] : []),
+      ...(recordsTruncated ? [`Runtime process records were truncated to ${MAX_RUNTIME_PROCESS_RECORDS} items; additional records were omitted.`] : []),
+      ...(malformedTruncated ? [`Malformed runtime process records were truncated to ${MAX_RUNTIME_PROCESS_MALFORMED} items; additional records were omitted.`] : []),
+    ]),
+  };
+  return {
+    ...basePanel,
+    summary: runtimeProcessSummary(basePanel),
+  };
+}
+
 function buildKpiCards(
   statusComponents: DashboardStatusComponent[],
   doctorChecks: DashboardDoctorCheck[],
@@ -495,6 +736,7 @@ function buildSectionSummaries(
   doctorChecks: DashboardDoctorCheck[],
   warnings: string[],
   suggestedActionCount: number,
+  runtimeProcesses?: DashboardRuntimeProcessPanel,
 ): DashboardSectionSummary[] {
   const componentSummaries = statusComponents.map((component) => ({
     id: component.id,
@@ -505,6 +747,13 @@ function buildSectionSummaries(
   }));
   return [
     ...componentSummaries,
+    ...(runtimeProcesses ? [{
+      id: 'runtime-processes' as const,
+      label: 'Runtime processes',
+      status: runtimeProcesses.status,
+      summary: runtimeProcesses.summary,
+      href: '#runtime-processes',
+    }] : []),
     {
       id: 'doctor-checks',
       label: 'Doctor checks',
@@ -618,6 +867,100 @@ function renderCapabilityBanners(banners: DashboardCapabilityBanner[]): string {
           </dl>
         </article>`)
     .join('')}</div>`;
+}
+
+function renderRuntimeProcessRoles(roles: string[]): string {
+  return renderList(roles.map((role) => escapeHtml(role)));
+}
+
+function renderRuntimeProcessDuplicates(duplicates: DashboardRuntimeProcessPanel['duplicateActiveRoles']): string {
+  if (duplicates.length === 0) return '<p class="empty">None.</p>';
+  return `<div class="stack">${duplicates.map((duplicate) => `
+        <article class="summary-panel">
+          <div class="panel-head">
+            <h3>${escapeHtml(duplicate.role)}</h3>
+            <span class="badge">${escapeHtml(duplicate.count)}</span>
+          </div>
+          <p class="summary">Duplicate active role records.</p>
+          <dl class="meta">
+            ${duplicate.records.map((record) => `
+            <div><dt>PID</dt><dd>${escapeHtml(record.pid ?? 'not-collected')}</dd></div>
+            <div><dt>Server</dt><dd>${escapeHtml(record.serverName ?? 'not-collected')}</dd></div>
+            <div><dt>Entrypoint</dt><dd>${escapeHtml(record.entrypoint ?? 'not-collected')}</dd></div>
+            <div><dt>Path</dt><dd><code>${escapeHtml(record.path)}</code></dd></div>`).join('')}
+          </dl>
+        </article>`).join('')}</div>`;
+}
+
+function renderRuntimeProcessRecords(records: DashboardRuntimeProcessRecord[]): string {
+  if (records.length === 0) return '<p class="empty">None.</p>';
+  return `<div class="grid">${records.map((record) => `
+        <article class="panel status-${escapeHtml(record.state === 'active' ? 'ready' : 'degraded')}">
+          <div class="panel-head">
+            <h3>${escapeHtml(record.role)}</h3>
+            <span class="badge">${escapeHtml(record.state)}</span>
+          </div>
+          <p class="summary">${escapeHtml(record.serverName)}</p>
+          <dl class="meta">
+            <div><dt>PID</dt><dd>${escapeHtml(record.pid)}</dd></div>
+            <div><dt>PPID</dt><dd>${escapeHtml(record.ppid ?? 'not-collected')}</dd></div>
+            <div><dt>Entrypoint</dt><dd>${escapeHtml(record.entrypoint)}</dd></div>
+            <div><dt>Version</dt><dd>${escapeHtml(record.runtimeVersion ?? 'not-collected')}</dd></div>
+            <div><dt>Started</dt><dd>${escapeHtml(record.startedAt ?? 'not-collected')}</dd></div>
+            <div><dt>Heartbeat</dt><dd>${escapeHtml(record.lastHeartbeatAt ?? 'not-collected')}</dd></div>
+            <div><dt>Stale reason</dt><dd>${escapeHtml(record.staleReason ?? 'not-applicable')}</dd></div>
+            <div><dt>Path</dt><dd><code>${escapeHtml(record.path)}</code></dd></div>
+          </dl>
+        </article>`).join('')}</div>`;
+}
+
+function renderRuntimeProcessMalformed(malformed: DashboardRuntimeProcessPanel['malformed']): string {
+  if (malformed.length === 0) return '<p class="empty">None.</p>';
+  return `<ul class="list">${malformed.map((entry) => `<li><code>${escapeHtml(entry.path)}</code>: ${escapeHtml(entry.error)}</li>`).join('')}</ul>`;
+}
+
+function renderRuntimeProcessPanel(panel: DashboardRuntimeProcessPanel): string {
+  return `
+      <div class="summary-grid">
+        <article class="summary-panel status-${escapeHtml(panel.status)}">
+          <div class="panel-head">
+            <h3>Runtime process inventory</h3>
+            <span class="badge">${escapeHtml(panel.status)}</span>
+          </div>
+          <p class="summary">${escapeHtml(panel.summary)}</p>
+          <dl class="meta">
+            <div><dt>Source</dt><dd>${escapeHtml(panel.source)}</dd></div>
+            <div><dt>Evidence</dt><dd>${escapeHtml(panel.evidenceConfidence)} / ${escapeHtml(panel.evidenceTier)}</dd></div>
+            <div><dt>Total</dt><dd>${escapeHtml(panel.counts.total)}</dd></div>
+            <div><dt>Active</dt><dd>${escapeHtml(panel.counts.active)}</dd></div>
+            <div><dt>Stale</dt><dd>${escapeHtml(panel.counts.stale)}</dd></div>
+            <div><dt>Malformed</dt><dd>${escapeHtml(panel.counts.malformed)}</dd></div>
+          </dl>
+        </article>
+        <article class="summary-panel">
+          <div class="panel-head">
+            <h3>Roles</h3>
+            <span class="badge">${escapeHtml(panel.roles.length)}</span>
+          </div>
+          ${renderRuntimeProcessRoles(panel.roles)}
+        </article>
+      </div>
+      <div class="subsection">
+        <h4>Duplicate active roles</h4>
+        ${renderRuntimeProcessDuplicates(panel.duplicateActiveRoles)}
+      </div>
+      <div class="subsection">
+        <h4>Process records</h4>
+        ${renderRuntimeProcessRecords(panel.records)}
+      </div>
+      <div class="subsection">
+        <h4>Malformed records</h4>
+        ${renderRuntimeProcessMalformed(panel.malformed)}
+      </div>
+      <div class="subsection">
+        <h4>Warnings</h4>
+        ${renderList(panel.warnings.map((warning) => escapeHtml(warning)))}
+      </div>`;
 }
 
 function formatNullableCount(value: number | null): string {
@@ -818,9 +1161,10 @@ export function buildByomemDashboardModel(options: BuildByomemDashboardModelOpti
     runtimeBaseDir: statusReport.runtimeBaseDir,
     collectedAt: generatedAt,
   });
+  const runtimeProcesses = buildRuntimeProcessPanel(statusReport, doctorReport);
   const firstRunGuidance = buildFirstRunGuidance(statusComponents, statusReport.runtimeBaseDir);
   const commandCards = buildCommandCards(doctorReport, statusReport.runtimeBaseDir);
-  const sectionSummaries = buildSectionSummaries(statusComponents, doctorChecks, boundedWarnings, commandCards.length);
+  const sectionSummaries = buildSectionSummaries(statusComponents, doctorChecks, boundedWarnings, commandCards.length, runtimeProcesses);
 
   return {
     schemaVersion: 1,
@@ -841,6 +1185,7 @@ export function buildByomemDashboardModel(options: BuildByomemDashboardModelOpti
     kpiCards,
     capabilityBanners,
     profileSummary,
+    runtimeProcesses,
     firstRunGuidance,
     sectionSummaries,
     commandCards,
@@ -860,6 +1205,7 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
     kpiCards?: DashboardKpiCard[];
     capabilityBanners?: DashboardCapabilityBanner[];
     profileSummary?: DashboardProfileSummary;
+    runtimeProcesses?: DashboardRuntimeProcessPanel;
     firstRunGuidance?: DashboardCommandCard[];
     sectionSummaries?: DashboardSectionSummary[];
     commandCards?: DashboardCommandCard[];
@@ -901,6 +1247,7 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
     runtimeBaseDir,
     collectedAt: dashboard.generatedAt,
   });
+  const runtimeProcesses = dashboard.runtimeProcesses;
   const firstRunGuidance = Array.isArray(dashboard.firstRunGuidance) && dashboard.firstRunGuidance.length > 0
     ? dashboard.firstRunGuidance
     : buildFirstRunGuidance(statusComponents, runtimeBaseDir);
@@ -1281,6 +1628,7 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
 
     <nav aria-label="Dashboard sections">
       <a href="#profile-summary">Profile summary</a>
+      <a href="#runtime-processes">Runtime processes</a>
       <a href="#status-components">Status components</a>
       <a href="#doctor-checks">Doctor checks</a>
       <a href="#warnings">Warnings</a>
@@ -1301,6 +1649,14 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
         <p>Read-only project profile evidence collected at ${escapeHtml(profileSummary.collectedAt)}.</p>
       </div>
       ${renderProfileSummary(profileSummary)}
+    </section>
+
+    <section id="runtime-processes">
+      <div class="section-head">
+        <h2>Runtime processes</h2>
+        <p>Static runtime-state process evidence from status and doctor reports.</p>
+      </div>
+      ${runtimeProcesses ? renderRuntimeProcessPanel(runtimeProcesses) : '<p class="empty">None.</p>'}
     </section>
 
     <section id="first-run-guidance">
