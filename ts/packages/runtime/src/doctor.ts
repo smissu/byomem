@@ -247,8 +247,13 @@ function runtimeStateChecks(options: BuildDoctorReportOptions): DoctorCheck[] {
           role: entry.record.role,
           serverName: entry.record.serverName,
           pid: entry.record.pid,
+          ppid: entry.record.ppid,
+          entrypoint: entry.record.entrypoint,
+          runtimeVersion: entry.record.runtimeVersion,
+          startedAt: entry.record.startedAt,
+          lastHeartbeatAt: entry.record.lastHeartbeatAt,
           state: entry.state,
-          staleReason: entry.staleReason,
+          staleReason: entry.staleReason ?? null,
           path: entry.path,
         })),
         malformed: inventory.malformed,
@@ -317,7 +322,7 @@ export function buildByomemDoctorReport(options: BuildDoctorReportOptions): Doct
     processExists: options.processExists,
   });
   const codexConfigPath = resolve(options.codexConfigPath ?? join(homedir(), '.codex', 'config.toml'));
-  const versionBaseDir = resolve(options.versionBaseDir ?? options.cwd ?? process.cwd());
+  const versionBaseDir = resolve(options.versionBaseDir ?? status.projectBaseDir);
   const checks: DoctorCheck[] = [
     versionAlignmentCheck(versionBaseDir, status.runtimeVersion),
     artifactCheck(
