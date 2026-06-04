@@ -3,18 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
-import { inspectNativeStoreConflict, openNativeStore, repairNativeStoreConflict } from './store.js';
 import { openFileSearchDb } from './file-search-db.js';
 import { openFileSearchRegistryDb } from './file-search-db.js';
-import { openGraphDb, type GraphUpdateOptions } from './graph-db.js';
-import { buildFileSearchIndex } from './file-search-index.js';
 import { enrichFileSearchHitsWithGraph } from './file-search-graph-context.js';
-import { listFileSearchProjects, markFileSearchProjectSeen, normalizeFileSearchPollingDisabledReason, registerFileSearchProject, unregisterFileSearchProject } from './file-search-project-registry.js';
-import { configureFileSearchPolling, disableFileSearchPolling, getFileSearchPollingStatus } from './file-search-active-poller.js';
 import { openQueueRuntime } from './queue-runtime.js';
 import { searchIndex } from './search-index.js';
 import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searchIndex as searchFileIndex } from './file-search-query.js';
-import { refreshSemanticIndexAfterManualScan } from './file-search-semantic-refresh.js';
 import { openGenerationClient } from './generation-client.js';
 import { createDashboardOpener, serializeDashboardOpenFailure } from './dashboard-open.js';
 import { createDashboardServer, type DashboardServerHandle, type DashboardServerHost, type DashboardServerOptions } from './dashboard-server.js';
@@ -24,10 +18,7 @@ import { buildByomemDashboardModel, renderByomemDashboardHtml } from './dashboar
 import { collectDashboardProfileSummary } from './dashboard-profile.js';
 import { buildByomemStatusReport } from './status-report.js';
 import { buildByomemDoctorReport } from './doctor.js';
-import { buildProcessCleanupReport } from './process-cleanup.js';
 import { runCodexSessionCaptureCommand } from './codex-session-capture.js';
-import { runConnectCodex } from './codex-connect.js';
-import { runRemoveCodex } from './remove.js';
 
 const GENERATION_COMMANDS = new Set(['generate', 'summarize', 'reason', 'chat']);
 const OBSERVER_COMMANDS = new Set(['queue-observe']);
@@ -42,6 +33,7 @@ type DashboardCliRequest = {
   runtimeBaseDir?: string;
   open: boolean;
   serve: boolean;
+  interactive: boolean;
   refresh: boolean;
   scan: boolean;
   graphUpdate: boolean;
@@ -75,6 +67,14 @@ type NativeStoreRepairAuthority = 'sqlite' | 'json' | 'abort';
 type DashboardCliDependencies = {
   createDashboardOpener?: typeof createDashboardOpener;
   createDashboardServer?: (options: DashboardServerOptions) => Promise<DashboardServerHandle>;
+};
+
+type GraphUpdateOptions = {
+  baseDir: string;
+  graphJsonPath?: string;
+  reportPath?: string;
+  mode?: 'auto' | 'graphify-export' | 'native-source';
+  allowNativeDowngrade?: boolean;
 };
 
 function usage(): { error: string; commands: string[] } {
@@ -219,8 +219,8 @@ type CliFileSearchProject = {
   project_key: string;
   base_dir: string;
   display_name: string;
-  state: ReturnType<typeof registerFileSearchProject>['state'];
-  source: ReturnType<typeof registerFileSearchProject>['source'];
+  state: string;
+  source: string;
   poll_interval_seconds?: number;
   polling_enabled: boolean;
   last_poll_at?: string;
@@ -236,7 +236,26 @@ type CliFileSearchProject = {
   last_error?: string;
 };
 
-function serializeFileSearchProject(project: ReturnType<typeof registerFileSearchProject>): CliFileSearchProject {
+function serializeFileSearchProject(project: {
+  projectKey: string;
+  baseDir: string;
+  displayName: string;
+  state: string;
+  source: string;
+  pollIntervalSeconds?: number;
+  pollingEnabled: boolean;
+  lastPollAt?: string;
+  nextPollAt?: string;
+  consecutiveNoChangePolls: number;
+  idleDisableAfterPolls?: number;
+  pollingDisabledReason?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastSeenAt: string;
+  registeredAt?: string;
+  lastScanAt?: string;
+  lastError?: string;
+}): CliFileSearchProject {
   return {
     project_key: project.projectKey,
     base_dir: project.baseDir,
@@ -299,7 +318,7 @@ function parseArgs(argv: string[]): {
 } {
   const payload: Record<string, string> = {};
   const positionals: string[] = [];
-  const dashboard: DashboardCliRequest = { open: false, serve: false, refresh: false, scan: false, graphUpdate: false, cleanup: false, stop: false };
+  const dashboard: DashboardCliRequest = { open: false, serve: false, interactive: false, refresh: false, scan: false, graphUpdate: false, cleanup: false, stop: false };
   const flags = { watch: false, watchInterval: undefined as string | undefined, baseDirProvided: false, dryRun: false, apply: false, deleteData: false, killProcesses: false, force: false };
   const options: CliOptions = {
     baseDir: resolve(tmpdir(), `byomem-cli-${randomUUID()}`),
@@ -387,6 +406,7 @@ function parseArgs(argv: string[]): {
     else if ((command === 'dashboard' || command === 'dashboard-profile') && arg === '--runtime-base-dir') { dashboard.runtimeBaseDir = requireDashboardValue(next, '--runtime-base-dir'); i += 1; }
     else if (command === 'dashboard' && arg === '--open') { dashboard.open = true; }
     else if (command === 'dashboard' && arg === '--serve') { dashboard.serve = true; }
+    else if (command === 'dashboard' && arg === '--interactive') { dashboard.interactive = true; }
     else if (command === 'dashboard' && arg === '--refresh') { dashboard.refresh = true; }
     else if (command === 'dashboard' && arg === '--scan') { dashboard.scan = true; }
     else if (command === 'dashboard' && arg === '--graph-update') { dashboard.graphUpdate = true; }
@@ -593,6 +613,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       process.exitCode = 1;
       return;
     }
+    const { runRemoveCodex } = await import('./remove.js');
     const report = runRemoveCodex({
       mode: flags.apply ? 'apply' : 'dry-run',
       runtimeBaseDir: flags.baseDirProvided ? options.baseDir : resolveDefaultRuntimeBaseDir(process.env),
@@ -616,6 +637,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       process.exitCode = 1;
       return;
     }
+    const { runConnectCodex } = await import('./codex-connect.js');
     const report = runConnectCodex({
       mode: flags.apply ? 'apply' : 'dry-run',
       codexConfigPath: payload.codexConfigPath,
@@ -685,6 +707,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       process.exitCode = 1;
       return;
     }
+    const { buildProcessCleanupReport } = await import('./process-cleanup.js');
     const report = buildProcessCleanupReport({
       command,
       mode: flags.apply ? 'apply' : 'dry-run',
@@ -780,8 +803,18 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       process.exitCode = 1;
       return;
     }
+    if (dashboard.interactive && !dashboard.serve) {
+      jsonError('dashboard --interactive requires --serve --format html --output <path>', command);
+      process.exitCode = 1;
+      return;
+    }
     if (dashboard.open && format !== 'html') {
       jsonError('dashboard --open requires --format html --output <path>', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (dashboard.interactive && format !== 'html') {
+      jsonError('dashboard --interactive requires --serve --format html --output <path>', command);
       process.exitCode = 1;
       return;
     }
@@ -797,6 +830,11 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
     }
     if (dashboard.serve && outputRaw === undefined) {
       jsonError('dashboard --serve requires --format html --output <path>', command);
+      process.exitCode = 1;
+      return;
+    }
+    if (dashboard.interactive && outputRaw === undefined) {
+      jsonError('dashboard --interactive requires --serve --format html --output <path>', command);
       process.exitCode = 1;
       return;
     }
@@ -876,6 +914,15 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
           outputPath: resolvedOutputPath,
           host: dashboardHost,
           port: dashboardPort,
+          ...(dashboard.interactive ? {
+            interactive: true,
+            evidenceSource: 'startup-cache' as const,
+            contexts: dashboardModel.activeContext.options.map((context) => ({
+              ...context,
+              summary: context.contextId === dashboardModel.selectedContext.contextId ? dashboardModel.selectedContext.summary : context.label,
+              source: 'startup-cache' as const,
+            })),
+          } : {}),
         });
       } catch (error) {
         jsonDashboardServerError({
@@ -907,6 +954,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
           outputPath: resolvedOutputPath,
           bytesWritten,
           served: true,
+          interactive: dashboard.interactive,
           url: server.url,
           host: server.host,
           port: server.port,
@@ -1043,9 +1091,9 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
   const isFileSearchScanCommand = command === 'file-search-scan';
   const isFileSearchStatusCommand = command === 'file-search-status';
   const isFileSearchSemanticRefreshCommand = command === 'file-search-semantic-refresh';
-  let store: ReturnType<typeof openNativeStore> | undefined;
+  let store: any;
   let fileSearchStore: DirectFileSearchCliStore | undefined;
-  let graphStore: ReturnType<typeof openGraphDb> | undefined;
+  let graphStore: any;
   let queueRuntime: ReturnType<typeof openQueueRuntime> | undefined;
   let memorySearchRequest: MemorySearchCliRequest | undefined;
   let fileSearchRequest: FileSearchCliRequest | undefined;
@@ -1059,6 +1107,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
     graphRequest = command === 'graph-query' || command === 'graph-explain' ? parseGraphRequest(payload, command) : undefined;
     graphPathRequest = command === 'graph-path' ? parseGraphPathRequest(payload) : undefined;
     if (isNativeStoreConflictCommand) {
+      const { inspectNativeStoreConflict, repairNativeStoreConflict } = await import('./store.js');
       if (command === 'native-store-inspect') {
         console.log(JSON.stringify({ inspection: inspectNativeStoreConflict(options) }, null, 2));
         return;
@@ -1076,6 +1125,12 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       return;
     }
     if (isFileSearchPollingCommand) {
+      const {
+        configureFileSearchPolling,
+        disableFileSearchPolling,
+        getFileSearchPollingStatus,
+      } = await import('./file-search-active-poller.js');
+      const { normalizeFileSearchPollingDisabledReason } = await import('./file-search-project-registry.js');
       if (!flags.baseDirProvided) throw new Error(`Missing --base-dir for ${command}`);
       if (command === 'file-search-polling-status') {
         const polling = getFileSearchPollingStatus(options.baseDir);
@@ -1095,6 +1150,11 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       return;
     }
     if (isFileSearchRegistryCommand) {
+      const {
+        listFileSearchProjects,
+        registerFileSearchProject,
+        unregisterFileSearchProject,
+      } = await import('./file-search-project-registry.js');
       if ((command === 'file-search-project-register' || command === 'file-search-project-unregister') && !flags.baseDirProvided) {
         throw new Error(`Missing --base-dir for ${command}`);
       }
@@ -1121,8 +1181,10 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
     if (isFileSearchCommand) {
       fileSearchStore = openDirectFileSearchCliStore(options);
     } else if (isGraphCommand) {
+      const { openGraphDb } = await import('./graph-db.js');
       graphStore = openGraphDb({ baseDir: options.baseDir });
     } else if (!isGenerationCommand && !isObserverCommand) {
+      const { openNativeStore } = await import('./store.js');
       store = openNativeStore({
         ...options,
         embeddingRequireRemote: true,
@@ -1145,6 +1207,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
     }
 
     if (command === 'file-search-semantic-refresh') {
+      const { buildFileSearchIndex } = await import('./file-search-index.js');
       if (!flags.baseDirProvided) throw new Error('Missing --base-dir for file-search-semantic-refresh');
       if (!fileSearchStore?.fileSearchDb) throw new Error('Missing file-search DB');
       const limit = parseOptionalPositiveIntegerFlag(payload, 'limit', '--limit');
@@ -1155,6 +1218,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       return;
     }
     if (command === 'file-search-status') {
+      const { buildFileSearchIndex } = await import('./file-search-index.js');
       if (!fileSearchStore) throw new Error('Missing file-search DB');
       const scanner = fileSearchStore.fileSearchDb.getScannerStatus();
       const index = buildFileSearchIndex(fileSearchStore as never).stats();
@@ -1162,6 +1226,8 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       return;
     }
     if (command === 'file-search-scan') {
+      const { buildFileSearchIndex } = await import('./file-search-index.js');
+      const { refreshSemanticIndexAfterManualScan } = await import('./file-search-semantic-refresh.js');
       if (!fileSearchStore) throw new Error('Missing file-search DB');
       fileSearchStore.fileSearchDb.scanAndIndex();
       const refreshLimit = parseOptionalPositiveIntegerFlag(payload, 'limit', '--limit');
@@ -1175,6 +1241,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       return;
     }
     if (command === 'file-search') {
+      const { buildFileSearchIndex } = await import('./file-search-index.js');
       if (!fileSearchStore) throw new Error('Missing file-search DB');
       if (!fileSearchRequest) throw new Error('Missing file-search request');
       const { query, mode, limit } = fileSearchRequest;

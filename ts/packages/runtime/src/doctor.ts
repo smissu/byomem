@@ -252,6 +252,7 @@ function runtimeStateChecks(options: BuildDoctorReportOptions): DoctorCheck[] {
           runtimeVersion: entry.record.runtimeVersion,
           startedAt: entry.record.startedAt,
           lastHeartbeatAt: entry.record.lastHeartbeatAt,
+          identity: entry.record.identity ?? null,
           state: entry.state,
           staleReason: entry.staleReason ?? null,
           path: entry.path,

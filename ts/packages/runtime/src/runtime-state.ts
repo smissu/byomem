@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { BYOMEM_RUNTIME_VERSION } from './version.js';
@@ -18,6 +18,17 @@ export type RuntimeProcessRecord = {
   runtimeVersion: string;
   startedAt: string;
   lastHeartbeatAt: string;
+  identity?: RuntimeProcessIdentity | null;
+};
+
+export type RuntimeProcessIdentity = {
+  projectKey: string | null;
+  projectDisplayName: string | null;
+  projectBaseDir: string | null;
+  projectSource: 'explicit' | 'active-project' | 'git' | 'env' | 'unknown';
+  sessionKey: string | null;
+  sessionLabel: string | null;
+  clientInstanceId: string | null;
 };
 
 export type RuntimeProcessState = 'active' | 'stale';
@@ -92,6 +103,7 @@ export type RegisterRuntimeProcessOptions = {
   argv?: string[];
   cwd?: string;
   now?: Date | string;
+  identity?: Partial<RuntimeProcessIdentity> | null;
 };
 
 export type RuntimeProcessInventoryOptions = {
@@ -125,6 +137,81 @@ function normalizeTimestamp(value?: Date | string): string {
 
 function sanitizePathPart(value: string): string {
   return value.trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'process';
+}
+
+function hashIdentityValue(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function stripUnsafeDisplayText(value: string, maxLength: number): string | null {
+  const envLike = value.includes('_');
+  const normalized = value
+    .replace(/<\/?script[^>]*>/gi, '')
+    .replace(/[<>]/g, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength)
+    .trim();
+  return normalized ? (envLike ? normalized.toLowerCase() : normalized) : null;
+}
+
+function normalizeIdentityKey(value: unknown, maxLength = 96): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const pathOnly = trimmed.startsWith('/') && !/\s/.test(trimmed);
+  const source = pathOnly ? basename(trimmed) : trimmed;
+  const normalized = source
+    .toLowerCase()
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/[-.]{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, maxLength)
+    .replace(/^-+|-+$/g, '');
+  return normalized || null;
+}
+
+function normalizeProjectSource(value: unknown): RuntimeProcessIdentity['projectSource'] {
+  return value === 'explicit' || value === 'active-project' || value === 'git' || value === 'env' || value === 'unknown'
+    ? value
+    : 'unknown';
+}
+
+function normalizeProjectBaseDir(value: unknown, rawProjectKey: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  if (typeof rawProjectKey === 'string' && rawProjectKey.trim() === value.trim()) return null;
+  const cleaned = value.replace(/[\u0000-\u001f\u007f]+/g, '').trim();
+  return cleaned.length > 512 ? cleaned.slice(0, 512) : cleaned;
+}
+
+function normalizeRuntimeProcessIdentity(value: unknown): RuntimeProcessIdentity | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const identity = value as Partial<RuntimeProcessIdentity>;
+  const rawSessionKey = typeof identity.sessionKey === 'string' ? identity.sessionKey.trim() : '';
+  const normalized: RuntimeProcessIdentity = {
+    projectKey: normalizeIdentityKey(identity.projectKey),
+    projectDisplayName: stripUnsafeDisplayText(String(identity.projectDisplayName ?? ''), 128),
+    projectBaseDir: normalizeProjectBaseDir(identity.projectBaseDir, identity.projectKey),
+    projectSource: normalizeProjectSource(identity.projectSource),
+    sessionKey: /^[a-f0-9]{64}$/.test(rawSessionKey) ? rawSessionKey : rawSessionKey ? hashIdentityValue(rawSessionKey) : null,
+    sessionLabel: rawSessionKey && identity.sessionLabel === rawSessionKey ? null : stripUnsafeDisplayText(String(identity.sessionLabel ?? ''), 128),
+    clientInstanceId: typeof identity.clientInstanceId === 'string' && identity.clientInstanceId.includes('=')
+      ? hashIdentityValue(identity.clientInstanceId)
+      : normalizeIdentityKey(identity.clientInstanceId, 64),
+  };
+  if (
+    !normalized.projectKey
+    && !normalized.projectDisplayName
+    && !normalized.projectBaseDir
+    && normalized.projectSource === 'unknown'
+    && !normalized.sessionKey
+    && !normalized.sessionLabel
+    && !normalized.clientInstanceId
+  ) return null;
+  return normalized;
 }
 
 export function runtimeProcessStateDir(runtimeBaseDir: string): string {
@@ -180,6 +267,7 @@ function parseRuntimeProcessRecord(raw: unknown): RuntimeProcessRecord {
     runtimeVersion: record.runtimeVersion,
     startedAt: record.startedAt,
     lastHeartbeatAt: record.lastHeartbeatAt,
+    identity: normalizeRuntimeProcessIdentity((raw as { identity?: unknown }).identity),
   };
 }
 
@@ -206,6 +294,7 @@ export function registerRuntimeProcess(options: RegisterRuntimeProcessOptions): 
     runtimeVersion: BYOMEM_RUNTIME_VERSION,
     startedAt,
     lastHeartbeatAt: startedAt,
+    identity: normalizeRuntimeProcessIdentity(options.identity),
   };
   const path = runtimeProcessRecordPath(options.runtimeBaseDir, record);
   writeJsonAtomic(path, record);

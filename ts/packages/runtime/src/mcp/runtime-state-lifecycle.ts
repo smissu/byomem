@@ -1,8 +1,10 @@
 import { resolveDefaultRuntimeBaseDir } from '../readonly-core.js';
+import { resolveActiveProjectContext } from '../identity.js';
 import {
   isCanonicalByomemMcpRuntimeProcess,
   readRuntimeProcessInventory,
   registerRuntimeProcess,
+  type RuntimeProcessIdentity,
   type RuntimeProcessInventoryEntry,
   type RuntimeProcessRegistration,
   type RuntimeProcessRole,
@@ -19,6 +21,7 @@ export type RuntimeStateLifecycleOptions = {
   argv?: string[];
   cwd?: string;
   now?: Date | string;
+  identity?: Partial<RuntimeProcessIdentity> | null;
   staleAfterMs?: number;
   processExists?: (pid: number) => boolean;
   duplicatePolicy?: 'observe' | 'strict';
@@ -61,6 +64,26 @@ function writeDuplicateDiagnostic(prefix: string, role: RuntimeProcessRole, entr
   process.stderr.write(`${prefix} BYOMem MCP role ${role}; active canonical record pid(s): ${pids}\n`);
 }
 
+function runtimeProjectSource(source: 'env' | 'git' | 'cwd'): RuntimeProcessIdentity['projectSource'] {
+  if (source === 'env' || source === 'git') return source;
+  return 'active-project';
+}
+
+function resolveRuntimeProcessIdentity(options: RuntimeStateLifecycleOptions): Partial<RuntimeProcessIdentity> | null {
+  if (options.identity !== undefined) return options.identity;
+  const context = resolveActiveProjectContext(options.env ?? process.env, options.cwd ?? process.cwd());
+  const metadata = context.activeProjectMetadata;
+  return {
+    projectKey: context.projectKey,
+    projectDisplayName: null,
+    projectBaseDir: metadata.path,
+    projectSource: runtimeProjectSource(metadata.source),
+    sessionKey: null,
+    sessionLabel: null,
+    clientInstanceId: null,
+  };
+}
+
 export function registerMcpRuntimeState(options: RuntimeStateLifecycleOptions): RuntimeStateLifecycle {
   const runtimeBaseDir = options.runtimeBaseDir ?? resolveDefaultRuntimeBaseDir(options.env ?? process.env);
   const canonicalAttempt = isCanonicalByomemMcpRuntimeProcess(options);
@@ -84,6 +107,7 @@ export function registerMcpRuntimeState(options: RuntimeStateLifecycleOptions): 
     argv: options.argv,
     cwd: options.cwd,
     now: options.now,
+    identity: resolveRuntimeProcessIdentity(options),
   });
   options.afterRegister?.({ runtimeBaseDir, registration });
 

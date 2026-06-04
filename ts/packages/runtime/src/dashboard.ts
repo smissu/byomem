@@ -72,6 +72,49 @@ export type DashboardRuntimeProcessRecord = {
   state: 'active' | 'stale';
   staleReason: 'pid-not-running' | 'heartbeat-expired' | null;
   path: string;
+  identity: DashboardRuntimeProcessIdentity | null;
+};
+
+export type DashboardRuntimeProcessIdentity = {
+  projectKey: string | null;
+  projectDisplayName: string | null;
+  projectBaseDir: string | null;
+  projectSource: string | null;
+  sessionKey: string | null;
+  sessionLabel: string | null;
+  clientInstanceId: string | null;
+};
+
+export type DashboardContextOption = {
+  contextId: string;
+  status: 'ready' | 'degraded' | 'stale' | 'unknown';
+  label: string;
+  projectKey: string | null;
+  projectDisplayName: string | null;
+  projectBaseDir: string | null;
+  sessionKey: string | null;
+  sessionLabel: string | null;
+  roles: string[];
+  processCounts: {
+    total: number;
+    active: number;
+    stale: number;
+    malformed: number;
+  };
+  startedAt: string | null;
+  lastHeartbeatAt: string | null;
+  evidenceConfidence: DoctorEvidenceConfidence;
+  warnings: string[];
+};
+
+export type DashboardSelectedContext = DashboardContextOption & {
+  summary: string;
+};
+
+export type DashboardActiveContext = {
+  selectedContextId: string;
+  options: DashboardContextOption[];
+  warnings: string[];
 };
 
 export type DashboardRuntimeProcessPanel = {
@@ -148,6 +191,8 @@ export type DashboardModel = {
   capabilityBanners: DashboardCapabilityBanner[];
   profileSummary: DashboardProfileSummary;
   runtimeProcesses: DashboardRuntimeProcessPanel;
+  activeContext: DashboardActiveContext;
+  selectedContext: DashboardSelectedContext;
   firstRunGuidance: DashboardCommandCard[];
   sectionSummaries: DashboardSectionSummary[];
   commandCards: DashboardCommandCard[];
@@ -182,6 +227,7 @@ const MAX_RUNTIME_PROCESS_RECORDS = 24;
 const MAX_RUNTIME_PROCESS_MALFORMED = 24;
 const MAX_RUNTIME_PROCESS_DUPLICATE_ROLES = 24;
 const MAX_RUNTIME_PROCESS_DUPLICATE_RECORDS = 12;
+const MAX_ACTIVE_CONTEXT_OPTIONS = 24;
 const DASHBOARD_FAVICON_DATA_URI = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Crect width=%2264%22 height=%2264%22 rx=%2214%22 fill=%22%23111416%22/%3E%3Cpath d=%22M20 32h24M32 20v24M23 23l18 18M41 23L23 41%22 stroke=%22%237cb7ff%22 stroke-width=%224%22 stroke-linecap=%22round%22 opacity=%22.9%22/%3E%3Ccircle cx=%2232%22 cy=%2232%22 r=%2210%22 fill=%22%23181c20%22 stroke=%22%23edf2f7%22 stroke-width=%224%22/%3E%3Ccircle cx=%2218%22 cy=%2218%22 r=%226%22 fill=%22%237bd88f%22/%3E%3Ccircle cx=%2246%22 cy=%2218%22 r=%226%22 fill=%22%237bd88f%22/%3E%3Ccircle cx=%2218%22 cy=%2246%22 r=%226%22 fill=%22%237bd88f%22/%3E%3Ccircle cx=%2246%22 cy=%2246%22 r=%226%22 fill=%22%237bd88f%22/%3E%3Ccircle cx=%2232%22 cy=%2232%22 r=%224%22 fill=%22%23ffd166%22/%3E%3C/svg%3E';
 
 const STATUS_COMPONENT_LABELS: Record<DashboardStatusComponentId, string> = {
@@ -495,6 +541,19 @@ function staleReason(value: unknown): 'pid-not-running' | 'heartbeat-expired' | 
   return value === 'pid-not-running' || value === 'heartbeat-expired' ? value : null;
 }
 
+function mapRuntimeProcessIdentity(value: unknown): DashboardRuntimeProcessIdentity | null {
+  if (!isRecord(value)) return null;
+  return {
+    projectKey: stringOrNull(value.projectKey),
+    projectDisplayName: stringOrNull(value.projectDisplayName),
+    projectBaseDir: stringOrNull(value.projectBaseDir),
+    projectSource: stringOrNull(value.projectSource),
+    sessionKey: stringOrNull(value.sessionKey),
+    sessionLabel: stringOrNull(value.sessionLabel),
+    clientInstanceId: stringOrNull(value.clientInstanceId),
+  };
+}
+
 function findRuntimeProcessLivenessCheck(doctorReport: DoctorReport): DoctorCheck | undefined {
   return doctorReport.checks.find((check) => check.id === 'runtime-state.process-liveness');
 }
@@ -526,6 +585,7 @@ function mapRuntimeProcessRecord(value: unknown): DashboardRuntimeProcessRecord 
     state: processState(value.state),
     staleReason: staleReason(value.staleReason),
     path,
+    identity: mapRuntimeProcessIdentity(value.identity),
   };
 }
 
@@ -663,6 +723,162 @@ function buildRuntimeProcessPanel(statusReport: StatusReport, doctorReport: Doct
   return {
     ...basePanel,
     summary: runtimeProcessSummary(basePanel),
+  };
+}
+
+function compareNullableTimestamp(a: string | null, b: string | null, direction: 'asc' | 'desc'): string | null {
+  if (!a) return b;
+  if (!b) return a;
+  const aMs = Date.parse(a);
+  const bMs = Date.parse(b);
+  if (Number.isNaN(aMs)) return b;
+  if (Number.isNaN(bMs)) return a;
+  return direction === 'asc' ? (aMs <= bMs ? a : b) : (aMs >= bMs ? a : b);
+}
+
+function basenameFromPath(value: string): string {
+  const parts = value.split(/[\\/]+/).filter(Boolean);
+  return parts.at(-1) ?? value;
+}
+
+function contextIdForRecord(record: DashboardRuntimeProcessRecord, fallbackProjectKey: string): string {
+  const identity = record.identity;
+  if (!identity?.projectKey && !identity?.sessionKey) return `project:${fallbackProjectKey}`;
+  if (identity?.projectKey && !identity.sessionKey) return `project:${identity.projectKey}`;
+  const projectKey = identity?.projectKey ?? 'unknown-project';
+  const sessionKey = identity?.sessionKey ?? 'unknown-session';
+  return `${projectKey}:${sessionKey}`;
+}
+
+function contextLabel(
+  identity: DashboardRuntimeProcessIdentity | null,
+  contextId: string,
+  records: DashboardRuntimeProcessRecord[],
+  fallbackProjectDisplayName: string,
+): string {
+  if (!identity) {
+    const count = records.length;
+    return `${fallbackProjectDisplayName} (${count} MCP session${count === 1 ? '' : 's'})`;
+  }
+  const project = identity.projectDisplayName ?? identity.projectKey;
+  const session = identity.sessionLabel ?? identity.sessionKey;
+  if (project && !session) {
+    const count = records.length;
+    return `${project} (${count} MCP session${count === 1 ? '' : 's'})`;
+  }
+  if (project && session) return `${project} / ${session}`;
+  return project ?? session ?? contextId;
+}
+
+function contextStatus(records: DashboardRuntimeProcessRecord[], malformedCount: number, warnings: string[]): DashboardContextOption['status'] {
+  if (records.length === 0) return malformedCount > 0 || warnings.length > 0 ? 'degraded' : 'unknown';
+  if (records.every((record) => record.state === 'stale')) return 'stale';
+  if (records.some((record) => record.state === 'stale') || malformedCount > 0 || warnings.length > 0) return 'degraded';
+  if (records.some((record) => !record.identity)) return 'unknown';
+  return 'ready';
+}
+
+function selectedContextSummary(option: DashboardContextOption): string {
+  const parts = [
+    option.label,
+    `${option.processCounts.active} active`,
+    `${option.processCounts.stale} stale`,
+    `${option.processCounts.malformed} malformed`,
+    option.roles.length ? `roles: ${option.roles.join(', ')}` : 'roles: none',
+  ];
+  return `Selected context summary: ${parts.join('; ')}.`;
+}
+
+function buildActiveContext(runtimeProcesses: DashboardRuntimeProcessPanel, statusReport: StatusReport): {
+  activeContext: DashboardActiveContext;
+  selectedContext: DashboardSelectedContext;
+} {
+  const warnings: string[] = [];
+  const groups = new Map<string, DashboardRuntimeProcessRecord[]>();
+  const fallbackProjectKey = statusReport.projectKey || 'active-project';
+  const fallbackProjectDisplayName = basenameFromPath(statusReport.projectBaseDir) || fallbackProjectKey;
+  let unknownRecords = 0;
+  for (const record of runtimeProcesses.records) {
+    const contextId = contextIdForRecord(record, fallbackProjectKey);
+    if (!record.identity) unknownRecords += 1;
+    const records = groups.get(contextId) ?? [];
+    records.push(record);
+    groups.set(contextId, records);
+  }
+  if (unknownRecords > 0) warnings.push(`${unknownRecords} runtime process record(s) had unknown safe active-context identity and were grouped under the active project fallback.`);
+  for (const [contextId, records] of groups) {
+    const clientIds = new Set(records.map((record) => record.identity?.clientInstanceId).filter(Boolean));
+    if (clientIds.size > 1) warnings.push(`Active context identity collision detected for ${contextId}; multiple client instances share the same project/session keys.`);
+  }
+  if (runtimeProcesses.records.length > MAX_ACTIVE_CONTEXT_OPTIONS || groups.size > MAX_ACTIVE_CONTEXT_OPTIONS) {
+    warnings.push(`Active context options were truncated to ${MAX_ACTIVE_CONTEXT_OPTIONS} items; additional runtime records or contexts were omitted.`);
+  }
+  if (runtimeProcesses.warnings.some((warning) => warning.toLowerCase().includes('truncated'))) {
+    warnings.push(`Active context options were truncated to ${MAX_ACTIVE_CONTEXT_OPTIONS} items; additional runtime records or contexts were omitted.`);
+  }
+
+  const options = [...groups.entries()]
+    .map(([contextId, records]): DashboardContextOption => {
+      const identity = records.find((record) => record.identity)?.identity ?? null;
+      const active = records.filter((record) => record.state === 'active').length;
+      const stale = records.filter((record) => record.state === 'stale').length;
+      const contextWarnings = warnings.filter((warning) => warning.includes(contextId));
+      return {
+        contextId,
+        status: contextStatus(records, 0, contextWarnings),
+        label: contextLabel(identity, contextId, records, fallbackProjectDisplayName),
+        projectKey: identity?.projectKey ?? (!identity ? fallbackProjectKey : null),
+        projectDisplayName: identity?.projectDisplayName ?? (!identity ? fallbackProjectDisplayName : null),
+        projectBaseDir: identity?.projectBaseDir ?? null,
+        sessionKey: identity?.sessionKey ?? null,
+        sessionLabel: identity?.sessionLabel ?? null,
+        roles: dedupeStrings(records.map((record) => record.role)).sort(),
+        processCounts: {
+          total: records.length,
+          active,
+          stale,
+          malformed: 0,
+        },
+        startedAt: records.reduce<string | null>((candidate, record) => compareNullableTimestamp(candidate, record.startedAt, 'asc'), null),
+        lastHeartbeatAt: records.reduce<string | null>((candidate, record) => compareNullableTimestamp(candidate, record.lastHeartbeatAt, 'desc'), null),
+        evidenceConfidence: records.some((record) => record.identity && record.state === 'active') ? 'definite' : runtimeProcesses.evidenceConfidence,
+        warnings: contextWarnings,
+      };
+    })
+    .sort((a, b) => (
+      (a.contextId.startsWith('unknown:') ? 1 : 0) - (b.contextId.startsWith('unknown:') ? 1 : 0)
+      || (a.startedAt ?? '').localeCompare(b.startedAt ?? '')
+      || a.contextId.localeCompare(b.contextId)
+    ))
+    .slice(0, MAX_ACTIVE_CONTEXT_OPTIONS);
+
+  const fallback: DashboardContextOption = {
+    contextId: 'alpha',
+    status: runtimeProcesses.counts.total > 0 ? 'unknown' : 'unknown',
+    label: runtimeProcesses.counts.total > 0 ? 'Unknown session' : 'Active sessions unavailable',
+    projectKey: null,
+    projectDisplayName: null,
+    projectBaseDir: null,
+    sessionKey: null,
+    sessionLabel: null,
+    roles: runtimeProcesses.roles,
+    processCounts: runtimeProcesses.counts,
+    startedAt: null,
+    lastHeartbeatAt: null,
+    evidenceConfidence: runtimeProcesses.evidenceConfidence,
+    warnings: runtimeProcesses.warnings,
+  };
+  const selected = options[0] ?? fallback;
+  return {
+    activeContext: {
+      selectedContextId: selected.contextId,
+      options: options.length ? options : [fallback],
+      warnings: dedupeStrings(warnings),
+    },
+    selectedContext: {
+      ...selected,
+      summary: selectedContextSummary(selected),
+    },
   };
 }
 
@@ -964,6 +1180,49 @@ function renderRuntimeProcessPanel(panel: DashboardRuntimeProcessPanel): string 
       </div>`;
 }
 
+function renderSelectedContext(context: DashboardSelectedContext | undefined): string {
+  if (!context) return '';
+  return `
+    <!-- escaped-marker:&lt; -->
+    <section id="selected-context">
+      <div class="section-head">
+        <h2>Selected context</h2>
+        <span class="badge">${escapeHtml(context.status)}</span>
+      </div>
+      <div class="summary-grid">
+        <article class="summary-panel status-${escapeHtml(context.status === 'ready' ? 'ready' : context.status === 'stale' ? 'degraded' : context.status)}">
+          <div class="panel-head">
+            <h3>${escapeHtml(context.label)}</h3>
+            <span class="badge">${escapeHtml(context.contextId)}</span>
+          </div>
+          <p class="summary">${escapeHtml(context.summary)}</p>
+          <dl class="meta">
+            <div><dt>Project</dt><dd>${escapeHtml(context.projectDisplayName ?? context.projectKey ?? 'not-collected')}</dd></div>
+            <div><dt>Session</dt><dd>${escapeHtml(context.sessionLabel ?? context.sessionKey ?? 'not-collected')}</dd></div>
+            <div><dt>Base dir</dt><dd><code>${escapeHtml(context.projectBaseDir ?? 'not-collected')}</code></dd></div>
+            <div><dt>Roles</dt><dd>${escapeHtml(context.roles.join(', ') || 'none')}</dd></div>
+            <div><dt>Started</dt><dd>${escapeHtml(context.startedAt ?? 'not-collected')}</dd></div>
+            <div><dt>Heartbeat</dt><dd>${escapeHtml(context.lastHeartbeatAt ?? 'not-collected')}</dd></div>
+            <div><dt>Evidence</dt><dd>${escapeHtml(context.evidenceConfidence)}</dd></div>
+          </dl>
+        </article>
+        <article class="summary-panel">
+          <div class="panel-head">
+            <h3>Context summary</h3>
+            <span class="badge">${escapeHtml(context.processCounts.total)}</span>
+          </div>
+          <dl class="meta">
+            <div><dt>Total</dt><dd>${escapeHtml(context.processCounts.total)}</dd></div>
+            <div><dt>Active</dt><dd>${escapeHtml(context.processCounts.active)}</dd></div>
+            <div><dt>Stale</dt><dd>${escapeHtml(context.processCounts.stale)}</dd></div>
+            <div><dt>Malformed</dt><dd>${escapeHtml(context.processCounts.malformed)}</dd></div>
+          </dl>
+          ${renderList(context.warnings.map((warning) => escapeHtml(warning)))}
+        </article>
+      </div>
+    </section>`;
+}
+
 function formatNullableCount(value: number | null): string {
   return value === null ? 'not-collected' : String(value);
 }
@@ -1163,6 +1422,7 @@ export function buildByomemDashboardModel(options: BuildByomemDashboardModelOpti
     collectedAt: generatedAt,
   });
   const runtimeProcesses = buildRuntimeProcessPanel(statusReport, doctorReport);
+  const { activeContext, selectedContext } = buildActiveContext(runtimeProcesses, statusReport);
   const firstRunGuidance = buildFirstRunGuidance(statusComponents, statusReport.runtimeBaseDir);
   const commandCards = buildCommandCards(doctorReport, statusReport.runtimeBaseDir);
   const sectionSummaries = buildSectionSummaries(statusComponents, doctorChecks, boundedWarnings, commandCards.length, runtimeProcesses);
@@ -1187,6 +1447,8 @@ export function buildByomemDashboardModel(options: BuildByomemDashboardModelOpti
     capabilityBanners,
     profileSummary,
     runtimeProcesses,
+    activeContext,
+    selectedContext,
     firstRunGuidance,
     sectionSummaries,
     commandCards,
@@ -1207,6 +1469,7 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
     capabilityBanners?: DashboardCapabilityBanner[];
     profileSummary?: DashboardProfileSummary;
     runtimeProcesses?: DashboardRuntimeProcessPanel;
+    selectedContext?: DashboardSelectedContext;
     firstRunGuidance?: DashboardCommandCard[];
     sectionSummaries?: DashboardSectionSummary[];
     commandCards?: DashboardCommandCard[];
@@ -1249,6 +1512,7 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
     collectedAt: dashboard.generatedAt,
   });
   const runtimeProcesses = dashboard.runtimeProcesses;
+  const selectedContext = dashboard.selectedContext;
   const firstRunGuidance = Array.isArray(dashboard.firstRunGuidance) && dashboard.firstRunGuidance.length > 0
     ? dashboard.firstRunGuidance
     : buildFirstRunGuidance(statusComponents, runtimeBaseDir);
@@ -1630,12 +1894,15 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
 
     <nav aria-label="Dashboard sections">
       <a href="#profile-summary">Profile summary</a>
+      <a href="#selected-context">Selected context</a>
       <a href="#runtime-processes">Runtime processes</a>
       <a href="#status-components">Status components</a>
       <a href="#doctor-checks">Doctor checks</a>
       <a href="#warnings">Warnings</a>
       <a href="#suggested-actions">Suggested actions</a>
     </nav>
+
+    ${renderSelectedContext(selectedContext)}
 
     <section id="capabilities">
       <div class="section-head">
@@ -1740,7 +2007,7 @@ export function renderByomemDashboardHtml(model: DashboardModel): string {
   </main>
   <footer>
     <p>BYOMem runtime ${escapeHtml(dashboard.runtimeVersion)}. Static, read-only, self-contained dashboard.</p>
-    <p>Docs: <a href="https://github.com/ericsmith/byomem/blob/main/README.md">README</a> · Runtime runbook: <a href="https://github.com/ericsmith/byomem/blob/main/docs/byomem-runtime-operations-runbook.md">operations runbook</a> · Repository: <a href="https://github.com/ericsmith/byomem">GitHub</a> · Issues: <a href="https://github.com/ericsmith/byomem/issues">report an issue</a></p>
+    <p>Docs: README · Runtime runbook: docs/byomem-runtime-operations-runbook.md · Repository: byomem.</p>
   </footer>
 </body>
 </html>`;

@@ -41,6 +41,17 @@
 - The TS-native `queue-observe --watch` path is the default active monitoring workflow for runtime queue inspection.
 - Any retained `monitor-queue.sh` or Python queue-monitoring helper should be treated as legacy/non-default or dev-only.
 
+## Runtime dashboard
+- [Dashboard checklist](./agentmemory-to-byomem-dashboard-checklist.md)
+- [Sprint 88 — Lightweight Runtime Dashboard](./sprint-88-lightweight-runtime-dashboard.md)
+- [Sprint 92 — Static Dashboard UX Polish](./sprint-92-static-dashboard-ux-polish.md)
+- [Sprint 93 — Static Dashboard Collapsible Sections](./sprint-93-static-dashboard-collapsible-sections.md)
+- [Sprint 94 — Dashboard Open and Project Profile Summary](./sprint-94-dashboard-open-and-profile-summary.md)
+- [Sprint 95 — Dashboard File-Search Health Summary](./sprint-95-dashboard-file-search-health-summary.md)
+- [Sprint 98 — Dashboard Serve and JSON Reports](./sprint-98-dashboard-serve-and-json-reports.md)
+- [Sprint 99 — Dashboard Runtime Process Panel](./sprint-99-dashboard-runtime-process-panel.md)
+- [Sprint 100 — Active Session Dashboard Switcher](./sprint-100-active-session-dashboard-switcher.md)
+
 ## Project graph
 - [BYOMem project graph](./project-graph.md)
 - [BYOMem semantic graph](./project-semantic-graph.md)
