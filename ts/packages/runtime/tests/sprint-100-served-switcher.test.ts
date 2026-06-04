@@ -111,12 +111,14 @@ describe('sprint 100 served switcher', () => {
           label: 'Alpha session',
           summary: 'Startup-cached read-only evidence for alpha.',
           source: 'startup-cache',
+          html: '<!doctype html><html><body><main>alpha dashboard</main></body></html>',
         },
         {
           contextId: 'beta',
           label: 'Beta project',
           summary: 'Startup-cached read-only evidence for beta.',
           source: 'startup-cache',
+          html: '<!doctype html><html><body><main>beta dashboard</main></body></html>',
         },
       ],
     };
@@ -131,10 +133,19 @@ describe('sprint 100 served switcher', () => {
       expect(shellResponse.text).toContain('rel="icon"');
       expect(shellResponse.text).toContain('href="data:image/svg+xml');
       expect(shellResponse.text).toContain('id="byomem-context-select"');
+      expect(shellResponse.text).toContain('id="byomem-live-selected-context"');
+      expect(shellResponse.text).toContain('id="byomem-context-title"');
+      expect(shellResponse.text).toContain('id="byomem-context-project"');
+      expect(shellResponse.text).toContain('id="byomem-context-active"');
+      expect(shellResponse.text).toContain('.snapshot #selected-context { display: none; }');
       expect(shellResponse.text).toContain('Alpha session');
       expect(shellResponse.text).toContain('Beta project');
       expect(shellResponse.text).toContain('/api/contexts');
       expect(shellResponse.text).toContain('/api/dashboard.json');
+      expect(shellResponse.text).toContain('renderContext(payload)');
+      expect(shellResponse.text).toContain('/api/dashboard.html');
+      expect(shellResponse.text).toContain("live.project.textContent");
+      expect(shellResponse.text).toContain("live.active.textContent");
 
       const contextsResponse = await readResponse(new URL('/api/contexts', handle.url).toString());
       expect(contextsResponse.status).toBe(200);
@@ -156,6 +167,13 @@ describe('sprint 100 served switcher', () => {
         contextId: 'alpha',
         source: 'startup-cache',
       });
+      expect(dashboardResponse.text).not.toContain('alpha dashboard');
+
+      const dashboardHtmlResponse = await readResponse(new URL('/api/dashboard.html?contextId=beta', handle.url).toString());
+      expect(dashboardHtmlResponse.status).toBe(200);
+      expect(dashboardHtmlResponse.headers.get('content-type')).toBe('text/html; charset=utf-8');
+      expect(dashboardHtmlResponse.headers.get('cache-control')).toBe('no-store');
+      expect(dashboardHtmlResponse.text).toContain('beta dashboard');
 
       const invalidContextResponse = await readResponse(new URL('/api/dashboard.json?contextId=../../etc/passwd', handle.url).toString());
       expect(invalidContextResponse.status).toBe(400);
@@ -164,6 +182,10 @@ describe('sprint 100 served switcher', () => {
         error: expect.stringMatching(/context/i),
         contextId: '../../etc/passwd',
       });
+
+      const invalidHtmlResponse = await readResponse(new URL('/api/dashboard.html?contextId=../../etc/passwd', handle.url).toString());
+      expect(invalidHtmlResponse.status).toBe(400);
+      expect(invalidHtmlResponse.headers.get('content-type')).toBe('application/json');
 
       expectNoRuntimeArtifacts(outputRoot);
     } finally {

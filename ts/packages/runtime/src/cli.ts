@@ -908,6 +908,28 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
     if (dashboard.serve) {
       const startDashboardServer = dependencies.createDashboardServer ?? createDashboardServer;
       let server: DashboardServerHandle | undefined;
+      const renderContextHtml = (projectBaseDir: string): string => {
+        const contextBaseDirOptions = {
+          ...baseDirOptions,
+          projectBaseDir,
+        };
+        const contextStatusReport = buildByomemStatusReport(contextBaseDirOptions);
+        const contextDoctorReport = buildByomemDoctorReport({ ...contextBaseDirOptions, versionBaseDir: contextStatusReport.projectBaseDir });
+        const contextProfileSummary = collectDashboardProfileSummary({
+          projectBaseDir: contextStatusReport.projectBaseDir,
+          runtimeBaseDir: contextStatusReport.runtimeBaseDir,
+          collectedAt: generatedAt,
+          embeddingBaseUrl: options.embeddingBaseUrl,
+          embeddingModel: options.embeddingModel,
+          embeddingDimension: options.embeddingDimension,
+        });
+        return renderByomemDashboardHtml(buildByomemDashboardModel({
+          statusReport: contextStatusReport,
+          doctorReport: contextDoctorReport,
+          generatedAt,
+          profileSummary: contextProfileSummary,
+        }));
+      };
       try {
         server = await startDashboardServer({
           html,
@@ -921,6 +943,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
               ...context,
               summary: context.contextId === dashboardModel.selectedContext.contextId ? dashboardModel.selectedContext.summary : context.label,
               source: 'startup-cache' as const,
+              html: context.projectBaseDir ? renderContextHtml(context.projectBaseDir) : html,
             })),
           } : {}),
         });
