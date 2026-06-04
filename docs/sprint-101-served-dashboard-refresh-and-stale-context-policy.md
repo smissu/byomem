@@ -4,7 +4,22 @@
 
 ## Implementation Status
 
-Planned.
+MVP implemented.
+
+Implemented in the first pass:
+
+- Provider-backed manual refresh for explicit interactive served dashboards.
+- Aggregate refresh transaction endpoint so context options, selected JSON, and selected HTML update from one snapshot.
+- Provider-backed `/api/contexts`, `/api/dashboard.json`, and `/api/dashboard.html` in interactive serve mode.
+- Non-interactive served dashboards remain static and do not expose `/api/*`.
+- Refresh UI state for manual refresh, last refresh time, selected-context preservation, and display-safe errors.
+- Read-only boundary tests for method rejection, provider failure handling, no-create behavior, and unsafe evidence omission.
+
+Deferred from the first pass:
+
+- Optional auto-refresh controls and interval/backoff polish.
+- Full stale cleanup policy taxonomy and copy-only cleanup guidance.
+- Broader lifecycle policy model changes in runtime-state/status/doctor.
 
 ## Objective
 
@@ -117,12 +132,50 @@ Safety and scope findings:
 
 - Use a provider/injection pattern for dynamic refresh. Do not perform unrelated collection, shell commands, or live probing directly inside route handlers.
 - Use one bounded `now`/`generatedAt` per refresh snapshot so status, doctor, dashboard model, context options, and HTML are internally consistent.
+- Add a refresh transaction rule so the UI cannot mix context options from one refresh with selected JSON/HTML from another. Use either one aggregate refresh endpoint or a `refreshId`/`generatedAt` contract across endpoint requests.
 - Keep refresh GET-only and read-only. Unsupported methods fail closed before any collection or mutation.
 - Keep non-interactive serve behavior byte-for-byte equivalent except for intentional header-safe changes covered by tests.
 - Do not repurpose `--refresh` to mean file-search or embedding refresh. If a dashboard refresh flag is added, name it narrowly, for example `--interactive-refresh` or `--auto-refresh`.
 - Auto-refresh interval must have a low/high bound and a default that avoids aggressive polling.
 - Stale cleanup policy may recommend copy-only CLI commands but must not execute them.
 - Do not expose raw runtime-state paths or unsafe process fields in context labels, JSON, HTML, warnings, or suggested actions.
+
+## Sprint Review Must-Haves
+
+These items are mandatory for the first Sprint 101 implementation pass:
+
+- Add a pure read-only refresh provider that returns one consistent snapshot with `generatedAt`, selected context id, context options, selected dashboard JSON/model evidence, selected HTML, warnings, and bounded errors.
+- Add a refresh transaction rule so contexts, selected JSON, and selected HTML cannot be mixed across different refresh snapshots.
+- Make interactive `/api/contexts`, `/api/dashboard.json?contextId=...`, and `/api/dashboard.html?contextId=...` refresh from the provider instead of startup-cached context arrays.
+- Keep non-interactive `dashboard --serve` static and keep `/api/*` unavailable outside explicit interactive serve mode.
+- Add manual refresh UI in the explicit interactive served dashboard, including refresh state, last refreshed timestamp, and selected-context preservation.
+- Keep the dropdown, live selected-context panel, and embedded dashboard snapshot synchronized after refresh.
+- Add provider failure tests for thrown errors, empty or partial snapshots, unknown context ids, removed contexts, and no silent fallback to filesystem routes, default context, or stale static HTML.
+- Preserve GET-only behavior, `Cache-Control: no-store`, tested JSON/HTML content types, CSP, and method rejection before provider invocation.
+- Add source and no-create guards for the refresh provider and all served refresh paths.
+- Omit raw `argv`, `cwd`, env values, hostnames, transcript ids, process commands, config paths, and raw runtime-state record paths from refreshed JSON and HTML.
+- Keep focused Sprint 98, Sprint 99, and Sprint 100 dashboard/runtime-state regressions green.
+
+## Sprint Review Should-Haves
+
+These items are useful but should not block the first working provider-backed manual refresh:
+
+- Add compact lifecycle/confidence summary only where it directly explains context freshness: active, stale, malformed, missing identity, unknown counts, and warnings.
+- Add optional bounded auto-refresh controls after manual refresh is correct. Auto-refresh should be off by default, cancellable, interval-bounded, and single-flight.
+- Define concrete auto-refresh min/default/max intervals, cancellation or `AbortController` behavior, overlapping-refresh suppression, and failure display/backoff if auto-refresh remains in scope.
+- Add bounded, display-safe refresh error UI.
+- Separate display-only cleanup/policy guidance from executable suggested actions if cleanup or apply command text is shown.
+- Update docs, runbook, checklist, and version files after implementation.
+
+## Sprint Review Deferrals
+
+Do not treat these as blockers for the first implementation pass:
+
+- Full stale cleanup policy with eligible, refused, and unsafe cleanup categories.
+- Rich lifecycle taxonomy such as `heartbeat-expired`, `pid-missing`, duplicate-role cleanup eligibility, or broad cleanup policy guidance.
+- Broad changes to `runtime-state.ts`, `status-report.ts`, or `doctor.ts` unless RED tests prove they are required.
+- Auto-refresh edge-case polish such as removed-context recovery and layout overflow validation.
+- `dashboard --watch`, browser storage, WebSockets, authenticated proxy/origin policy, replay UI, graph canvas, mutation endpoints, live MCP probing, scans, graph update, semantic refresh, repair/reconnect, and config writes.
 
 ## Proposed Refresh Contract
 

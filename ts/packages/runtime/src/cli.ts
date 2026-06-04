@@ -11,7 +11,7 @@ import { searchIndex } from './search-index.js';
 import { buildSearchSemanticMetadata, findRelated as findRelatedFileIndex, searchIndex as searchFileIndex } from './file-search-query.js';
 import { openGenerationClient } from './generation-client.js';
 import { createDashboardOpener, serializeDashboardOpenFailure } from './dashboard-open.js';
-import { createDashboardServer, type DashboardServerHandle, type DashboardServerHost, type DashboardServerOptions } from './dashboard-server.js';
+import { createDashboardServer, type DashboardRefreshProvider, type DashboardServerHandle, type DashboardServerHost, type DashboardServerOptions } from './dashboard-server.js';
 import { observeQueue, renderQueueObserver } from './queue-observer.js';
 import { resolveDefaultRuntimeBaseDir } from './readonly-core.js';
 import { buildByomemDashboardModel, renderByomemDashboardHtml } from './dashboard.js';
@@ -908,7 +908,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
     if (dashboard.serve) {
       const startDashboardServer = dependencies.createDashboardServer ?? createDashboardServer;
       let server: DashboardServerHandle | undefined;
-      const renderContextHtml = (projectBaseDir: string): string => {
+      const buildContextDashboardModel = (projectBaseDir: string, collectedAt: string) => {
         const contextBaseDirOptions = {
           ...baseDirOptions,
           projectBaseDir,
@@ -918,17 +918,77 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
         const contextProfileSummary = collectDashboardProfileSummary({
           projectBaseDir: contextStatusReport.projectBaseDir,
           runtimeBaseDir: contextStatusReport.runtimeBaseDir,
-          collectedAt: generatedAt,
+          collectedAt,
           embeddingBaseUrl: options.embeddingBaseUrl,
           embeddingModel: options.embeddingModel,
           embeddingDimension: options.embeddingDimension,
         });
-        return renderByomemDashboardHtml(buildByomemDashboardModel({
+        return buildByomemDashboardModel({
           statusReport: contextStatusReport,
           doctorReport: contextDoctorReport,
-          generatedAt,
+          generatedAt: collectedAt,
           profileSummary: contextProfileSummary,
+        });
+      };
+      const refreshProvider: DashboardRefreshProvider = async ({ selectedContextId, now }) => {
+        const collectedAt = (now ?? new Date()).toISOString();
+        const baseStatusReport = buildByomemStatusReport(baseDirOptions);
+        const baseDoctorReport = buildByomemDoctorReport({ ...baseDirOptions, versionBaseDir: baseStatusReport.projectBaseDir });
+        const baseProfileSummary = collectDashboardProfileSummary({
+          projectBaseDir: baseStatusReport.projectBaseDir,
+          runtimeBaseDir: baseStatusReport.runtimeBaseDir,
+          collectedAt,
+          embeddingBaseUrl: options.embeddingBaseUrl,
+          embeddingModel: options.embeddingModel,
+          embeddingDimension: options.embeddingDimension,
+        });
+        const baseDashboardModel = buildByomemDashboardModel({
+          statusReport: baseStatusReport,
+          doctorReport: baseDoctorReport,
+          generatedAt: collectedAt,
+          profileSummary: baseProfileSummary,
+        });
+        const contexts = baseDashboardModel.activeContext.options.map((context) => ({
+          ...context,
+          summary: context.contextId === baseDashboardModel.selectedContext.contextId ? baseDashboardModel.selectedContext.summary : context.label,
+          source: 'read-only-refresh' as const,
         }));
+        const requestedContextId = selectedContextId || baseDashboardModel.activeContext.selectedContextId;
+        const selectedContext = contexts.find((context) => context.contextId === requestedContextId);
+        if (!selectedContext) {
+          return {
+            generatedAt: collectedAt,
+            refreshId: randomUUID(),
+            source: 'read-only-refresh',
+            selectedContextId: requestedContextId,
+            contexts,
+            selectedDashboardModel: baseDashboardModel,
+            selectedDashboardHtml: '',
+            warnings: baseDashboardModel.warnings,
+            errors: [{
+              code: 'unknown-context',
+              message: 'Unknown dashboard context id.',
+              contextId: requestedContextId,
+            }],
+          };
+        }
+        const selectedDashboardModel = selectedContext.projectBaseDir
+          ? buildContextDashboardModel(selectedContext.projectBaseDir, collectedAt)
+          : baseDashboardModel;
+        return {
+          generatedAt: collectedAt,
+          refreshId: randomUUID(),
+          source: 'read-only-refresh',
+          selectedContextId: requestedContextId,
+          contexts,
+          selectedDashboardModel,
+          selectedDashboardHtml: renderByomemDashboardHtml(selectedDashboardModel),
+          warnings: [
+            ...baseDashboardModel.warnings,
+            ...baseDashboardModel.activeContext.warnings,
+          ],
+          errors: [],
+        };
       };
       try {
         server = await startDashboardServer({
@@ -939,11 +999,11 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
           ...(dashboard.interactive ? {
             interactive: true,
             evidenceSource: 'startup-cache' as const,
+            refreshProvider,
             contexts: dashboardModel.activeContext.options.map((context) => ({
               ...context,
               summary: context.contextId === dashboardModel.selectedContext.contextId ? dashboardModel.selectedContext.summary : context.label,
               source: 'startup-cache' as const,
-              html: context.projectBaseDir ? renderContextHtml(context.projectBaseDir) : html,
             })),
           } : {}),
         });

@@ -1,6 +1,8 @@
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { basename } from 'node:path';
 import type { Socket } from 'node:net';
+import type { DashboardModel, DashboardSelectedContext } from './dashboard.js';
+import { buildNotCollectedDashboardProfileSummary } from './dashboard-profile.js';
 
 export type DashboardServerHost = '127.0.0.1' | '0.0.0.0';
 
@@ -10,18 +12,44 @@ export type DashboardServerOptions = {
   host?: DashboardServerHost;
   port?: number;
   interactive?: boolean;
-  evidenceSource?: 'startup-cache' | 'explicit-injection';
+  evidenceSource?: DashboardRefreshSource;
   contexts?: DashboardServerContextEvidence[];
+  refreshProvider?: DashboardRefreshProvider;
 };
 
 export type DashboardServerContextEvidence = {
   contextId: string;
   label?: string;
   summary?: string;
-  source?: 'startup-cache' | 'explicit-injection';
+  source?: DashboardRefreshSource;
   html?: string;
   [key: string]: unknown;
 };
+
+export type DashboardRefreshSource = 'startup-cache' | 'read-only-refresh' | 'explicit-injection';
+
+export type DashboardRefreshError = {
+  code: string;
+  message: string;
+  contextId?: string;
+};
+
+export type DashboardRefreshSnapshot = {
+  generatedAt: string;
+  refreshId: string;
+  source: DashboardRefreshSource;
+  selectedContextId: string;
+  contexts: DashboardServerContextEvidence[];
+  selectedDashboardModel: DashboardModel;
+  selectedDashboardHtml: string;
+  warnings: string[];
+  errors: DashboardRefreshError[];
+};
+
+export type DashboardRefreshProvider = (request: {
+  selectedContextId?: string;
+  now?: Date;
+}) => Promise<DashboardRefreshSnapshot>;
 
 export type DashboardServerHandle = {
   url: string;
@@ -68,11 +96,12 @@ function jsonScriptString(value: string): string {
   return JSON.stringify(value).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
 }
 
-function writeHtml(response: ServerResponse, html: string, csp = DASHBOARD_CSP): void {
+function writeHtml(response: ServerResponse, html: string, csp = DASHBOARD_CSP, extraHeaders: Record<string, string> = {}): void {
   response.writeHead(200, {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Content-Security-Policy': csp,
+    ...extraHeaders,
   });
   response.end(html);
 }
@@ -103,6 +132,318 @@ function writeMethodNotAllowed(response: ServerResponse, method: string | undefi
 
 function normalizeContextId(value: string | null): string {
   return value?.trim() || 'alpha';
+}
+
+function boundedString(value: unknown, fallback = ''): string {
+  const text = String(value ?? fallback);
+  return text.length > 500 ? `${text.slice(0, 500)}...` : text;
+}
+
+const SAFE_CONTEXT_KEYS = new Set([
+  'contextId',
+  'label',
+  'summary',
+  'source',
+  'status',
+  'projectKey',
+  'projectDisplayName',
+  'projectBaseDir',
+  'sessionKey',
+  'sessionLabel',
+  'roles',
+  'processCounts',
+  'startedAt',
+  'lastHeartbeatAt',
+  'evidenceConfidence',
+  'warnings',
+  'lifecycleSummary',
+  'freshnessSummary',
+]);
+
+const UNSAFE_CONTEXT_KEYS = new Set([
+  'argv',
+  'cwd',
+  'env',
+  'environment',
+  'hostname',
+  'host',
+  'transcriptId',
+  'transcriptPath',
+  'command',
+  'processCommand',
+  'configPath',
+  'runtimeStatePath',
+  'recordPath',
+  'path',
+  'html',
+]);
+
+function sanitizeContextEvidence(context: DashboardServerContextEvidence): DashboardServerContextEvidence {
+  const safe: DashboardServerContextEvidence = {
+    contextId: boundedString(context.contextId, 'alpha'),
+  };
+  for (const [key, value] of Object.entries(context)) {
+    if (UNSAFE_CONTEXT_KEYS.has(key) || !SAFE_CONTEXT_KEYS.has(key)) continue;
+    safe[key] = value;
+  }
+  if (!safe.source) safe.source = 'read-only-refresh';
+  return safe;
+}
+
+const UNSAFE_REFRESH_MODEL_KEYS = new Set([
+  'argv',
+  'cwd',
+  'env',
+  'environment',
+  'hostname',
+  'host',
+  'transcriptId',
+  'transcriptPath',
+  'processCommand',
+  'configPath',
+  'runtimeStatePath',
+  'recordPath',
+  'path',
+]);
+
+function sanitizeRefreshModelValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => sanitizeRefreshModelValue(entry));
+  if (!value || typeof value !== 'object') return value;
+  const safe: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (UNSAFE_REFRESH_MODEL_KEYS.has(key)) continue;
+    safe[key] = sanitizeRefreshModelValue(entry);
+  }
+  return safe;
+}
+
+function sanitizeDashboardModel(model: DashboardModel): DashboardModel {
+  return sanitizeRefreshModelValue(model) as DashboardModel;
+}
+
+function sanitizeRefreshHtml(html: unknown): string {
+  if (typeof html !== 'string') return '';
+  return html.replace(/\/[^<>"'\s]*runtime-state\/processes\/[^<>"'\s]*/g, '[runtime-state-record-redacted]');
+}
+
+function sanitizeErrors(errors: unknown): DashboardRefreshError[] {
+  if (!Array.isArray(errors)) return [];
+  return errors.slice(0, 8).map((error): DashboardRefreshError => {
+    if (!error || typeof error !== 'object') {
+      return { code: 'refresh-error', message: boundedString(error, 'Dashboard refresh failed.') };
+    }
+    const record = error as Record<string, unknown>;
+    return {
+      code: boundedString(record.code, 'refresh-error'),
+      message: boundedString(record.message, 'Dashboard refresh failed.'),
+      ...(typeof record.contextId === 'string' ? { contextId: boundedString(record.contextId) } : {}),
+    };
+  });
+}
+
+function sanitizeWarnings(warnings: unknown): string[] {
+  if (!Array.isArray(warnings)) return [];
+  return warnings.slice(0, 12).map((warning) => boundedString(warning)).filter(Boolean);
+}
+
+function emptySelectedContext(contextId: string): DashboardSelectedContext {
+  return {
+    contextId,
+    status: 'unknown',
+    label: 'Context unavailable',
+    projectKey: null,
+    projectDisplayName: null,
+    projectBaseDir: null,
+    sessionKey: null,
+    sessionLabel: null,
+    roles: [],
+    processCounts: { total: 0, active: 0, stale: 0, malformed: 0 },
+    startedAt: null,
+    lastHeartbeatAt: null,
+    evidenceConfidence: 'not-applicable',
+    warnings: ['Unknown dashboard context id.'],
+    summary: 'The requested dashboard context is unavailable in the current refresh snapshot.',
+  };
+}
+
+function unknownContextModel(model: DashboardModel, contextId: string): DashboardModel {
+  const selectedContext = emptySelectedContext(contextId);
+  return {
+    ...model,
+    activeContext: {
+      selectedContextId: contextId,
+      options: [],
+      warnings: ['Unknown dashboard context id.'],
+    },
+    selectedContext,
+    warnings: ['Unknown dashboard context id.'],
+  };
+}
+
+function normalizeRefreshSnapshot(snapshot: DashboardRefreshSnapshot, requestedContextId: string, allowUnknownContextFallback = false): DashboardRefreshSnapshot {
+  if (!snapshot || typeof snapshot !== 'object') throw new Error('Dashboard refresh provider returned an invalid snapshot.');
+  if (!snapshot.generatedAt || !snapshot.refreshId || !snapshot.selectedDashboardModel) {
+    throw new Error('Dashboard refresh provider returned a partial snapshot.');
+  }
+  const contexts = Array.isArray(snapshot.contexts) ? snapshot.contexts.map(sanitizeContextEvidence) : [];
+  const selectedContextId = boundedString(snapshot.selectedContextId || requestedContextId);
+  const selectedDashboardModel = sanitizeDashboardModel(snapshot.selectedDashboardModel);
+  const selectedDashboardHtml = sanitizeRefreshHtml(snapshot.selectedDashboardHtml);
+  const errors = sanitizeErrors(snapshot.errors);
+  const requestedKnown = contexts.some((context) => context.contextId === requestedContextId);
+  if (requestedContextId && !requestedKnown && !allowUnknownContextFallback) {
+    return {
+      ...snapshot,
+      contexts,
+      selectedContextId: requestedContextId,
+      selectedDashboardModel: unknownContextModel(selectedDashboardModel, requestedContextId),
+      selectedDashboardHtml: '',
+      warnings: sanitizeWarnings(snapshot.warnings),
+      errors: [
+        ...errors,
+        {
+          code: 'unknown-context',
+          message: 'Unknown dashboard context id.',
+          contextId: requestedContextId,
+        },
+      ],
+    };
+  }
+  return {
+    ...snapshot,
+    contexts,
+    selectedContextId,
+    selectedDashboardModel,
+    selectedDashboardHtml,
+    warnings: sanitizeWarnings(snapshot.warnings),
+    errors,
+  };
+}
+
+function refreshSummary(contexts: DashboardServerContextEvidence[], errors: DashboardRefreshError[], warnings: string[]): Record<string, number | string> {
+  const counts = contexts.reduce<Record<string, number>>((acc, context) => {
+    const status = typeof context.status === 'string' ? context.status : 'unknown';
+    acc[status] = (acc[status] ?? 0) + 1;
+    return acc;
+  }, {});
+  return {
+    state: errors.length > 0 ? 'degraded' : 'ready',
+    active: counts.ready ?? 0,
+    stale: counts.stale ?? 0,
+    malformed: contexts.reduce((total, context) => total + Number((context.processCounts as { malformed?: number } | undefined)?.malformed ?? 0), 0),
+    unknown: counts.unknown ?? 0,
+    warnings: warnings.length,
+    errors: errors.length,
+  };
+}
+
+function refreshJsonPayload(snapshot: DashboardRefreshSnapshot, includeHtml = false): Record<string, unknown> {
+  const context = snapshot.contexts.find((entry) => entry.contextId === snapshot.selectedContextId) ?? null;
+  return {
+    ...(context ?? { contextId: snapshot.selectedContextId, source: snapshot.source }),
+    refreshId: snapshot.refreshId,
+    generatedAt: snapshot.generatedAt,
+    source: snapshot.source,
+    selectedContextId: snapshot.selectedContextId,
+    ...(snapshot.errors.length > 0 ? { error: snapshot.errors[0]?.message ?? 'Dashboard refresh failed.' } : {}),
+    contexts: snapshot.contexts,
+    context,
+    dashboard: snapshot.selectedDashboardModel,
+    ...(includeHtml ? { html: snapshot.selectedDashboardHtml } : {}),
+    freshnessSummary: refreshSummary(snapshot.contexts, snapshot.errors, snapshot.warnings),
+    warnings: snapshot.warnings,
+    errors: snapshot.errors,
+  };
+}
+
+function writeRefreshFailure(response: ServerResponse, error: unknown): void {
+  writeJson(response, 502, {
+    error: 'Dashboard refresh failed.',
+    errors: [{
+      code: 'refresh-provider-error',
+      message: boundedString(error instanceof Error ? error.message : error, 'Dashboard refresh failed.'),
+    }],
+  });
+}
+
+function refreshStatus(snapshot: DashboardRefreshSnapshot): number {
+  return snapshot.errors.length > 0 ? 400 : 200;
+}
+
+function staticSnapshotFromOptions(
+  html: string,
+  evidenceSource: DashboardRefreshSource,
+  contexts: DashboardServerContextEvidence[],
+): DashboardRefreshSnapshot {
+  const generatedAt = new Date().toISOString();
+  return {
+    generatedAt,
+    refreshId: `startup-cache:${generatedAt}`,
+    source: evidenceSource,
+    selectedContextId: contexts[0]?.contextId ?? 'alpha',
+    contexts,
+    selectedDashboardModel: {
+      schemaVersion: 1,
+      command: 'dashboard',
+      runtimeVersion: 'unknown',
+      generatedAt,
+      overallStatus: 'warn',
+      identityMeta: { runtimeVersion: 'unknown', projectBaseDir: '', runtimeBaseDir: '', generatedAt, overallStatus: 'warn' },
+      projectBaseDir: '',
+      runtimeBaseDir: '',
+      paths: { projectBaseDir: '', runtimeBaseDir: '' },
+      degradedComponents: [],
+      kpiCards: [],
+      capabilityBanners: [],
+      profileSummary: buildNotCollectedDashboardProfileSummary({ projectBaseDir: '', runtimeBaseDir: '', collectedAt: generatedAt }),
+      runtimeProcesses: {
+        source: 'runtime-state',
+        evidenceTier: 'stat-only',
+        evidenceConfidence: 'not-applicable',
+        status: 'missing',
+        summary: 'Startup-cached read-only evidence.',
+        counts: { total: 0, active: 0, stale: 0, malformed: 0 },
+        roles: [],
+        duplicateActiveRoles: [],
+        records: [],
+        malformed: [],
+        warnings: [],
+      },
+      activeContext: { selectedContextId: contexts[0]?.contextId ?? 'alpha', options: [], warnings: [] },
+      selectedContext: emptySelectedContext(contexts[0]?.contextId ?? 'alpha'),
+      firstRunGuidance: [],
+      sectionSummaries: [],
+      commandCards: [],
+      statusComponents: [],
+      doctorChecks: [],
+      warnings: [],
+      suggestedActions: [],
+    },
+    selectedDashboardHtml: html,
+    warnings: [],
+    errors: [],
+  };
+}
+
+export function createStaticDashboardRefreshProvider(options: {
+  snapshot: DashboardRefreshSnapshot;
+  allowUnknownContextFallback?: boolean;
+}): DashboardRefreshProvider {
+  return async ({ selectedContextId }) => {
+    const requestedContextId = selectedContextId || options.snapshot.selectedContextId;
+    const requestedContext = options.snapshot.contexts.find((context) => context.contextId === requestedContextId);
+    const selectedDashboardHtml = typeof requestedContext?.html === 'string'
+      ? requestedContext.html
+      : options.snapshot.selectedDashboardHtml;
+    if (options.allowUnknownContextFallback && !options.snapshot.contexts.some((context) => context.contextId === requestedContextId)) {
+      return {
+        ...options.snapshot,
+        selectedContextId: requestedContextId,
+        selectedDashboardHtml,
+      };
+    }
+    return normalizeRefreshSnapshot({ ...options.snapshot, selectedContextId: requestedContextId, selectedDashboardHtml }, requestedContextId);
+  };
 }
 
 function contextText(value: unknown, fallback = 'not-collected'): string {
@@ -160,6 +501,8 @@ function renderInteractiveDashboardShell(html: string, contexts: DashboardServer
     .switcher-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
     label { color: var(--muted); font-weight: 600; }
     select { min-width: min(420px, 100%); max-width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; }
+    button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: #20262c; color: var(--text); font: inherit; cursor: pointer; }
+    button:disabled { cursor: wait; opacity: .66; }
     .summary { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
     .badge { display: inline-flex; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; text-transform: uppercase; }
     .snapshot { display: block; }
@@ -178,18 +521,28 @@ function renderInteractiveDashboardShell(html: string, contexts: DashboardServer
     <div class="switcher-row">
       <label for="byomem-context-select">BYOMem context</label>
       <select id="byomem-context-select">${options}</select>
+      <button id="byomem-refresh-button" type="button">Refresh</button>
       <span id="byomem-context-status" class="badge">startup-cache</span>
+      <span id="byomem-refresh-state" class="badge">idle</span>
     </div>
     <p id="byomem-context-summary" class="summary">${escapeHtml(contexts[0]?.summary ?? 'No active BYOMem contexts are available.')}</p>
+    <p id="byomem-last-refreshed" class="summary">Last refreshed: startup snapshot</p>
+    <p id="byomem-refresh-error" class="summary" hidden></p>
   </div>
   ${renderInteractiveSelectedContext(selectedContext)}
   <div class="snapshot">${html}</div>
   <script>
     const contextsUrl = ${jsonScriptString('/api/contexts')};
     const dashboardUrl = ${jsonScriptString('/api/dashboard.json')};
+    const dashboardHtmlUrl = ${jsonScriptString('/api/dashboard.html')};
+    const refreshUrl = ${jsonScriptString('/api/dashboard.refresh')};
     const select = document.getElementById('byomem-context-select');
     const summary = document.getElementById('byomem-context-summary');
     const status = document.getElementById('byomem-context-status');
+    const refreshButton = document.getElementById('byomem-refresh-button');
+    const refreshState = document.getElementById('byomem-refresh-state');
+    const lastRefreshed = document.getElementById('byomem-last-refreshed');
+    const refreshError = document.getElementById('byomem-refresh-error');
     const snapshot = document.querySelector('.snapshot');
     const live = {
       title: document.getElementById('byomem-context-title'),
@@ -232,14 +585,41 @@ function renderInteractiveDashboardShell(html: string, contexts: DashboardServer
       live.started.textContent = text(safe.startedAt);
       live.heartbeat.textContent = text(safe.lastHeartbeatAt);
     }
+    function renderError(message) {
+      refreshError.hidden = !message;
+      refreshError.textContent = message || '';
+    }
+    function applyRefreshPayload(payload, desiredContextId) {
+      if (Array.isArray(payload.contexts) && payload.contexts.length > 0) {
+        select.replaceChildren(...payload.contexts.map((context) => {
+          const option = document.createElement('option');
+          option.value = context.contextId;
+          option.textContent = context.label || context.contextId;
+          return option;
+        }));
+        const selected = payload.selectedContextId || desiredContextId || payload.contexts[0].contextId;
+        select.value = selected;
+      }
+      renderContext(payload.context || (payload.dashboard && payload.dashboard.selectedContext) || {});
+      if (typeof payload.html === 'string') snapshot.innerHTML = payload.html;
+      status.textContent = payload.source || 'read-only-refresh';
+      lastRefreshed.textContent = 'Last refreshed: ' + (payload.generatedAt || 'unknown');
+      renderError(Array.isArray(payload.errors) && payload.errors.length ? payload.errors.map((error) => error.message || error.code || 'Refresh failed.').join(' ') : '');
+    }
     async function loadContext(contextId) {
       const encodedContextId = encodeURIComponent(contextId);
-      const response = await fetch(dashboardUrl + '?contextId=' + encodedContextId, { method: 'GET' });
-      const payload = await response.json();
-      renderContext(payload);
-      const htmlResponse = await fetch('/api/dashboard.html?contextId=' + encodedContextId, { method: 'GET' });
-      if (htmlResponse.ok) {
-        snapshot.innerHTML = await htmlResponse.text();
+      refreshState.textContent = 'refreshing';
+      refreshButton.disabled = true;
+      try {
+        const response = await fetch(refreshUrl + '?contextId=' + encodedContextId, { method: 'GET' });
+        const payload = await response.json();
+        applyRefreshPayload(payload, contextId);
+        refreshState.textContent = response.ok ? 'idle' : 'error';
+      } catch (error) {
+        refreshState.textContent = 'error';
+        renderError(error && error.message ? error.message : 'Dashboard refresh failed.');
+      } finally {
+        refreshButton.disabled = false;
       }
     }
     async function hydrateContexts() {
@@ -256,6 +636,7 @@ function renderInteractiveDashboardShell(html: string, contexts: DashboardServer
       }
     }
     select.addEventListener('change', () => { void loadContext(select.value); });
+    refreshButton.addEventListener('click', () => { void loadContext(select.value); });
     void hydrateContexts();
   </script>
 </body>
@@ -290,6 +671,11 @@ export function createDashboardServer(options: DashboardServerOptions): Promise<
     ...context,
     source: context.source ?? evidenceSource,
   }));
+  const refreshProvider = options.refreshProvider ?? createStaticDashboardRefreshProvider({
+    snapshot: staticSnapshotFromOptions(html, evidenceSource, contexts),
+    allowUnknownContextFallback: !options.contexts?.length && !options.interactive,
+  });
+  const allowUnknownContextFallback = !options.contexts?.length && !options.refreshProvider && !options.interactive;
   const sockets = new Set<Socket>();
   let closed = false;
   let resolveClosed: (() => void) | undefined;
@@ -308,29 +694,50 @@ export function createDashboardServer(options: DashboardServerOptions): Promise<
         writeMethodNotAllowed(response, request.method);
         return;
       }
+      const refresh = async (selectedContextId?: string): Promise<DashboardRefreshSnapshot> => {
+        const requestedContextId = selectedContextId ?? '';
+        const rawSnapshot = await refreshProvider({ selectedContextId, now: new Date() });
+        return normalizeRefreshSnapshot(
+          rawSnapshot,
+          requestedContextId || rawSnapshot.selectedContextId,
+          allowUnknownContextFallback,
+        );
+      };
       if (url.pathname === '/api/contexts') {
-        writeJson(response, 200, { contexts, evidenceSource });
+        void refresh().then((snapshot) => {
+          writeJson(response, refreshStatus(snapshot), {
+            refreshId: snapshot.refreshId,
+            generatedAt: snapshot.generatedAt,
+            source: snapshot.source,
+            evidenceSource: snapshot.source,
+            contexts: snapshot.contexts,
+            freshnessSummary: refreshSummary(snapshot.contexts, snapshot.errors, snapshot.warnings),
+            warnings: snapshot.warnings,
+            errors: snapshot.errors,
+          });
+        }).catch((error) => writeRefreshFailure(response, error));
         return;
       }
       if (url.pathname === '/api/dashboard.json') {
-        const contextId = normalizeContextId(url.searchParams.get('contextId'));
-        const context = contexts.find((entry) => entry.contextId === contextId);
-        if (options.contexts?.length && !context) {
-          writeJson(response, 400, { error: 'Unknown dashboard context id.', contextId });
-          return;
-        }
-        const { html: _html, ...jsonContext } = context ?? { contextId, source: evidenceSource };
-        writeJson(response, 200, jsonContext);
+        void refresh(normalizeContextId(url.searchParams.get('contextId'))).then((snapshot) => {
+          writeJson(response, refreshStatus(snapshot), refreshJsonPayload(snapshot));
+        }).catch((error) => writeRefreshFailure(response, error));
         return;
       }
       if (url.pathname === '/api/dashboard.html') {
-        const contextId = normalizeContextId(url.searchParams.get('contextId'));
-        const context = contexts.find((entry) => entry.contextId === contextId);
-        if (options.contexts?.length && !context) {
-          writeJson(response, 400, { error: 'Unknown dashboard context id.', contextId });
-          return;
-        }
-        writeHtml(response, context?.html ?? html);
+        void refresh(normalizeContextId(url.searchParams.get('contextId'))).then((snapshot) => {
+          if (snapshot.errors.length > 0) {
+            writeJson(response, 400, refreshJsonPayload(snapshot));
+            return;
+          }
+          writeHtml(response, snapshot.selectedDashboardHtml, DASHBOARD_CSP, { 'X-BYOMEM-Refresh-Id': snapshot.refreshId });
+        }).catch((error) => writeRefreshFailure(response, error));
+        return;
+      }
+      if (url.pathname === '/api/dashboard.refresh') {
+        void refresh(normalizeContextId(url.searchParams.get('contextId'))).then((snapshot) => {
+          writeJson(response, refreshStatus(snapshot), refreshJsonPayload(snapshot, true));
+        }).catch((error) => writeRefreshFailure(response, error));
         return;
       }
       writeNotFound(response);
