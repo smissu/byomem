@@ -13,11 +13,12 @@ Implemented in the first pass:
 - Provider-backed `/api/contexts`, `/api/dashboard.json`, and `/api/dashboard.html` in interactive serve mode.
 - Non-interactive served dashboards remain static and do not expose `/api/*`.
 - Refresh UI state for manual refresh, last refresh time, selected-context preservation, and display-safe errors.
+- Optional bounded auto-refresh controls in explicit interactive served mode, off by default, cancellable, and single-flight.
 - Read-only boundary tests for method rejection, provider failure handling, no-create behavior, and unsafe evidence omission.
 
 Deferred from the first pass:
 
-- Optional auto-refresh controls and interval/backoff polish.
+- Auto-refresh backoff polish beyond bounded interval, cancellation, and overlap suppression.
 - Full stale cleanup policy taxonomy and copy-only cleanup guidance.
 - Broader lifecycle policy model changes in runtime-state/status/doctor.
 

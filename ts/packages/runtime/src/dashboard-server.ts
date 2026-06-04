@@ -503,6 +503,9 @@ function renderInteractiveDashboardShell(html: string, contexts: DashboardServer
     select { min-width: min(420px, 100%); max-width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; }
     button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: #20262c; color: var(--text); font: inherit; cursor: pointer; }
     button:disabled { cursor: wait; opacity: .66; }
+    input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+    input[type="number"] { width: 72px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; }
+    .control { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-weight: 600; }
     .summary { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
     .badge { display: inline-flex; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; text-transform: uppercase; }
     .snapshot { display: block; }
@@ -522,6 +525,12 @@ function renderInteractiveDashboardShell(html: string, contexts: DashboardServer
       <label for="byomem-context-select">BYOMem context</label>
       <select id="byomem-context-select">${options}</select>
       <button id="byomem-refresh-button" type="button">Refresh</button>
+      <label class="control" for="byomem-auto-refresh-toggle">
+        <input id="byomem-auto-refresh-toggle" type="checkbox">
+        Auto-refresh
+      </label>
+      <label class="control" for="byomem-auto-refresh-interval">Interval</label>
+      <input id="byomem-auto-refresh-interval" type="number" min="10" max="300" step="5" value="30" inputmode="numeric" aria-label="Auto-refresh interval seconds">
       <span id="byomem-context-status" class="badge">startup-cache</span>
       <span id="byomem-refresh-state" class="badge">idle</span>
     </div>
@@ -540,6 +549,8 @@ function renderInteractiveDashboardShell(html: string, contexts: DashboardServer
     const summary = document.getElementById('byomem-context-summary');
     const status = document.getElementById('byomem-context-status');
     const refreshButton = document.getElementById('byomem-refresh-button');
+    const autoRefreshToggle = document.getElementById('byomem-auto-refresh-toggle');
+    const autoRefreshInterval = document.getElementById('byomem-auto-refresh-interval');
     const refreshState = document.getElementById('byomem-refresh-state');
     const lastRefreshed = document.getElementById('byomem-last-refreshed');
     const refreshError = document.getElementById('byomem-refresh-error');
@@ -559,6 +570,12 @@ function renderInteractiveDashboardShell(html: string, contexts: DashboardServer
       started: document.getElementById('byomem-context-started'),
       heartbeat: document.getElementById('byomem-context-heartbeat')
     };
+    const autoRefreshMinSeconds = 10;
+    const autoRefreshDefaultSeconds = 30;
+    const autoRefreshMaxSeconds = 300;
+    let autoRefreshTimer = null;
+    let activeRefreshController = null;
+    let refreshInFlight = false;
     function text(value, fallback = 'not-collected') {
       if (Array.isArray(value)) return value.length ? value.join(', ') : fallback;
       return value === null || value === undefined || value === '' ? fallback : String(value);
@@ -589,6 +606,32 @@ function renderInteractiveDashboardShell(html: string, contexts: DashboardServer
       refreshError.hidden = !message;
       refreshError.textContent = message || '';
     }
+    function boundedAutoRefreshSeconds() {
+      const value = Number(autoRefreshInterval.value);
+      if (!Number.isFinite(value)) return autoRefreshDefaultSeconds;
+      const bounded = Math.min(autoRefreshMaxSeconds, Math.max(autoRefreshMinSeconds, Math.round(value)));
+      autoRefreshInterval.value = String(bounded);
+      return bounded;
+    }
+    function clearAutoRefreshTimer() {
+      if (autoRefreshTimer !== null) {
+        clearTimeout(autoRefreshTimer);
+        autoRefreshTimer = null;
+      }
+    }
+    function cancelActiveRefresh() {
+      if (activeRefreshController) {
+        activeRefreshController.abort();
+        activeRefreshController = null;
+      }
+    }
+    function scheduleAutoRefresh() {
+      clearAutoRefreshTimer();
+      if (!autoRefreshToggle.checked) return;
+      autoRefreshTimer = window.setTimeout(() => {
+        void loadContext(select.value, 'auto');
+      }, boundedAutoRefreshSeconds() * 1000);
+    }
     function applyRefreshPayload(payload, desiredContextId) {
       if (Array.isArray(payload.contexts) && payload.contexts.length > 0) {
         select.replaceChildren(...payload.contexts.map((context) => {
@@ -606,20 +649,40 @@ function renderInteractiveDashboardShell(html: string, contexts: DashboardServer
       lastRefreshed.textContent = 'Last refreshed: ' + (payload.generatedAt || 'unknown');
       renderError(Array.isArray(payload.errors) && payload.errors.length ? payload.errors.map((error) => error.message || error.code || 'Refresh failed.').join(' ') : '');
     }
-    async function loadContext(contextId) {
+    async function loadContext(contextId, reason = 'manual') {
+      if (refreshInFlight) {
+        if (reason === 'auto') {
+          refreshState.textContent = 'skipped';
+          scheduleAutoRefresh();
+          return;
+        }
+        cancelActiveRefresh();
+      }
       const encodedContextId = encodeURIComponent(contextId);
+      const controller = new AbortController();
+      activeRefreshController = controller;
+      refreshInFlight = true;
       refreshState.textContent = 'refreshing';
       refreshButton.disabled = true;
       try {
-        const response = await fetch(refreshUrl + '?contextId=' + encodedContextId, { method: 'GET' });
+        const response = await fetch(refreshUrl + '?contextId=' + encodedContextId, { method: 'GET', signal: controller.signal });
         const payload = await response.json();
         applyRefreshPayload(payload, contextId);
         refreshState.textContent = response.ok ? 'idle' : 'error';
       } catch (error) {
+        if (error && error.name === 'AbortError') {
+          refreshState.textContent = 'cancelled';
+          return;
+        }
         refreshState.textContent = 'error';
         renderError(error && error.message ? error.message : 'Dashboard refresh failed.');
       } finally {
-        refreshButton.disabled = false;
+        if (activeRefreshController === controller) {
+          activeRefreshController = null;
+          refreshInFlight = false;
+          refreshButton.disabled = false;
+          scheduleAutoRefresh();
+        }
       }
     }
     async function hydrateContexts() {
@@ -637,6 +700,16 @@ function renderInteractiveDashboardShell(html: string, contexts: DashboardServer
     }
     select.addEventListener('change', () => { void loadContext(select.value); });
     refreshButton.addEventListener('click', () => { void loadContext(select.value); });
+    autoRefreshToggle.addEventListener('change', () => {
+      if (autoRefreshToggle.checked) {
+        scheduleAutoRefresh();
+        return;
+      }
+      clearAutoRefreshTimer();
+      cancelActiveRefresh();
+      refreshState.textContent = 'idle';
+    });
+    autoRefreshInterval.addEventListener('change', () => { scheduleAutoRefresh(); });
     void hydrateContexts();
   </script>
 </body>

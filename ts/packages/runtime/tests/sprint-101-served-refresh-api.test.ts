@@ -203,6 +203,37 @@ describe('sprint 101 served refresh API', () => {
     }
   });
 
+  it('renders bounded cancellable auto-refresh controls only in explicit interactive serve mode', async () => {
+    const outputRoot = tempDir('byomem-s101-api-');
+    dirs.push(outputRoot);
+    mkdirSync(outputRoot, { recursive: true });
+    const refreshProvider = provider();
+    const handle = await createDashboardServer({
+      html: '<!doctype html><html><body>startup shell</body></html>',
+      outputPath: resolve(outputRoot, 'dashboard.html'),
+      host: '127.0.0.1',
+      port: 0,
+      interactive: true,
+      refreshProvider,
+    } as DashboardServerOptions);
+
+    try {
+      const response = await readResponse(new URL('/', handle.url).toString());
+      expect(response.status).toBe(200);
+      expect(response.text).toContain('id="byomem-auto-refresh-toggle" type="checkbox"');
+      expect(response.text).toContain('id="byomem-auto-refresh-interval" type="number" min="10" max="300" step="5" value="30"');
+      expect(response.text).toContain('AbortController');
+      expect(response.text).toContain("method: 'GET', signal: controller.signal");
+      expect(response.text).toContain('refreshInFlight');
+      expect(response.text).toContain("reason === 'auto'");
+      expect(response.text).toContain("refreshState.textContent = 'skipped'");
+      expect(response.text).toContain('clearTimeout(autoRefreshTimer)');
+      expect(response.text).not.toContain('"POST"');
+    } finally {
+      await handle.close();
+    }
+  });
+
   it('refreshes contexts without inventing an unknown alpha context when no contextId is selected', async () => {
     const outputRoot = tempDir('byomem-s101-api-');
     dirs.push(outputRoot);
