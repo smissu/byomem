@@ -9,6 +9,8 @@ import {
   runtimeProcessStateDir,
 } from '../src/runtime-state.js';
 
+const PREHASHED_SESSION_KEY_FIXTURE = '0'.repeat(64);
+
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'byomem-s100-runtime-identity-'));
 }
@@ -92,7 +94,7 @@ describe('Sprint 100 runtime session identity contract', () => {
         projectDisplayName: 'Project One',
         projectBaseDir: '/Users/alice/work/project-one',
         projectSource: 'explicit',
-        sessionKey: '8ca0f4d9d0d4f3db5d4c2f9a8f6e8d74c8a0f4d9d0d4f3db5d4c2f9a8f6e8d74',
+        sessionKey: PREHASHED_SESSION_KEY_FIXTURE,
         sessionLabel: 'Session One',
         clientInstanceId: 'client-01',
       },
@@ -129,7 +131,7 @@ describe('Sprint 100 runtime session identity contract', () => {
       projectDisplayName: 'Project One',
       projectBaseDir: '/Users/alice/work/project-one',
       projectSource: 'explicit',
-      sessionKey: '8ca0f4d9d0d4f3db5d4c2f9a8f6e8d74c8a0f4d9d0d4f3db5d4c2f9a8f6e8d74',
+      sessionKey: PREHASHED_SESSION_KEY_FIXTURE,
       sessionLabel: 'Session One',
       clientInstanceId: 'client-01',
     });
