@@ -63,8 +63,8 @@ Note: `--open` and `--serve` are intentionally not part of the first easy sprint
 - [ ] Add `dashboard --watch` static regeneration mode.
 - [~] Add local HTTP dashboard server endpoint for `status`, `doctor`, and dashboard JSON. Dashboard JSON is available in explicit interactive serve mode; status and doctor endpoints remain future work.
 - [x] Add opt-in served dashboard dropdown for active BYOMem sessions/projects.
-- [ ] Add auto-refresh polling to the served dashboard.
-- [ ] Add live connection status indicator.
+- [~] Add auto-refresh polling to the served dashboard. Planned in Sprint 101 as explicit, bounded, interactive served-mode polling.
+- [~] Add live connection status indicator. Planned in Sprint 101 as read-only refresh state, last-refresh timestamp, and lifecycle confidence display.
 - [ ] Add tabbed UI shell for Dashboard, Memory, File Search, Graph, Runtime, Diagnostics, and Sessions.
 - [ ] Add memory browser tab.
 - [ ] Add file-search/project-index browser tab.
@@ -100,7 +100,7 @@ Note: `--open` and `--serve` are intentionally not part of the first easy sprint
 - [ ] Add host allowlist and origin allowlist.
 - [ ] Add authenticated REST proxy.
 - [ ] Add confirmed governance actions such as memory prune/delete from the viewer.
-- [ ] Add mutation-capable graph scan, graph update, file-search scan, cleanup, stop, repair, and reconnect actions with dry-run/apply separation.
+- [ ] Add mutation-capable graph scan, graph update, file-search scan, cleanup, stop, repair, and reconnect actions with dry-run/apply separation. Sprint 101 keeps these actions out of the dashboard and only shows read-only copy-friendly lifecycle guidance.
 - [ ] Add Windows support for `dashboard --open` after macOS/Linux behavior is stable and covered by mocked platform tests.
 
 ## Recommended First Tranche

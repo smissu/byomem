@@ -13,6 +13,7 @@ build/
 .gemini/
 .pi/
 .playwright-cli/
+.playwright-mcp/
 graphify-out/
 queue/
 tmp/
