@@ -47,12 +47,21 @@ The file-search MCP server routes tool calls through a bounded child process. If
 Environment variables:
 
 - `BYOMEM_FILE_SEARCH_WORKER_TIMEOUT_MS`: worker hard timeout. Default: `30000`.
-- `BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB`: worker V8 heap limit. Default: `256`.
+- `BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB`: worker V8 heap limit. Default: `512`.
 - `BYOMEM_FILE_SEARCH_WORKER_MAX_CONCURRENCY`: max in-flight file-search worker processes per MCP parent. Default: `1`.
 - `BYOMEM_FILE_SEARCH_WORKER_QUEUE_DEPTH`: queued worker calls before structured backpressure. Default: `8`.
 - `BYOMEM_FILE_SEARCH_WORKER_PATH`: override worker entrypoint, mainly for tests.
 - `BYOMEM_FILE_SEARCH_DIRECT_STORE_CACHE_MAX`: max process-local direct file-search stores. Default: `2`.
 - `BYOMEM_FILE_SEARCH_HOT_INDEX_MEMORY_MB`: hot-index hydration budget. Defaults to `BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB` when set, otherwise `1024`. When exceeded, full hot-index hydration is skipped and bounded BM25/lexical fallback remains available.
+
+The worker V8 heap limit can also be set in `${BYOMEM_CONFIG_PATH:-~/.byomem/config.yaml}`:
+
+```yaml
+file_search:
+  worker_max_old_space_mb: 512
+```
+
+`BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB` takes precedence over the config-file value when both are set.
 
 Structured worker failures include safe operational fields such as kind, exit code, signal, retryability, timeout, memory limit, and recovery hint. Raw worker stderr/stdout and indexed chunk content are not returned to MCP clients.
 

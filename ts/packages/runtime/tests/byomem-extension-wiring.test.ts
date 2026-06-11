@@ -580,6 +580,7 @@ describe('byomem extension wiring', () => {
       'file_search:',
       '  embedding_batch_size: 17',
       '  embedding_concurrency: 6',
+      '  worker_max_old_space_mb: 384',
       'summarizer:',
       '  base_url: http://localhost:11434/v1',
       '  model: qwen3:8b',
@@ -604,6 +605,7 @@ describe('byomem extension wiring', () => {
       fileSearchConfigPath: configPath,
       fileSearchEmbeddingBatchSize: 17,
       fileSearchEmbeddingConcurrency: 6,
+      fileSearchWorkerMaxOldSpaceMb: 384,
       summarizerConfigSource: 'config',
       summarizerConfigPath: configPath,
       summarizerBaseUrl: 'http://localhost:11434/v1',
@@ -670,6 +672,19 @@ describe('byomem extension wiring', () => {
       fileSearchConfigSource: 'config',
       fileSearchConfigPath: configPath,
       fileSearchIndexStorageMode: 'memory',
+    });
+  });
+
+  it('reads file_search worker max old space from env overrides', async () => {
+    const dir = tempDir();
+    dirs.push(dir);
+    vi.stubEnv('BYOMEM_RUNTIME_BASE_DIR', dir);
+    vi.stubEnv('BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB', '640');
+    byomem_runtime_test_reload_env();
+
+    expect(byomem_runtime_status()).toMatchObject({
+      fileSearchConfigSource: 'env',
+      fileSearchWorkerMaxOldSpaceMb: 640,
     });
   });
 

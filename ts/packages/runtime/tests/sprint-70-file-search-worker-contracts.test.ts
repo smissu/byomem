@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { FILE_SEARCH_WORKER_DEFAULT_MAX_CONCURRENCY, FILE_SEARCH_WORKER_DEFAULT_MAX_OLD_SPACE_MB, FILE_SEARCH_WORKER_DEFAULT_QUEUE_DEPTH, FILE_SEARCH_WORKER_DEFAULT_TIMEOUT_MS, resolveFileSearchWorkerConfig } from '../src/file-search-worker-runner.js';
 
@@ -38,6 +41,37 @@ describe('Sprint 70 file-search worker contracts', () => {
       else process.env.BYOMEM_FILE_SEARCH_WORKER_MAX_CONCURRENCY = originalMaxConcurrency;
       if (originalQueueDepth === undefined) delete process.env.BYOMEM_FILE_SEARCH_WORKER_QUEUE_DEPTH;
       else process.env.BYOMEM_FILE_SEARCH_WORKER_QUEUE_DEPTH = originalQueueDepth;
+    }
+  });
+
+  it('reads worker memory from config and lets env override it', () => {
+    const originalConfigPath = process.env.BYOMEM_CONFIG_PATH;
+    const originalMemory = process.env.BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB;
+    const dir = mkdtempSync(join(tmpdir(), 'byomem-worker-config-'));
+    const configPath = join(dir, 'config.yaml');
+    try {
+      writeFileSync(configPath, [
+        'file_search:',
+        '  worker_max_old_space_mb: 384',
+        '',
+      ].join('\n'), 'utf8');
+      process.env.BYOMEM_CONFIG_PATH = configPath;
+      delete process.env.BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB;
+
+      expect(resolveFileSearchWorkerConfig()).toMatchObject({
+        memoryLimitMb: 384,
+      });
+
+      process.env.BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB = '640';
+      expect(resolveFileSearchWorkerConfig()).toMatchObject({
+        memoryLimitMb: 640,
+      });
+    } finally {
+      if (originalConfigPath === undefined) delete process.env.BYOMEM_CONFIG_PATH;
+      else process.env.BYOMEM_CONFIG_PATH = originalConfigPath;
+      if (originalMemory === undefined) delete process.env.BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB;
+      else process.env.BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB = originalMemory;
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

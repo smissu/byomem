@@ -46,6 +46,7 @@ export interface ByomemFileSearchConfig {
   embeddingBatchSize?: number;
   embeddingConcurrency?: number;
   indexStorageMode?: 'disk' | 'memory';
+  workerMaxOldSpaceMb?: number;
 }
 
 export interface ReadOnlyByomemRuntimeContext {
@@ -227,7 +228,8 @@ export function resolveFileSearchConfig(env: NodeJS.ProcessEnv = process.env): B
   const envEmbeddingBatchSize = env.BYOMEM_FILE_SEARCH_EMBEDDING_BATCH_SIZE;
   const envEmbeddingConcurrency = env.BYOMEM_FILE_SEARCH_EMBEDDING_CONCURRENCY;
   const envIndexStorageMode = env.BYOMEM_FILE_SEARCH_INDEX_STORAGE_MODE;
-  const hasEnv = envExcludedExtensions !== undefined || envBinaryDetection !== undefined || envIncludeTextFiles !== undefined || envEmbeddingBatchSize !== undefined || envEmbeddingConcurrency !== undefined || envIndexStorageMode !== undefined;
+  const envWorkerMaxOldSpaceMb = env.BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB;
+  const hasEnv = envExcludedExtensions !== undefined || envBinaryDetection !== undefined || envIncludeTextFiles !== undefined || envEmbeddingBatchSize !== undefined || envEmbeddingConcurrency !== undefined || envIndexStorageMode !== undefined || envWorkerMaxOldSpaceMb !== undefined;
   const parsedConfig = configBlock ? parseFileSearchYamlConfig(configBlock) : undefined;
   const excludedExtensions = hasEnv
     ? parseCommaSeparatedTextList(envExcludedExtensions) ?? parsedConfig?.excludedExtensions
@@ -247,6 +249,9 @@ export function resolveFileSearchConfig(env: NodeJS.ProcessEnv = process.env): B
   const indexStorageMode = hasEnv
     ? parseStorageModeText(envIndexStorageMode, 'BYOMEM_FILE_SEARCH_INDEX_STORAGE_MODE') ?? parsedConfig?.indexStorageMode
     : parsedConfig?.indexStorageMode;
+  const workerMaxOldSpaceMb = hasEnv
+    ? parsePositiveSafeIntegerConfig(envWorkerMaxOldSpaceMb, 'BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB') ?? parsedConfig?.workerMaxOldSpaceMb
+    : parsedConfig?.workerMaxOldSpaceMb;
   if (hasEnv || configBlock) {
     return {
       source: hasEnv ? 'env' : 'config',
@@ -257,6 +262,7 @@ export function resolveFileSearchConfig(env: NodeJS.ProcessEnv = process.env): B
       embeddingBatchSize,
       embeddingConcurrency,
       indexStorageMode,
+      workerMaxOldSpaceMb,
     };
   }
   return { source: 'default' };
@@ -364,6 +370,7 @@ export function buildByomemRuntimeStatus(input: ByomemRuntimeStatusInput) {
     fileSearchEmbeddingBatchSize: input.fileSearchConfig.embeddingBatchSize,
     fileSearchEmbeddingConcurrency: input.fileSearchConfig.embeddingConcurrency,
     fileSearchIndexStorageMode: input.fileSearchConfig.indexStorageMode,
+    fileSearchWorkerMaxOldSpaceMb: input.fileSearchConfig.workerMaxOldSpaceMb,
     summarizerConfigSource: input.summarizerConfig.source,
     summarizerConfigPath: input.summarizerConfig.configPath,
     summarizerBaseUrl: input.summarizerConfig.generationBaseUrl,
@@ -428,12 +435,13 @@ export function shapeByomemSearchResults<T extends Parameters<typeof shapeByomem
   return results.map((result) => shapeByomemSearchResult(result));
 }
 
-function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string[]; binaryDetectionEnabled?: boolean; includeTextFiles?: boolean; embeddingBatchSize?: number; embeddingConcurrency?: number; indexStorageMode?: 'disk' | 'memory' } {
+function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string[]; binaryDetectionEnabled?: boolean; includeTextFiles?: boolean; embeddingBatchSize?: number; embeddingConcurrency?: number; indexStorageMode?: 'disk' | 'memory'; workerMaxOldSpaceMb?: number } {
   const binaryDetectionEnabled = parseBooleanText(block.match(/binary_detection:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.binary_detection');
   const includeTextFiles = parseBooleanText(block.match(/include_text_files:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.include_text_files');
   const embeddingBatchSize = parsePositiveSafeIntegerConfig(block.match(/embedding_batch_size:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.embedding_batch_size');
   const embeddingConcurrency = parsePositiveSafeIntegerConfig(block.match(/embedding_concurrency:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.embedding_concurrency');
   const indexStorageMode = parseStorageModeText(block.match(/(?:index_storage_mode|storage_mode):\s*([^\n]+)/)?.[1]?.trim(), 'file_search.index_storage_mode');
+  const workerMaxOldSpaceMb = parsePositiveSafeIntegerConfig(block.match(/worker_max_old_space_mb:\s*([^\n]+)/)?.[1]?.trim(), 'file_search.worker_max_old_space_mb');
   const bracketed = block.match(/excluded_extensions:\s*\[([\s\S]*?)\]/)?.[1];
   if (bracketed !== undefined) {
     return {
@@ -441,6 +449,7 @@ function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string
       ...(embeddingBatchSize !== undefined ? { embeddingBatchSize } : {}),
       ...(embeddingConcurrency !== undefined ? { embeddingConcurrency } : {}),
       ...(indexStorageMode !== undefined ? { indexStorageMode } : {}),
+      ...(workerMaxOldSpaceMb !== undefined ? { workerMaxOldSpaceMb } : {}),
       ...(binaryDetectionEnabled !== undefined ? { binaryDetectionEnabled } : {}),
       ...(includeTextFiles !== undefined ? { includeTextFiles } : {}),
     };
@@ -456,6 +465,7 @@ function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string
       ...(embeddingBatchSize !== undefined ? { embeddingBatchSize } : {}),
       ...(embeddingConcurrency !== undefined ? { embeddingConcurrency } : {}),
       ...(indexStorageMode !== undefined ? { indexStorageMode } : {}),
+      ...(workerMaxOldSpaceMb !== undefined ? { workerMaxOldSpaceMb } : {}),
       ...(binaryDetectionEnabled !== undefined ? { binaryDetectionEnabled } : {}),
       ...(includeTextFiles !== undefined ? { includeTextFiles } : {}),
     };
@@ -467,6 +477,7 @@ function parseFileSearchYamlConfig(block: string): { excludedExtensions?: string
     ...(embeddingBatchSize !== undefined ? { embeddingBatchSize } : {}),
     ...(embeddingConcurrency !== undefined ? { embeddingConcurrency } : {}),
     ...(indexStorageMode !== undefined ? { indexStorageMode } : {}),
+    ...(workerMaxOldSpaceMb !== undefined ? { workerMaxOldSpaceMb } : {}),
     ...(binaryDetectionEnabled !== undefined ? { binaryDetectionEnabled } : {}),
     ...(includeTextFiles !== undefined ? { includeTextFiles } : {}),
   };

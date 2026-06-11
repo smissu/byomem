@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { safeJson } from './readonly-core.js';
+import { resolveFileSearchConfig, safeJson } from './readonly-core.js';
 
 export const FILE_SEARCH_WORKER_DEFAULT_TIMEOUT_MS = 30_000;
-export const FILE_SEARCH_WORKER_DEFAULT_MAX_OLD_SPACE_MB = 256;
+export const FILE_SEARCH_WORKER_DEFAULT_MAX_OLD_SPACE_MB = 512;
 export const FILE_SEARCH_WORKER_DEFAULT_MAX_CONCURRENCY = 1;
 export const FILE_SEARCH_WORKER_DEFAULT_QUEUE_DEPTH = 8;
 export const FILE_SEARCH_WORKER_STDIO_MAX_BYTES = 1024 * 1024;
@@ -55,9 +55,10 @@ function parseNonNegativeIntegerEnv(name: string, fallback: number): number {
 
 export function resolveFileSearchWorkerConfig(): { timeoutMs: number; memoryLimitMb: number; maxConcurrency: number; queueDepth: number; workerPath: string } {
   const here = dirname(fileURLToPath(import.meta.url));
+  const fileSearchConfig = resolveFileSearchConfig();
   return {
     timeoutMs: parsePositiveIntegerEnv('BYOMEM_FILE_SEARCH_WORKER_TIMEOUT_MS', FILE_SEARCH_WORKER_DEFAULT_TIMEOUT_MS),
-    memoryLimitMb: parsePositiveIntegerEnv('BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB', FILE_SEARCH_WORKER_DEFAULT_MAX_OLD_SPACE_MB),
+    memoryLimitMb: parsePositiveIntegerEnv('BYOMEM_FILE_SEARCH_WORKER_MAX_OLD_SPACE_MB', fileSearchConfig.workerMaxOldSpaceMb ?? FILE_SEARCH_WORKER_DEFAULT_MAX_OLD_SPACE_MB),
     maxConcurrency: parsePositiveIntegerEnv('BYOMEM_FILE_SEARCH_WORKER_MAX_CONCURRENCY', FILE_SEARCH_WORKER_DEFAULT_MAX_CONCURRENCY),
     queueDepth: parseNonNegativeIntegerEnv('BYOMEM_FILE_SEARCH_WORKER_QUEUE_DEPTH', FILE_SEARCH_WORKER_DEFAULT_QUEUE_DEPTH),
     workerPath: process.env.BYOMEM_FILE_SEARCH_WORKER_PATH?.trim() || resolve(here, 'file-search-worker.js'),
