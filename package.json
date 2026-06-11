@@ -20,10 +20,10 @@
     "vitest": "^4.1.6"
   },
   "dependencies": {
-    "@chonkiejs/core": "^0.0.9",
+    "@chonkiejs/core": "^0.0.10",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/better-sqlite3": "^7.6.13",
-    "better-sqlite3": "^12.9.0",
+    "better-sqlite3": "^12.10.0",
     "tree-sitter-wasms": "^0.1.13"
   }
 }
